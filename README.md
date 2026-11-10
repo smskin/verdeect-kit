@@ -232,16 +232,20 @@ export default startTestStack({ service: 'files', postgres: true, mailpit: true 
 ## Разработка
 
 ```bash
-pnpm install
-pnpm lint
-pnpm typecheck
-pnpm test              # U: без сети и Docker
-pnpm test:integration  # I: Testcontainers
-pnpm test:timing       # T: только на тихой машине
-pnpm pack:check        # сборка, архив, проекты-потребители, publish.mjs, правила lint
+make install
+make help              # все цели
+make lint              # ESLint, Prettier, правила lint AC-9.4
+make analyse           # tsc --noEmit, политика зависимостей
+make test              # U: без сети и Docker; make test FILTER='AC-1.8'
+make test-module M='config testing'  # U + I подпутей
+make test-integration  # I: Testcontainers
+make test-timing       # T: только на тихой машине
+make pack-check        # сборка, архив, проекты-потребители, publish.mjs
+make ci                # конвейер CI
+make test-full         # перед слиянием и выпуском
 ```
 
-Для `test:integration`, `test:timing` и `pack:check` нужен Docker. Makefile появится после E1 (`/aif-build-automation`).
+Для `test-integration`, `test-timing`, `pack-check`, `ci` и `test-full` нужен Docker. Цели вызывают скрипты `pnpm` из `package.json`.
 
 ## Лицензия
 

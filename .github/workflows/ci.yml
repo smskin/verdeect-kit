@@ -1,0 +1,147 @@
+# CI и выпуск @verdeect/kit (prd.md AC-1.10, NFR-6, G13, G14; образец — verdeect-platform-client ci.yml).
+#
+# Команды — только цели Makefile; каждый job ставит зависимости сам (make install, pnpm из packageManager).
+# Jobs:
+#   lint    — make lint, make analyse; Node 24.
+#   test    — матрица Node 22 и 24 (engines.node ">=22.12"): make test (U), затем make test-integration
+#             (I, G13): Testcontainers на TEST_IMAGES в Docker раннера, контейнеры поднимает startTestStack —
+#             services: не объявляются.
+#   timing  — make test-timing (T), Node 24, после test: медленный общий раннер не маскирует падения U и I.
+#   package — make build pack-check (R, C: проект-потребитель test/consumer на упакованном архиве), Node 24,
+#             после test; dist/ выгружается артефактом для publish.
+#   publish — только на теге v*, после всех проверок. Решение и метку npm принимает scripts/publish.mjs:
+#             тег = v + version, версии нет в npm, -rc.<N> → next, без суффикса → latest, другой суффикс — отказ.
+# Нагрузочного набора нет — job test-load нет. make test-full в CI не запускается (локально перед слиянием).
+# TEST_TIMEOUT_SCALE в CI — 1. continue-on-error нигде не используется.
+#
+# Разовая настройка мейнтейнером (docs/releasing.md):
+#   - environment `npm` с правилом развёртывания «только теги v*»;
+#   - ruleset на теги v*: создание — только мейнтейнеры, удаление и перезапись запрещены;
+#   - секретов нет: публикация только через npm Trusted Publishing (OIDC, id-token: write) с provenance;
+#   - 1.0.0-rc.1 мейнтейнер публикует вручную после E8, затем npm trust github (smskin/verdeect-kit, ci.yml,
+#     environment npm) и запрет публикации токенами. Job publish на теге v1.0.0-rc.1 падает на
+#     «версия уже опубликована» — это ожидаемо.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TEST_TIMEOUT_SCALE: '1'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: make install
+        run: make install
+      - name: make lint
+        run: make lint
+      - name: make analyse
+        run: make analyse
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: make install
+        run: make install
+      - name: make test
+        run: make test
+      - name: make test-integration
+        run: make test-integration
+
+  timing:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: make install
+        run: make install
+      - name: make test-timing
+        run: make test-timing
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: make install
+        run: make install
+      - name: make build pack-check
+        run: make build pack-check
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [lint, test, timing, package]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    # Права job заменяют права workflow целиком: contents — для checkout, id-token — для Trusted Publishing (OIDC).
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      # Без registry-url: .npmrc с токеном не нужен, реестр по умолчанию — registry.npmjs.org.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # Trusted Publishing требует npm >= 11.5.1; npm из Node 24 может быть старее — ставится явно, как в образце.
+      - name: npm ^11.15
+        run: npm install -g npm@^11.15.0
+      - name: npm version
+        run: npm --version
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      # Авторизация — только OIDC: npm обменивает id-token на токен публикации, provenance создаётся автоматически.
+      - name: publish
+        run: node scripts/publish.mjs
