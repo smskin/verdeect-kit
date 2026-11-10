@@ -4,13 +4,15 @@
 
 Уровни задаёт столбец «Уровень» AC в prd.md §5. Имя каждого теста требования начинается с ID: `AC-1.3: …`, `§3.8: …`.
 
-| Уровень | Где                          | Что                                                                | Запуск                  | Docker |
-| ------- | ---------------------------- | ------------------------------------------------------------------ | ----------------------- | ------ |
-| U       | `test/unit/<подпуть>`        | без сети и Docker; типы — `*.test-d.ts`                            | `make test`             | нет    |
-| I       | `test/integration/<подпуть>` | Testcontainers на `TEST_IMAGES` через собственный `startTestStack` | `make test-integration` | да     |
-| T       | `test/timing/<подпуть>`      | замеры времени, `globalSetup` — `timingGuard`                      | `make test-timing`      | нет    |
-| R       | `test/package`               | архив, publint, attw, `publish.mjs`, правила lint, документы       | `make pack-check`       | нет    |
-| C       | `test/consumer`              | проекты-потребители на упакованном архиве                          | `make pack-check`       | да     |
+| Уровень | Где                          | Что                                                                  | Запуск                  | Docker      |
+| ------- | ---------------------------- | -------------------------------------------------------------------- | ----------------------- | ----------- |
+| U       | `test/unit/<подпуть>`        | без сети и Docker; типы — `*.test-d.ts`                              | `make test`             | нет         |
+| I       | `test/integration/<подпуть>` | Testcontainers на `TEST_IMAGES` через собственный `startTestStack`   | `make test-integration` | да          |
+| T       | `test/timing/<подпуть>`      | замеры времени, `globalSetup` — `timingGuard`                        | `make test-timing`      | нет         |
+| R       | `test/package`               | архив, publint, attw, `publish.mjs`, правила lint, документы, алерты | `make pack-check`       | да (алерты) |
+| C       | `test/consumer`              | проекты-потребители на упакованном архиве                            | `make pack-check`       | да          |
+
+`/observability`: U — `test/unit/observability` (логи на стенде Nest + Fastify через `inject`, без порта; GlitchTip — подделка SDK и настоящий SDK с поддельным транспортом `test/support/fake-sentry.ts`); I — `test/integration/observability` (`/health` по HTTP, проба PostgreSQL из `startTestStack`); T — `test/timing/observability` (сроки остановки `KitLifecycle`, дочерний процесс на собранном `dist` в `node_modules/.cache/kit-timing-dist` — выход 0 или 1); R — `test/package/ac-2-11-alert-rules.spec.ts` (`vmalert -dryRun` и `vmalert-tool unittest` в Docker — нужен Docker для `make pack-check`).
 
 `make pack-check` (`pnpm pack:check`) = `pnpm build` + `pnpm test:package`. Уровень C ставит зависимости потребителей из реестра npm — нужна сеть.
 

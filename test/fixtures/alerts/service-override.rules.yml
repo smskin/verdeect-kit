@@ -1,0 +1,9 @@
+# Пример переопределения порога сервисом (prd.md §3.2, AC-2.11): recording-правило verdeect_kit_threshold:<метрика>
+# с меткой service в файле правил сервиса.
+groups:
+  - name: platform-kit-thresholds
+    rules:
+      - record: verdeect_kit_threshold:outbox_lag_seconds
+        expr: vector(30)
+        labels:
+          service: platform

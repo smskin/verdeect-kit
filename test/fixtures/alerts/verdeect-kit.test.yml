@@ -1,0 +1,66 @@
+# Unittest vmalert-tool шаблона алертов (prd.md §3.2, AC-2.11): порог по умолчанию, переопределение по service и DLQ с
+# двумя type у одного сервиса (без ошибки many-to-many). Пути — внутри контейнера (каталог /rules).
+rule_files:
+  - /rules/verdeect-kit.rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      # Сервис a — порог по умолчанию 5 с: 10 > 5, алерт есть.
+      - series: 'verdeect_outbox_lag_seconds{service="a"}'
+        values: '10x10'
+      # Сервис b — свой порог 30 с: 10 < 30, алерта нет.
+      - series: 'verdeect_outbox_lag_seconds{service="b"}'
+        values: '10x10'
+      - series: 'verdeect_kit_threshold:outbox_lag_seconds{service="b"}'
+        values: '30x10'
+      # DLQ: два type у одного сервиса — два алерта.
+      - series: 'verdeect_events_consumed_total{service="a",type="x.created",result="dlq"}'
+        values: '0+1x10'
+      - series: 'verdeect_events_consumed_total{service="a",type="x.deleted",result="dlq"}'
+        values: '0+2x10'
+      # Пул БД: сервис c со своим порогом 100 — 9 < 100, алерта нет.
+      - series: 'verdeect_db_pool_wait_timeouts_total{service="c",pool="write"}'
+        values: '0+1x10'
+      - series: 'verdeect_kit_threshold:db_pool_wait_timeouts{service="c"}'
+        values: '100x10'
+    alert_rule_test:
+      - eval_time: 5m
+        groupname: verdeect-kit
+        alertname: VerdeectOutboxLag
+        exp_alerts:
+          - exp_labels:
+              service: a
+              severity: warning
+            exp_annotations:
+              summary: 'Задержка outbox a выше порога'
+              description: >-
+                Самая старая неотправленная строка outbox сервиса a ждёт дольше порога
+                (verdeect_outbox_lag_seconds, по умолчанию 5 с) в течение минуты. Проверьте relay в журнале
+                сервиса и доступность брокера.
+      - eval_time: 5m
+        groupname: verdeect-kit
+        alertname: VerdeectEventsDlq
+        exp_alerts:
+          - exp_labels:
+              service: a
+              type: x.created
+              severity: warning
+            exp_annotations:
+              summary: 'События x.created сервиса a уходят в DLQ'
+              description: >-
+                За 15 минут события x.created сервиса a попали в DLQ (verdeect_events_consumed_total,
+                result="dlq"). Разберите сообщения очереди DLQ по журналу подписчика.
+          - exp_labels:
+              service: a
+              type: x.deleted
+              severity: warning
+            exp_annotations:
+              summary: 'События x.deleted сервиса a уходят в DLQ'
+              description: >-
+                За 15 минут события x.deleted сервиса a попали в DLQ (verdeect_events_consumed_total,
+                result="dlq"). Разберите сообщения очереди DLQ по журналу подписчика.
+      - eval_time: 5m
+        groupname: verdeect-kit
+        alertname: VerdeectDbPoolWaitTimeouts
+        exp_alerts: []

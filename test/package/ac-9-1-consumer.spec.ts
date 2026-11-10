@@ -39,7 +39,7 @@ function dir(path: string | undefined): string {
 }
 
 describe('UC-1: проекты-потребители', () => {
-    it('AC-9.1: проект-потребитель проходит свои тесты на упакованном архиве (startTestStack, defineEnv, assertRepoConventions)', async () => {
+    it('AC-9.1: проект-потребитель проходит свои тесты на упакованном архиве (startTestStack, defineEnv, assertRepoConventions, /health, /metrics, остановка)', async () => {
         const result = await runInConsumer(dir(minimal), 'pnpm', ['exec', 'vitest', 'run']);
 
         expect(result.code, describeResult(result)).toBe(0);
@@ -49,17 +49,19 @@ describe('UC-1: проекты-потребители', () => {
         const result = await runInConsumer(dir(minimal), 'node', ['import-check.mjs']);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
+            'config:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
         );
     });
 
-    it('AC-1.1: с условием development — оба подпути', async () => {
+    it('AC-1.1: с условием development — все подпути', async () => {
         const result = await runInConsumer(dir(minimal), 'node', [
             '--conditions=development',
             'import-check.mjs',
         ]);
 
-        expect(result.stdout.trim(), describeResult(result)).toBe('config:ok testing:ok');
+        expect(result.stdout.trim(), describeResult(result)).toBe(
+            'config:ok observability:ok testing:ok',
+        );
     });
 
     it('AC-1.1: типы пакета проверяются tsc потребителя', async () => {
@@ -73,7 +75,7 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.code, describeResult(result)).toBe(0);
     });
 
-    it('AC-1.2: без pg и testcontainers /config импортируется, /testing — «@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса»', async () => {
+    it('AC-1.2: без pg и testcontainers /config и /observability импортируются, /testing — «@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса»', async () => {
         const project = dir(noTestcontainers);
         expect(existsSync(join(project, 'node_modules', 'pg'))).toBe(false);
         expect(existsSync(join(project, 'node_modules', 'testcontainers'))).toBe(false);
@@ -84,6 +86,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout, describeResult(result)).toContain('config:ok');
+        expect(result.stdout, describeResult(result)).toContain('observability:ok');
         expect(result.stdout, describeResult(result)).toContain(
             'testing:@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса',
         );

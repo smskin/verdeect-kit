@@ -1,4 +1,4 @@
-// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1).
+// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1, E2; §3.2 — files: alerts).
 // Образец — verdeect-platform-client test/unit/package-manifest.spec.ts.
 import { readFileSync } from 'node:fs';
 import semver from 'semver';
@@ -9,6 +9,7 @@ interface Manifest {
     readonly packageManager: string;
     readonly engines: Record<string, string>;
     readonly exports: Record<string, unknown>;
+    readonly files: readonly string[];
     readonly bin?: unknown;
     readonly main?: unknown;
     readonly dependencies: Record<string, string>;
@@ -47,10 +48,10 @@ const OPTIONAL_PEERS: Record<string, string> = {
     vitest: '^5.0.0',
 };
 
-describe('AC-1.1: точки входа пакета (E1)', () => {
-    it('AC-1.1: exports — ровно ./config, ./testing, ./package.json', () => {
+describe('AC-1.1: точки входа пакета (E1, E2)', () => {
+    it('AC-1.1: exports — ровно ./config, ./observability, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
-            ['./config', './package.json', './testing'].sort(),
+            ['./config', './observability', './package.json', './testing'].sort(),
         );
     });
 
@@ -59,6 +60,17 @@ describe('AC-1.1: точки входа пакета (E1)', () => {
             types: './dist/config/index.d.ts',
             default: './dist/config/index.js',
         });
+    });
+
+    it('AC-1.1: ./observability — {types, default} на dist/observability/index.*', () => {
+        expect(manifest.exports['./observability']).toEqual({
+            types: './dist/observability/index.d.ts',
+            default: './dist/observability/index.js',
+        });
+    });
+
+    it('§3.2: files содержит alerts (шаблон alerts/verdeect-kit.rules.yml)', () => {
+        expect(manifest.files).toContain('alerts');
     });
 
     it("AC-1.1: ./testing — ключи ровно ['types', 'development'], без default (NFR-4)", () => {
