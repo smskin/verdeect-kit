@@ -9,7 +9,7 @@
 ## Технологический стек
 
 - **Язык:** TypeScript (ESM-only, Node ≥ 22.12; тесты — Node 22 и 24)
-- **Обязательные peer-зависимости:** NestJS 12, Fastify 5, Drizzle 0.45.4, zod 4, `nestjs-pino`, `pino`, `prom-client`, `@sentry/nestjs`, `@verdeect/auth`
+- **Обязательные peer-зависимости:** NestJS 12, Fastify 5, Drizzle 0.45.4, zod 4, `nestjs-pino`, `pino`, `@prometheus-io/client`, `@sentry/nestjs`, `@verdeect/auth`
 - **Опциональные peer-зависимости:** `pg`, `ioredis`, `amqplib` + `amqp-connection-manager`, `testcontainers`, `vitest`
 - **Тесты:** Vitest. Уровни: U (unit), I (integration на Testcontainers), T (timing), C (проект-потребитель на архиве), R (проверки репозитория и архива)
 - **Пакетный менеджер:** pnpm

@@ -34,7 +34,7 @@ const REQUIRED_PEERS: Record<string, string> = {
     'drizzle-orm': '^0.45.4',
     'nestjs-pino': '^5.3.0',
     pino: '^10.4.0',
-    'prom-client': '^15.1.0',
+    '@prometheus-io/client': '^0.16.1',
     '@sentry/nestjs': '^11.7.0',
     '@verdeect/auth': '^1.0.0',
 };

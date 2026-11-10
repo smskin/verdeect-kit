@@ -1,7 +1,7 @@
 // AC-2.10 (T, UC-8; KT-10 п. 4): настоящий дочерний процесс — остановка без утечек завершается сама с кодом 0 раньше
 // SHUTDOWN_TIMEOUT_MS; оставленный таймер или сервер node:net — код 1 к сроку, error «процесс не завершился после
 // остановки» и событие GlitchTip (prd.md §3.2, UC-8 п. 6). Время — от маркера {"signal":true} ребёнка до выхода: загрузка
-// @sentry/nestjs, pino и prom-client в ребёнке занимает около секунды. Ребёнок импортирует dist, собранный в beforeAll в
+// @sentry/nestjs, pino и @prometheus-io/client в ребёнке занимает около секунды. Ребёнок импортирует dist, собранный в beforeAll в
 // node_modules/.cache (peer разрешаются из node_modules репозитория, dist/ не трогается).
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';

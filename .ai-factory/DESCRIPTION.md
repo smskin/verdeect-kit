@@ -63,7 +63,7 @@ npm-библиотека для NestJS-сервисов Вердикта 2.0. О
   - `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-fastify` 12.1.3, `@nestjs/config` 12.0.1 (`KitConfigModule` — обёртка над `ConfigModule`, PRD v1.7);
   - `fastify` 5.12.5, `reflect-metadata` 0.2.2, `rxjs` 7.8.2, `zod` 4.6.7, `drizzle-orm` 0.45.4;
   - `nestjs-pino` 5.3.1, `pino` 10.4.0, `@sentry/nestjs` 11.7.0, `@verdeect/auth` 1.0.1;
-  - `prom-client` 15.1.3 (диапазон `^15.1.0`).
+  - `@prometheus-io/client` 0.16.1 (диапазон `^0.16.1`, PRD v1.12).
 - **Опциональные peer-зависимости.** Импорт подпути без нужной библиотеки падает с текстом «`@verdeect/kit/<подпуть>` требует `<библиотека>` — добавьте в зависимости сервиса» (AC-1.2):
   - `pg` 8.23.1 — для `/database` и `/idempotency`; в `/messaging` подключается только динамическим `import()` при outbox или inbox;
   - `ioredis` 6.0.0 — `/redis`;
@@ -99,7 +99,7 @@ npm-библиотека для NestJS-сервисов Вердикта 2.0. О
 | RabbitMQ 4.3 | exchange `verdeect.events` (пассивная проверка), очереди `<svc>`, `<svc>.retry`, `<svc>.dlq` | `amqplib` + `amqp-connection-manager`; `definitions.json` из CLI |
 | Redis 7.4 | префикс `<svc>:`, ACL, лимитер | `ioredis` |
 | GlitchTip (Sentry-совместимый) | события ошибок сервисов | `@sentry/nestjs`; включается только при непустом `SENTRY_DSN` и `NODE_ENV = production` |
-| VictoriaMetrics / vmalert | метрики `verdeect_*`, правила алертов | `prom-client`; файл `alerts/verdeect-kit.rules.yml` |
+| VictoriaMetrics / vmalert | метрики `verdeect_*`, правила алертов | `@prometheus-io/client`; файл `alerts/verdeect-kit.rules.yml` |
 
 **Источники копий** — только чтение, без смены веток, `pull`, `fetch` и запуска контуров. Пути — `/home/administrator/projects/verdeect2/`:
 

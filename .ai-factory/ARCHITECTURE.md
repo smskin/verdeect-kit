@@ -18,7 +18,7 @@
 - тенант только из контекста, идемпотентность потребителей по `event.id`;
 - работа с внешними пакетами через обёртку.
 
-Пакет **реализует** эту инфраструктуру для сервисов (`Db`, `OutboxStore`, inbox, RLS, `nestjs-pino`, `prom-client`, Sentry).
+Пакет **реализует** эту инфраструктуру для сервисов (`Db`, `OutboxStore`, inbox, RLS, `nestjs-pino`, `@prometheus-io/client`, Sentry).
 
 **Не действуют** слои сервиса: `modules/`, `*-service/`, `contracts/`, `use-cases/`, `actions/`, `repositories/`, `schema/` домена, `RequestContext` сервиса (пакет даёт только интерфейс `DbContext`, N1), i18n, Docker. Тексты для людей (`message` кодов `kitErrors`, отказы запуска) — константы на русском (NFR-9). Это исключение из запрета «отображаемый текст в коде». Компоненты создаются через `nestjs-code generic <path>` с обоснованием «компонент библиотеки, не сервиса».
 
@@ -59,7 +59,7 @@ verdeect-kit/
 │   │   ├── parse-env.ts               #   parseEnv, InvalidEnvironmentError (пути через точку, без значений)
 │   │   ├── cli-schemas.ts             #   migrateEnvSchema, prepareEnvSchema
 │   │   └── kit-config.module.ts       #   KitConfigModule.forRoot — перечитывает env на каждый контекст
-│   ├── observability/                 # "./observability" — E2 (§3.2); nestjs-pino, pino, prom-client, @sentry/nestjs
+│   ├── observability/                 # "./observability" — E2 (§3.2); nestjs-pino, pino, @prometheus-io/client, @sentry/nestjs
 │   │   ├── redaction.ts               #   SENSITIVE_KEYS, KitRedaction, развёртка на уровни 0–2
 │   │   ├── sanitize-error.ts          #   sanitizeError, registerErrorSanitizer (эталон O)
 │   │   ├── logger-options.ts          #   createLoggerOptions
@@ -199,7 +199,7 @@ verdeect-kit/
   - шаг 5 — `MetricsServer`.
 
   Общий срок и сторож — в `observability`. Подпути не вызывают `process.exit` сами.
-- **Здоровье и метрики:** подпути регистрируют пробы в `HealthRegistry` (БД — критичная, Redis — некритичная) и пишут метрики через реестр `kitMetrics` экземпляра приложения. Глобального реестра `prom-client` нет.
+- **Здоровье и метрики:** подпути регистрируют пробы в `HealthRegistry` (БД — критичная, Redis — некритичная) и пишут метрики через реестр `kitMetrics` экземпляра приложения. Глобального реестра `@prometheus-io/client` нет.
 - **Ошибки:** `observability` даёт `sanitizeError`, `captureError` и `captureThrottled`. `http` переводит исключения в ответ по словарю `kitErrors`. Подпути выше `http` (`idempotency`, `redis`) бросают `DomainError` с кодами словаря. Своих HTTP-ответов они не собирают.
 - **БД:**
   - сервис передаёт `DbContext` в `Db.transaction`/`Db.read`; тенант ставится одним `set_config('app.tenant')`;
@@ -331,7 +331,7 @@ export function throwRateLimited(result: RateLimitResult): never {
 - ❌ Опция, режим или псевдоним ради исторического различия сервисов (P0). Чтение старого формата шифра или старого имени ключа окружения.
 - ❌ Имя схемы или таблицы сервиса, `pgSchema('identity')`, строка `platform.<имя>` в `src/**`.
 - ❌ `console.*`. Значение окружения, секрет, ПДн, ключ Redis или параметр SQL в логе, событии GlitchTip, ответе или тексте ошибки. Отключение `SENSITIVE_KEYS`.
-- ❌ Глобальный реестр `prom-client`. Метрика пакета без префикса `verdeect_` или без метки `service`. Метрика домена в пакете.
+- ❌ Глобальный реестр `@prometheus-io/client`. Метрика пакета без префикса `verdeect_` или без метки `service`. Метрика домена в пакете.
 - ❌ `process.exit` вне `failStartup` и сторожа `KitLifecycle`. Закрытие ресурса мимо шагов `KitLifecycle`.
 - ❌ Несколько `set_config` на транзакцию. Чтение без тенанта через `Db.read` вместо `readGlobal`. Роли БД в миграциях.
 - ❌ Публикация в RabbitMQ мимо outbox. Активное объявление exchange `verdeect.events`. Обработчик, вызванный для повторного `id`.

@@ -5,7 +5,7 @@
 // listen (EADDRINUSE) — отказ listen(), а не работа без метрик. Строк лога на запрос нет.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Logger } from 'pino';
-import type { Registry } from 'prom-client';
+import type { Registry } from '@prometheus-io/client';
 import type { HealthRegistry } from './health-registry.js';
 import { sanitizeError } from './sanitize-error.js';
 import { captureError } from './sentry.js';

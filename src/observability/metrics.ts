@@ -1,8 +1,8 @@
 // kitMetrics и alertRulesTemplate (prd.md §3.2, AC-2.8, AC-2.11). Эталон — O metrics-server.ts (реестр на экземпляр) и
-// O orch-metrics.ts (метрики на реестре экземпляра). По PRD: prom-client вместо @prometheus-io/client, метка service по
+// O orch-metrics.ts (метрики на реестре экземпляра). По PRD v1.12: @prometheus-io/client, как у O; метка service по
 // умолчанию, метрики процесса Node, имена verdeect_*. Глобального реестра нет: два приложения в процессе не смешиваются.
 import { fileURLToPath } from 'node:url';
-import { collectDefaultMetrics, Counter, Gauge, Registry } from 'prom-client';
+import { collectDefaultMetrics, Counter, Gauge, Registry } from '@prometheus-io/client';
 import { assertServiceName } from '../internal/service-name.js';
 
 /** Реестр и метрики пакета одного экземпляра приложения (§3.2). Метрики домена — `<service>_*`, вне пакета. */

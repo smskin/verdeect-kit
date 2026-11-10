@@ -20,7 +20,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 
 - `@nestjs/common`, `@nestjs/core`, `@nestjs/config`, `@nestjs/platform-fastify`;
 - `fastify`, `reflect-metadata`, `rxjs`, `zod`, `drizzle-orm`;
-- `nestjs-pino`, `pino`, `prom-client`, `@sentry/nestjs`, `@verdeect/auth`.
+- `nestjs-pino`, `pino`, `@prometheus-io/client`, `@sentry/nestjs`, `@verdeect/auth`.
 
 Опциональные peer нужны только подпути, который их использует. Без них подпуть не импортируется и называет библиотеку: «`@verdeect/kit/<подпуть>` требует `<библиотека>` — добавьте в зависимости сервиса» (AC-1.2).
 
@@ -155,6 +155,8 @@ export const redaction: KitRedaction = {
 
 - **сигнал ОС** (`lifecycle.listen()`, `SIGTERM`, `SIGINT`) — сторож срока `SHUTDOWN_TIMEOUT_MS` от сигнала (пауза входит). Срок вышел — `error`-лог `SHUTDOWN_TIMEOUT`, событие GlitchTip, `exit(1)`. Шаги в срок — `exit` не вызывается, процесс без открытых дескрипторов выходит сам с кодом 0; если не вышел к сроку (утёк таймер или сокет) — `SHUTDOWN_NOT_EXITED` и `exit(1)`;
 - **программный `close()`** (тесты сервиса, CLI) — те же шаги 1–5 без сторожа и без `exit`; ошибка участника — отказ `close()` после всех шагов (несколько — `AggregateError`). Безопасен в тестах сервиса.
+
+**Метрики.** `kitMetrics` построен на `@prometheus-io/client` (обязательный peer `^0.16.1`, PRD v1.12): свой `Registry` на экземпляр приложения, метка `service`, метрики процесса Node.
 
 **Алерты.** `alertRulesTemplate` — путь к `alerts/verdeect-kit.rules.yml` в установленном пакете: правила vmalert для метрик пакета с порогом по умолчанию. Свой порог — recording-правило `verdeect_kit_threshold:<метрика>` с меткой `service` в файле правил сервиса:
 

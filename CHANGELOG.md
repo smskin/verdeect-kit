@@ -35,3 +35,7 @@
 - `/observability`: `failStartup` и интерфейс `StartupFailure` — `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`.
 - `/observability`: `KitLifecycle` и типы `KitShutdownParticipant`, `KitShutdownStep` — остановка по шагам 1–5; по сигналу — сторож `SHUTDOWN_TIMEOUT_MS` (`SHUTDOWN_TIMEOUT`, `SHUTDOWN_NOT_EXITED`, `exit(1)`), программный `close()` — без сторожа и `exit`.
 - Шаблон алертов `alerts/verdeect-kit.rules.yml` (в архиве пакета): правило на каждую метрику пакета, порог по умолчанию и переопределение `verdeect_kit_threshold:<метрика>` по `service`.
+
+### Changed
+
+- Обязательный peer `prom-client` заменён на `@prometheus-io/client` `^0.16.1` (`prom-client` помечен deprecated, преемник — тот же API; PRD v1.12, NFR-3): `kitMetrics` и `MetricsServer` работают на `Registry`, `Counter`, `Gauge` из `@prometheus-io/client`. Сервис ставит `@prometheus-io/client` вместо `prom-client`.
