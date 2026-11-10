@@ -6,19 +6,30 @@
 
 | Уровень | Где                          | Что                                                                | Запуск                  | Docker |
 | ------- | ---------------------------- | ------------------------------------------------------------------ | ----------------------- | ------ |
-| U       | `test/unit/<подпуть>`        | без сети и Docker; типы — `*.test-d.ts`                            | `pnpm test`             | нет    |
-| I       | `test/integration/<подпуть>` | Testcontainers на `TEST_IMAGES` через собственный `startTestStack` | `pnpm test:integration` | да     |
-| T       | `test/timing/<подпуть>`      | замеры времени, `globalSetup` — `timingGuard`                      | `pnpm test:timing`      | нет    |
-| R       | `test/package`               | архив, publint, attw, `publish.mjs`, правила lint, документы       | `pnpm pack:check`       | нет    |
-| C       | `test/consumer`              | проекты-потребители на упакованном архиве                          | `pnpm pack:check`       | да     |
+| U       | `test/unit/<подпуть>`        | без сети и Docker; типы — `*.test-d.ts`                            | `make test`             | нет    |
+| I       | `test/integration/<подпуть>` | Testcontainers на `TEST_IMAGES` через собственный `startTestStack` | `make test-integration` | да     |
+| T       | `test/timing/<подпуть>`      | замеры времени, `globalSetup` — `timingGuard`                      | `make test-timing`      | нет    |
+| R       | `test/package`               | архив, publint, attw, `publish.mjs`, правила lint, документы       | `make pack-check`       | нет    |
+| C       | `test/consumer`              | проекты-потребители на упакованном архиве                          | `make pack-check`       | да     |
 
-`pnpm pack:check` = `pnpm build` + `pnpm test:package`. Уровень C ставит зависимости потребителей из реестра npm — нужна сеть.
+`make pack-check` (`pnpm pack:check`) = `pnpm build` + `pnpm test:package`. Уровень C ставит зависимости потребителей из реестра npm — нужна сеть.
+
+## Когда запускать
+
+| Цель                                  | Когда                                  | Время (примерно) |
+| ------------------------------------- | -------------------------------------- | ---------------- |
+| `make test`, `make test-module M='…'` | во время работы                        | секунды          |
+| `make test-integration`               | перед коммитом, в `ci`                 | ~15 с            |
+| `make test-timing`                    | перед слиянием, на тихой машине        | секунды          |
+| `make pack-check`                     | перед коммитом, в `ci`                 | ~1 мин           |
+| `make test-full`                      | перед `/aif-commit` слияния и выпуском | ~1,5 мин         |
+| `make test-load`                      | нагрузочного набора нет                | —                |
 
 ## Тайм-ауты
 
 Тайм-ауты конфигов Vitest умножаются на `TEST_TIMEOUT_SCALE` (по умолчанию 1). На загруженной машине (load average выше числа ядер) задайте `TEST_TIMEOUT_SCALE=2..3` — только локально, в CI — 1. Тайм-ауты внутри spec-файлов не поднимаются. Тест, который упал только по тайм-ауту, сначала перезапускается отдельно.
 
-`pnpm test:timing` — только на тихой машине: `timingGuard` печатает нагрузку и отказывает при запущенном e2e-контуре `verdeect-*-e2e`.
+`make test-timing` — только на тихой машине: `timingGuard` печатает нагрузку и отказывает при запущенном e2e-контуре `verdeect-*-e2e`.
 
 ## Проекты интеграционного конфига
 

@@ -2,7 +2,7 @@
 
 [← README](../README.md)
 
-Документ для мейнтейнеров. Пакет публикует только CI по защищённому тегу через npm Trusted Publishing; ручная публикация с машины разработчика — не способ выпуска. Единственное исключение — первый выпуск `1.0.0-rc.1` (G13, NFR-6). Workflow CI и Makefile появляются после E1 (этап 5.1a); до этого проверки идут скриптами pnpm.
+Документ для мейнтейнеров. Пакет публикует только CI по защищённому тегу через npm Trusted Publishing; ручная публикация с машины разработчика — не способ выпуска. Единственное исключение — первый выпуск `1.0.0-rc.1` (G13, NFR-6). Конвейер — `.github/workflows/ci.yml`, команды — цели `Makefile`.
 
 ## Порядок выпусков (G14)
 
@@ -16,16 +16,11 @@
 1. **Проверки локально** (для I, T и `pack:check` нужен Docker):
 
    ```bash
-   pnpm install --frozen-lockfile
-   pnpm lint
-   pnpm typecheck
-   pnpm test
-   pnpm test:integration
-   pnpm test:timing   # только на тихой машине
-   pnpm pack:check
+   make install
+   make test-full   # lint, analyse, test, test-integration, test-timing (на тихой машине), pack-check
    ```
 
-   После 5.1a — `make test-full` и зелёный CI на `main`.
+   И зелёный CI на `main`.
 
 2. **`version`** в `package.json` — номер выпуска: `1.0.0-rc.N` до перехода Identity, затем `1.0.0` и далее по semver ниже (G14).
 3. **Раздел версии в `CHANGELOG.md`**: перенести пункты из `## [Unreleased]` в `## [X.Y.Z] - ГГГГ-ММ-ДД` (или `## [1.0.0-rc.N] - ГГГГ-ММ-ДД`) с датой тега. После `1.0.0` у мажора — подраздел `### Как перейти`. Новый экспорт — строка в `### Added` и в разделе «API» README.
@@ -38,7 +33,7 @@
    git push origin vX.Y.Z
    ```
 
-5. **CI** (после 5.1a): lint → test (Node 22, 24) → timing → build + `pack:check` → publish. Job `publish` запускается только на тег `v<major>.<minor>.<patch>` или `v<major>.<minor>.<patch>-rc.<N>` после зелёных проверок.
+5. **CI** (`.github/workflows/ci.yml`): lint и test (Node 22 и 24: U + I) → timing и package (`make build pack-check`) → publish. Job `publish` запускается только на теге `v*` после зелёных проверок; `scripts/publish.mjs` принимает только `v<major>.<minor>.<patch>` и `v<major>.<minor>.<patch>-rc.<N>`, остальные теги — отказ без публикации.
 6. **Проверить публикацию:** `npm view @verdeect/kit@X.Y.Z version` и `npm view @verdeect/kit dist-tags` (`next` — последний `rc`, `latest` — с `1.0.0`).
 
 ## Что проверяет publish до публикации
@@ -121,6 +116,6 @@ Trusted Publisher настраивается только для пакета, �
 
 ## Где смотреть логи публикации
 
-После 5.1a: Actions → запуск для тега → job `publish`. Строки с префиксом `[publish]`: тег, метка npm, `version`, результат `npm view`, решение, способ авторизации и команда `npm publish`. Причина падения — последняя строка `[publish]` в stderr.
+Actions → запуск для тега → job `publish`. Строки с префиксом `[publish]`: тег, метка npm, `version`, результат `npm view`, решение, способ авторизации и команда `npm publish`. Причина падения — последняя строка `[publish]` в stderr.
 
 См. также [CHANGELOG.md](../CHANGELOG.md).

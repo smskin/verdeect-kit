@@ -35,28 +35,35 @@ verdeect-kit/
 │   ├── consumer/                 # шаблоны проектов-потребителей: minimal, no-testcontainers
 │   ├── fixtures/                 # repo-conventions/valid (AC-1.8), lint (AC-9.4) — тестовые данные
 │   └── support/                  # общие помощники уровня I
+├── .github/workflows/ci.yml      # CI: lint, test (Node 22, 24: U + I), timing, package, publish по тегу v*
+├── Makefile                      # единая точка входа: make help
 ├── scripts/publish.mjs           # публикация из CI: тег = version, версии нет в npm (AC-1.10)
 ├── docs/                         # releasing.md, testing.md
-├── requirements/0000-kit/        # prd.md (v1.8 — источник истины), README.md (этапы), files/inventory.md (эталоны)
+├── requirements/0000-kit/        # prd.md (v1.11 — источник истины), README.md (этапы), files/inventory.md (эталоны)
 ├── .ai-factory/                  # контекст AI Factory (DESCRIPTION, ARCHITECTURE, rules, skill-context, plans)
 ├── package.json, pnpm-workspace.yaml, tsconfig.json, tsconfig.build.json, eslint.config.js, .prettierrc.json
 ├── vitest.config.ts, vitest.integration.config.ts, vitest.timing.config.ts, vitest.package.config.ts
 └── README.md, CHANGELOG.md
 ```
 
-Позже (prd.md §8): `src/<подпуть>/` следующих этапов, `src/cli/` (поле `bin` — с первой CLI-командой в E3), `alerts/verdeect-kit.rules.yml` (E2), Makefile и `.github/workflows/ci.yml` (после E1).
+Позже (prd.md §8): `src/<подпуть>/` следующих этапов, `src/cli/` (поле `bin` — с первой CLI-командой в E3) и `alerts/verdeect-kit.rules.yml` (E2).
 
 ## Команды
 
 | Команда | Что |
 |---|---|
-| `pnpm install` | зависимости (`--frozen-lockfile` в проверках) |
-| `pnpm lint` | ESLint: стиль, TSDoc, границы подпутей, AC-9.4 |
-| `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm test` | U (+ тесты типов) |
-| `pnpm test:integration` | I — нужен Docker |
-| `pnpm test:timing` | T — только на тихой машине |
-| `pnpm pack:check` | сборка + R и C (Docker, сеть до реестра npm) |
+| `make install` | зависимости по `pnpm-lock.yaml` |
+| `make lint` | ESLint (стиль, TSDoc, границы подпутей), Prettier, правила lint AC-9.4 |
+| `make analyse` | `tsc --noEmit`, политика зависимостей манифеста |
+| `make test` | U (+ тесты типов); `FILTER='AC-1.8'` |
+| `make test-module M='…'` | U + I подпутей |
+| `make test-integration` | I — нужен Docker |
+| `make test-timing` | T — только на тихой машине |
+| `make pack-check` | сборка + R и C (Docker, сеть до реестра npm) |
+| `make ci` | конвейер CI |
+| `make test-full` | перед слиянием и выпуском |
+
+Во время работы — `make test` и `make test-module` для затронутых подпутей; перед `/aif-commit` и слиянием — `make test-full`.
 
 ## Ключевые точки входа
 
