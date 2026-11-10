@@ -45,7 +45,7 @@ Depends on: Phase 4 (Tasks 13, 15, 16), Phase 6 (Tasks 26, 32)
       - `idempotency_key` — форма `createIdempotencyTable`;
       - `outbox` — политика есть и FORCE включён; содержимое политики outbox проверяется в E5 (фабрика `createOutboxTable` появится там), шаг 4 к ней не применяется (исключение строгой модели — §2, ARCHITECTURE п. 5).
       Нормализованные строки обеих форм — константы файла; их значения взять из `pg_policies` БД фикстуры пакета (PostgreSQL 17 приводит выражения к виду вроде `(tenant = current_setting('app.tenant'::text, true))`) и записать дословно — тест задачи 36 падает, если форма не узнана. Иная политика → «<таблица>.<политика>: нестрогая политика».
-   4. Под ролью приложения с пустым тенантом — 0 строк: в транзакции `BEGIN; SELECT set_config('app.tenant', '', true); SELECT count(*)::int FROM "<схема>"."<таблица>"; ROLLBACK` (каждая таблица кроме `outbox` и `except`); `count > 0` → «<таблица>: под ролью приложения с пустым тенантом видно N строк»; ошибка прав (`42501`) → «<таблица>: у роли приложения нет SELECT». Если в таблице нет строк, проверка всё равно проходит — README: тест сервиса вызывает помощник после вставки данных фабриками (как O `ac-10-2-rls`).
+   4. Под ролью приложения с пустым тенантом — 0 строк: в транзакции `BEGIN; SELECT set_config('app.tenant', '', true); SELECT count(*)::int FROM "<схема>"."<таблица>"; ROLLBACK` (каждая таблица кроме `outbox` и `except`; у `idempotency_key` считаются только строки `WHERE tenant IS NOT NULL` — её политика намеренно показывает пустому тенанту записи без компании, AC-4.8 «таблица идемпотентности проходит»); `count > 0` → «<таблица>: под ролью приложения с пустым тенантом видно N строк»; ошибка прав (`42501`) → «<таблица>: у роли приложения нет SELECT». Если в таблице нет строк, проверка всё равно проходит — README: тест сервиса вызывает помощник после вставки данных фабриками (как O `ac-10-2-rls`).
    5. Таблица `idempotency_key` есть в схеме → функция:
       ```sql
       SELECT p.prosecdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig,
@@ -72,6 +72,7 @@ Depends on: Phase 4 (Tasks 13, 15, 16), Phase 6 (Tasks 26, 32)
    - `AC-4.8: нестрогая политика (IS NULL OR …) → падает` (`DROP POLICY` + `CREATE POLICY … USING (nullif(current_setting('app.tenant', true), '') IS NULL OR tenant = current_setting('app.tenant', true))`);
    - `AC-4.8: под пустым тенантом видны строки (политика USING (true)) → падает` — форма политики и счёт строк оба дают нарушение;
    - `AC-4.8: таблица outbox с политикой и FORCE проходит (исключение строгой модели)`;
+   - `AC-4.8: idempotency_key с записью без компании и записью acme проходит` (строки вставляет администратор);
    - `AC-4.8: функции idempotency_purge нет → падает с idempotencyPurgeSql в тексте`;
    - `AC-4.8: функция без SECURITY DEFINER (ALTER FUNCTION … SECURITY INVOKER) → падает`;
    - `AC-4.8: владелец не kit_directory (ALTER FUNCTION … OWNER TO kit_owner) → падает`;

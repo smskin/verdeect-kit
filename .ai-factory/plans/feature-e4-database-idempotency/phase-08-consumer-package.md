@@ -50,7 +50,7 @@ AC-9.1 этапа E4: потребитель на упакованном арх�
 (`Skill: none — проект-потребитель вне src/ (TypeScript сервиса), соглашения nestjs-code; тесты — nestjs-code test conventions`)
 1. `package.json` потребителя: `dependencies` — `pg` 8.23.1; `devDependencies` — `drizzle-kit` 0.31.11, `@types/pg` 8.23.1 (`@nestjs/testing` не добавляется: тесты потребителя запускают процесс и ходят в БД через `pg`); скрипт `db:generate` — `drizzle-kit generate`. `--strict-peer-dependencies` установки (`consumer-project.ts`) должен пройти.
 2. `src/service/schema.ts`: `consumer = pgSchema('consumer')`; таблица `company`: `id text primary key` (значение `newId('cmp')`), `tenant` — `tenantColumn()`, `name text not null`; `tenantPolicy`; `idempotency = createIdempotencyTable(consumer)`. Импорты — из `@verdeect/kit/database` и `@verdeect/kit/idempotency`.
-3. `drizzle.config.ts`: `schema: './src/service/schema.ts'`, `out: './drizzle'`, `schemaFilter: ['consumer']`, `entities.roles: false`. Генерация выполняется разработчиком **один раз** в шаблоне (после `pnpm install` в копии проекта с архивом) и коммитится: `drizzle/0000_*.sql` + `meta/`. Затем `drizzle-kit generate --custom --name force_grants_purge` → `0001_force_grants_purge.sql`:
+3. `drizzle.config.ts`: `schema: './src/service/schema.ts'`, `out: './drizzle'`, `schemaFilter: ['consumer']`, `entities.roles: false`. Генерация выполняется разработчиком **один раз** в шаблоне (после `pnpm install` в копии проекта с архивом) и коммитится: `drizzle/0000_*.sql` + `meta/`. Первую строку `CREATE SCHEMA "consumer";` заменить на `CREATE SCHEMA IF NOT EXISTS "consumer";` (схему создаёт `prepareDatabase` в `startTestStack`; как в задаче 8). README (задача 39) описывает эту правку как обязательный шаг сервиса после первой генерации. Затем `drizzle-kit generate --custom --name force_grants_purge` → `0001_force_grants_purge.sql`:
    ```sql
    ALTER TABLE "consumer"."company" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
    ALTER TABLE "consumer"."idempotency_key" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -92,13 +92,14 @@ AC-9.1 этапа E4: потребитель на упакованном арх�
    - список каталогов «dist рабочих подпутей не импортирует testing и shell-quote» — + `database`, `idempotency`;
    - новый случай `AC-1.2: dist/database и dist/idempotency не импортируют pg и drizzle-orm/node-postgres статически` — граф `importGraph` по `dist/database/index.js` и `dist/idempotency/index.js`: среди спецификаторов статических `import … from` нет `pg` и `drizzle-orm/node-postgres` (динамические `import(` допустимы — различать по регулярке `from`);
    - `dist/http` — по-прежнему без `pg`, `testing` и `database`; без `idempotency`.
-3. `test/package/support/consumer-project.ts` — без изменений (шаблоны те же).
+3. `test/package/ac-9-1-consumer.spec.ts` — новый случай `AC-9.1: drizzle-kit загружает схему потребителя с @verdeect/kit/database и /idempotency — «No schema changes»` (`pnpm exec drizzle-kit generate` в проекте; падение `ERR_REQUIRE_ASYNC_MODULE` или новая миграция — провал); `test/package/ac-1-1-package.spec.ts` — случай `AC-1.2: в статическом графе dist/database/index.js и dist/idempotency/index.js нет top-level await` (по тексту файлов графа: нет `await` вне функций — регулярка строк, начинающихся с `await ` или `const … = await `).
+4. `test/package/support/consumer-project.ts` — без изменений (шаблоны те же).
 
 ### Проверка
-- `make pack-check` (Docker и сеть до реестра npm).
+- `pnpm build`, затем `pnpm exec vitest run -c vitest.package.config.ts test/package/ac-1-1-package.spec.ts test/package/ac-9-1-consumer.spec.ts` (Docker и сеть до реестра npm); полный `make pack-check` — задача 39.
 
 ## Риски
-- Риск: `drizzle-kit` в потребителе ставится из реестра — время `pack-check` растёт. Mitigation: только `devDependencies` шаблона, генерация не выполняется в тесте (миграции закоммичены).
+- Риск: `drizzle-kit` в потребителе ставится из реестра — время `pack-check` растёт. Mitigation: только `devDependencies` шаблона; миграции закоммичены, в тесте выполняется только проверочный `drizzle-kit generate` (ожидается «No schema changes»).
 
 ## Чек-лист фазы
-- Задачи 37–38 выполнены; `make pack-check` зелёный.
+- Задачи 37–38 выполнены; тесты задачи 38 (AC-1.1, AC-1.2, AC-9.1 — `ac-1-1-package.spec.ts`, `ac-9-1-consumer.spec.ts`) зелёные: `pnpm build` и `pnpm exec vitest run -c vitest.package.config.ts test/package/ac-1-1-package.spec.ts test/package/ac-9-1-consumer.spec.ts`. `ac-9-3-docs.spec.ts` зеленеет в задаче 39 (README и CHANGELOG новых экспортов), полный `make pack-check` — в фазе 9.

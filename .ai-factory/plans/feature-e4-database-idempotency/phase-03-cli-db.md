@@ -45,11 +45,11 @@ Depends on: Phase 2 (Tasks 6, 7)
    - stdout — `{database, roles, created}`.
 7. `migrate`: опции `--folder`, `--schema` (обе обязательны → иначе `USAGE`); окружение `migrateEnvSchema`; `runMigrations({url: DATABASE_MIGRATOR_URL, folder: resolve(cwd, folder), schema}, logger)`; stdout — `{schema, applied}`.
 8. `move-journal`: опции `--from`, `--to` (обязательны); окружение `migrateEnvSchema`; `moveJournal({url: DATABASE_MIGRATOR_URL, from, to}, logger)`; stdout — `{from, to, moved}`.
-9. Перевод ошибок (функция `failureOf(error)`):
-   - `CommandError` — его `code`, `message`, `extra`;
-   - `TypeError`/`Error` проверок формата из `prepareDatabase`/`runMigrations` (схема, папка) → `USAGE` с их текстом (тексты не содержат адресов);
-   - `isConnectionError(error)` (из `internal/pg-errors.js`, динамически) → `DATABASE_UNAVAILABLE` «БД недоступна»;
-   - иначе → `DB_COMMAND_FAILED` «команда db завершилась ошибкой» и `sqlState` — поле `code` ошибки `pg`, если это строка из 5 знаков; текст ошибки `pg` (может содержать имя роли и хост) **не выводится**.
+9. Перевод ошибок (функция `failureOf(error)`, порядок проверок важен — ошибки `pg` тоже обычные `Error`):
+   1. `CommandError` — его `code`, `message`, `extra`;
+   2. `isConnectionError(error)` (из `internal/pg-errors.js`, динамически) → `DATABASE_UNAVAILABLE` «БД недоступна»;
+   3. ошибка проверки формата пакета — **только** `TypeError` (имя сервиса — `assertServiceName`, схема — `runMigrations`/`moveJournal`) и `KitUsageError` → `USAGE` с их текстом (тексты не содержат адресов). `KitUsageError` — внутренний класс в `src/database/migrations.ts` (`name = 'KitUsageError'`), его бросает проверка папки «нет журнала drizzle-kit в <folder>» (задача 7 — вместо `Error`); распознаётся по `name`, без импорта значения;
+   4. иначе → `DB_COMMAND_FAILED` «команда db завершилась ошибкой» и `sqlState` — поле `code` ошибки `pg`, если это строка из 5 знаков; текст ошибки `pg` (может содержать имя роли и хост) **не выводится**.
    - stderr — JSON-строка `{level: 'error', …failure}` (как `openapi`), stdout — `{error: failure}`, код 1.
 10. `src/cli/main.ts`: в `COMMANDS` — `db: async () => (await import('./commands/db.js')).dbCommand` (запись, без изменения разбора).
 
@@ -80,9 +80,9 @@ Depends on: Phase 2 (Tasks 6, 7)
    - `AC-4.17: db prepare --service Kit_1 → {error: {code: 'USAGE'}}, код 1, значение флага не в выводе`;
    - `AC-4.17: db prepare без DB_APP_PASSWORD → INVALID_ENVIRONMENT, keys содержит DB_APP_PASSWORD, значений нет`;
    - `AC-4.17: db prepare с недоступной БД (порт 1) → DATABASE_UNAVAILABLE, код 1; адрес, пароль и хост не в stdout и stderr`;
-   - `AC-4.17: db migrate --folder <копия фикстуры> --schema kitcli на подготовленной БД — {schema: 'kitcli', applied > 0}; повтор — applied: 0`. Папка — копия `test/fixtures/database/migrations` во временный каталог, в SQL и `meta/*.json` строки `"kit"` и `"kit_app"` заменены на `"kitcli"` и `"kitcli_app"` (роли `kit_*` кластера этот файл не трогает); `DATABASE_MIGRATOR_URL` — роль `kitcli_owner` с паролем, который тест передал в `db prepare`;
+   - `AC-4.17: db migrate --folder <копия фикстуры> --schema kitcli на подготовленной БД — {schema: 'kitcli', applied > 0}; повтор — applied: 0`. Папка — копия `test/fixtures/database/migrations` во временный каталог, в SQL и `meta/*.json` строки `"kit_owner"`, `"kit_app"`, `"kit_directory"` заменены на `"kitcli_owner"`, `"kitcli_app"`, `"kitcli_directory"`, затем `"kit"` — на `"kitcli"` (копия включает `0003_idempotency_purge.sql` задачи 32 с `ALTER FUNCTION … OWNER TO "kit_directory"`; роли `kit_*` кластера этот файл не трогает); `DATABASE_MIGRATOR_URL` — роль `kitcli_owner` с паролем, который тест передал в `db prepare`;
    - `AC-4.17: db migrate без --schema → USAGE`; `--folder` без журнала → `USAGE` с путём папки;
-   - `AC-4.17: db move-journal --from drizzle --to kitcli — {moved: N}; повтор — moved: 0`;
+   - `AC-4.17: db move-journal --from drizzle --to kitcli — {moved: 2}; повтор — moved: 0` — журнал источника создаётся под ролью `kitcli_owner` (`CREATE SCHEMA drizzle`, `CREATE TABLE drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)` и две строки с хешами, которых нет в `kitcli.__migrations`): владелец удаляет таблицу и схему без 42501;
    - `AC-4.17: неверный пароль владельца → DB_COMMAND_FAILED с sqlState 28P01, без текста ошибки pg`.
 2. Временный каталог миграций удаляется в `afterAll`.
 

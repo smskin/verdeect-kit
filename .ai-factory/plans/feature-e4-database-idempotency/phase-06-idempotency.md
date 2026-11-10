@@ -35,7 +35,7 @@ Depends on: Phase 1 (Task 3), Phase 5 (Tasks 17–24)
 | `src/idempotency/idempotent.decorator.ts` | create | `Idempotent` |
 | `src/idempotency/idempotency.interceptor.ts` | create | `IdempotencyInterceptor`, хранилище, отпечаток |
 | `src/idempotency/kit-idempotency.module.ts` | create | `KitIdempotencyModule`, очистка, проверка функции |
-| `src/idempotency/peer.ts` | create | `loadPeer('pg', 'idempotency')` |
+| `src/idempotency/peer.ts` | create | `requirePeer('pg', 'idempotency')` (синхронно) |
 | `src/idempotency/index.ts` | create | публичная поверхность §3.3а |
 | `package.json` | modify | `exports["./idempotency"]` |
 | `src/http/api/openapi-document.ts` | modify | `Idempotency-Key`, `Idempotent-Replayed`, коды `IDEMPOTENCY_*` |
@@ -74,9 +74,9 @@ NFR-8, AC-9.5: фоновая операция (очистка идемпоте�
          не успевает за потоком записей.
    ```
    Комментарий в шапке файла — добавить `:cleanup_runs` в список имён порогов.
-4. `test/fixtures/alerts/verdeect-kit.test.yml` (`Skill: none — фикстура vmalert-tool`): случаи `VerdeectCleanupFailing` — `result="error"` прирост 1 → алерт с `result: error`; `result="partial"` → алерт с `result: partial`; только `ok` → `exp_alerts: []`; переопределение порога `verdeect_kit_threshold:cleanup_runs` = 5 для сервиса — прирост 1 без алерта (как у существующих правил).
+4. `test/fixtures/alerts/verdeect-kit.test.yml` (`Skill: none — фикстура vmalert-tool`): случаи `VerdeectCleanupFailing` — `result="error"` прирост 1 → алерт с `result: error`; `result="partial"` → алерт с `result: partial`; только `ok` → `exp_alerts: []`; переопределение порога `verdeect_kit_threshold:cleanup_runs` = 5 для сервиса — прирост 1 без алерта (как у существующих правил). Существующую серию `verdeect_db_pool_wait_timeouts_total{service="c",pool="write"}` (стр. 23) заменить на `pool="main"` — метки пула только `main` и `read` (KT-19 п. 3).
 5. `test/package/ac-2-11-alert-rules.spec.ts` (`Skill: nestjs-code test unit package alert-rules (MODIFY)`): `toHaveLength(5)` → 6 (метрики `verdeect_*` реестра); список порогов `THRESHOLDS` — + `verdeect_kit_threshold:cleanup_runs`.
-6. `test/unit/observability/ac-2-8-metrics.spec.ts` (MODIFY): случай `AC-9.5: kitMetrics — verdeect_cleanup_runs_total{table,result} с меткой service`.
+6. `test/unit/observability/ac-2-8-metrics.spec.ts` (`Skill: nestjs-code test unit observability metrics (MODIFY)`): случай `AC-9.5: kitMetrics — verdeect_cleanup_runs_total{table,result} с меткой service`.
 
 ### Ошибки и логи
 Нет.
@@ -167,7 +167,7 @@ UC-7, AC-4.14, §3.3а.
    2. ключ: нет заголовка → `required` ? `DomainError('IDEMPOTENCY_KEY_REQUIRED')` : `next.handle()`; не строка или не по `KEY_FORMAT` → `DomainError('VALIDATION_FAILED', {issues: [{path: 'Idempotency-Key', code: 'invalid'}]})` (O);
    3. принципал — `principalOf(request)` из `@verdeect/auth/nest`; `null` → `Error` «@Idempotent: нет проверенного принципала — нужен VerdeectAuthGuard на маршруте» (фильтр: 500 `INTERNAL_ERROR`, `error`-лог, GlitchTip ровно раз; обработчик не вызывается — PRD v1.14);
    4. `scope`, `fingerprint`; `DbContext` — `{tenant: scope.tenant, traceId: String(request.id), actor: {clientId?, channel: 'http'}}`;
-   5. `begin` — одна `db.transaction(ctx)`: `INSERT … ON CONFLICT ON CONSTRAINT idempotency_key_scope_key DO NOTHING RETURNING key`; вставлено → `new`; иначе `SELECT … FOR UPDATE` строки области с вычисленными `expired` (`created_at < now() - interval '24 hours'`) и `abandoned` (`state = 'in_progress' AND created_at < now() - make_interval(mins => 5)`); строки нет, `expired` или `abandoned` → `UPDATE` (`fingerprint`, `state = 'in_progress'`, ответ `NULL`, `created_at = now()`) → `new` (`abandoned` — `warn`); иначе `fingerprint` другой → `mismatch`; `in_progress` → `in_progress`; иначе `replay` (`status`, `body`, `location`). Порядок проверок — как O (`mismatch` до `in_progress`). Гонка двух первых запросов: второй `INSERT` ничего не вставит, `SELECT … FOR UPDATE` дождётся `COMMIT` первого и увидит `in_progress` → 409 (уникальное ограничение — последняя защита).
+   5. Сравнение области во всех запросах `SELECT`/`UPDATE`/`DELETE` — `tenant IS NOT DISTINCT FROM $tenant AND subject = $subject AND key = $key` (у O — `eq(tenant, ctx.tenant ?? '')`, при nullable `tenant` равенство с `NULL` всегда ложно: сервисный вызов без `tenantFromBody` выполнял бы обработчик при каждом повторе). `begin` — одна `db.transaction(ctx)`: `INSERT … ON CONFLICT ON CONSTRAINT idempotency_key_scope_key DO NOTHING RETURNING key`; вставлено → `new`; иначе `SELECT … FOR UPDATE` строки области с вычисленными `expired` (`created_at < now() - interval '24 hours'`) и `abandoned` (`state = 'in_progress' AND created_at < now() - make_interval(mins => 5)`); строки нет после конфликта `INSERT` → `Error` «idempotency: строка области не найдена после конфликта» (ошибка разработчика, 500; нормально не возникает — `FOR UPDATE` видит строку под той же политикой); `expired` или `abandoned` → `UPDATE` (`fingerprint`, `state = 'in_progress'`, ответ `NULL`, `created_at = now()`) → `new` (`abandoned` — `warn`); иначе `fingerprint` другой → `mismatch`; `in_progress` → `in_progress`; иначе `replay` (`status`, `body`, `location`). Порядок проверок — как O (`mismatch` до `in_progress`). Гонка двух первых запросов: второй `INSERT` ничего не вставит, `SELECT … FOR UPDATE` дождётся `COMMIT` первого и увидит `in_progress` → 409 (уникальное ограничение — последняя защита).
    6. `mismatch` → `DomainError('IDEMPOTENCY_KEY_REUSED')`; `in_progress` → `DomainError('IDEMPOTENCY_IN_PROGRESS')`; оба — `warn` `{subjectKind, keyPrefix: первые 8 знаков ключа, traceId}` (ключ целиком и `sub` не логируются);
    7. `replay` → статус, `Idempotent-Replayed: true`, `Location` (если сохранён), тело как сохранено;
    8. `new` → выполнить `next.handle()` (`lastValueFrom`, умолчание `undefined`); ошибка обработчика → `release` (`DELETE … WHERE <область> AND state = 'in_progress'` в своей транзакции; сбой `release` — `error`-лог + `captureError`), затем исходная ошибка дальше (ошибки не сохраняются, повтор выполняется заново — O);
@@ -188,11 +188,12 @@ UC-7, AC-4.14, §3.3а.
 1. Создать `src/idempotency/kit-idempotency.module.ts` (`Skill: nestjs-code generic src/idempotency/kit-idempotency.module.ts (CREATE)`). Шапка: «KitIdempotencyModule.forRoot({table}) (prd.md §3.3а v1.14, AC-4.14, AC-9.5, UC-9). Эталон — O idempotency.module.ts + idempotency-cleanup.job.ts; по PRD: очистка через runExclusive функцией idempotency_purge пачками; нет функции — отказ запуска; расписание — таймер (без @nestjs/schedule)».
 2. `forRoot({table})` → `DynamicModule`, `global: true`: провайдер `KIT_IDEMPOTENCY_TABLE` (таблица), `{provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor}`, класс очистки `IdempotencyCleanup`. Модуль требует `KitDatabaseModule` (`Db` глобален); нет `Db` — Nest сам отказывает при сборке.
 3. Схема таблицы — `getTableConfig(table).schema`; нет схемы → `TypeError` при `forRoot` «KitIdempotencyModule: таблица без схемы — createIdempotencyTable(pgSchema(…))».
-4. `IdempotencyCleanup` (внедряет `Db`, таблицу и `KIT_METRICS` с `optional: true`; `KitLifecycle` не нужен — остановка через хуки Nest):
+4. `IdempotencyCleanup` (внедряет `Db`, таблицу, `KIT_METRICS` и `KIT_LOGGER` — оба с `optional: true`; `KitLifecycle` не нужен — остановка через хуки Nest). Логи прохода — через `KIT_LOGGER` экземпляра приложения (логгер pino с `base` `service`, `replica`); нет `KIT_LOGGER` — `new Logger('IdempotencyCleanup')` Nest. Логгер Nest вне запроса nestjs-pino 5.3 отправляет в корневой логгер процесса (первого приложения), поэтому в тестах проекта `shared` его не перехватить:
    - `onModuleInit` (до прослушивания порта): `db.readGlobal` — `select to_regprocedure($1) is not null as ok` с `"<схема>".idempotency_purge(integer)`; `false` → `Error` «KitIdempotencyModule: нет функции <схема>.idempotency_purge — добавьте idempotencyPurgeSql(<схема>) в SQL-миграцию сервиса» (в `bootstrapService` — `failStartup`, в тестах — отказ `createTestApp`);
-   - `onApplicationBootstrap`: первый проход — `setTimeout(…, 0).unref()`, затем `setInterval(…, CLEANUP_INTERVAL_MS).unref()`, `CLEANUP_INTERVAL_MS` = 3 600 000 (O — раз в час);
+   - `onApplicationBootstrap`: промис первого прохода создаётся **синхронно** в самом хуке — задержка 0 мс через таймер с `unref()`, затем `run()`; промис сохраняется как текущий проход; затем `setInterval(…, CLEANUP_INTERVAL_MS).unref()`, `CLEANUP_INTERVAL_MS` = 3 600 000 (O — раз в час);
    - проход — `run(limits?)`; пределы по умолчанию — константа файла `CLEANUP_LIMITS` `{batchSize: 1000, maxBatches: 100}`; параметр `limits` нужен только тестам пакета (класс не экспортируется из `index.ts`, публичный API не меняется); повтор проходов не накладывается (идущий — пропуск): `runExclusive(db, 'verdeect-kit:idempotency-cleanup:<схема>', …)` → `deleteInBatches({db, sql: batch → select "<схема>".idempotency_purge(batch) as deleted, ...limits, shouldContinue: () → !stopped})`;
    - итог (KT-19 п. 2): `{ran: false}` → метрика не меняется, `debug` «очистка идемпотентности: другая реплика»; успех — `result` = `partial`, если `complete` ложь и `batches === maxBatches` (остались записи старше срока), иначе `ok`; `cleanupRuns.inc({table: 'idempotency_key', result})`; `info` `{table, deleted, batches, result}` «очистка идемпотентности: проход» (`service`, `replica` — из `base` логгера приложения); ошибка → `result: 'error'`, `error` `{table, err: sanitizeError}` «очистка идемпотентности: ошибка», `captureError`; ошибка не пробрасывается;
+   - внутренний метод `idle()` — текущий проход, включая ещё не начатый первый (промис создан в `onApplicationBootstrap`, поэтому `idle()` сразу после `createTestApp` ждёт и первый проход); прохода нет — разрешённый промис; нужен тестам пакета;
    - `beforeApplicationShutdown` (шаг 3, решение E3): `stopped = true`, снять таймеры, дождаться идущего прохода (пачка дорабатывает, новая не начинается).
 5. Участников `KitLifecycle` модуль не регистрирует.
 
@@ -202,7 +203,7 @@ UC-7, AC-4.14, §3.3а.
 ## Task 30: `peer.ts`, публичный `/idempotency`, `exports`
 
 ### Шаги
-1. Создать `src/idempotency/peer.ts` (`Skill: nestjs-code generic src/idempotency/peer.ts (CREATE)`): top-level await `loadPeer('pg', 'idempotency')`; шапка «первым импортом index.ts: без pg — текст AC-1.2 с /idempotency, раньше загрузки /database».
+1. Создать `src/idempotency/peer.ts` (`Skill: nestjs-code generic src/idempotency/peer.ts (CREATE)`): синхронный `requirePeer('pg', 'idempotency')` (задача 4; без top-level await — схему сервиса грузит `drizzle-kit` через `require`); шапка «первым импортом index.ts: без pg — текст AC-1.2 с /idempotency, раньше загрузки /database».
 2. Создать `src/idempotency/index.ts` (`Skill: nestjs-code generic src/idempotency/index.ts (CREATE)`): первый импорт — `./peer.js`; реэкспорты `createIdempotencyTable`, `idempotencyPurgeSql`, тип `KitIdempotencyTable`, `KitIdempotencyModule`, `Idempotent`, тип `KitIdempotentOptions`. `IdempotencyInterceptor` не экспортируется (регистрирует модуль).
 3. `package.json` `exports["./idempotency"]` — `{types, default}` на `dist/idempotency/index.*`; `test/unit/package/package-manifest.spec.ts` — список `exports` с `./idempotency` и случай формы.
 
@@ -210,22 +211,23 @@ UC-7, AC-4.14, §3.3а.
 
 ### Шаги
 1. `src/http/api/openapi-document.ts` (`Skill: nestjs-code generic src/http/api/openapi-document.ts (MODIFY)`): шапка — «Idempotency-Key — по метаданным @Idempotent (internal/metadata.ts, E4)».
-2. В `buildOpenApiDocument` по `IDEMPOTENT_METADATA` обработчика (только метод, класс не читается — декоратор методный):
+2. По `IDEMPOTENT_METADATA` обработчика (только метод — декоратор методный). Ошибки — в `errorsOf` (его же использует `routeResponseSchema` → `expectMatchesApi`, `src/testing/expect-matches-api.ts`): иначе документ и проверка ответа расходятся. Параметр и заголовок ответа — в `buildOperation`/`parametersOf`:
    - параметр заголовка `{name: 'Idempotency-Key', in: 'header', required: options.required === true, schema: {type: 'string', pattern: '^[\\x21-\\x7E]{1,200}$'}}` — последним в `parameters`;
    - заголовок успешного ответа `Idempotent-Replayed` — `{schema: {type: 'string', enum: ['true']}, description: 'ответ сохранён и повторён'}`;
-   - ошибки: 409 `IDEMPOTENCY_IN_PROGRESS`, 422 `IDEMPOTENCY_KEY_REUSED` (вместе с `VALIDATION_FAILED`), при `required` — 400 `IDEMPOTENCY_KEY_REQUIRED` (вместе с `BAD_REQUEST`).
+   - ошибки в `errorsOf` (дописываются к существующим кодам статуса): 409 `IDEMPOTENCY_IN_PROGRESS` (вместе с `TENANT_REQUIRED`, если он есть), 422 `IDEMPOTENCY_KEY_REUSED` (вместе с `VALIDATION_FAILED`), при `required` — 400 `IDEMPOTENCY_KEY_REQUIRED` (вместе с `BAD_REQUEST`).
 3. Импорт — только `../../internal/metadata.js` (http не импортирует idempotency, lint).
 
 ## Task 32: Фикстура БД — таблица идемпотентности и функция
 
 ### Шаги
-1. `test/fixtures/database/schema.ts` (MODIFY): `export const idempotency = createIdempotencyTable(kit)` (импорт из `../../../src/idempotency/table.js`).
+1. `test/fixtures/database/schema.ts` (`Skill: none — фикстура теста, TypeScript схемы Drizzle; соглашения nestjs-code test`): `export const idempotency = createIdempotencyTable(kit)` (импорт из `../../../src/idempotency/table.js`).
 2. `pnpm db:fixtures` → новая миграция `0002_*.sql` (таблица, ограничение, индекс, `ENABLE RLS`, политика).
 3. `drizzle-kit generate … --custom --name idempotency_purge` → `0003_idempotency_purge.sql`: строки `ALTER TABLE "kit"."idempotency_key" FORCE ROW LEVEL SECURITY;`, `GRANT SELECT, INSERT, UPDATE, DELETE ON "kit"."idempotency_key" TO "kit_app";` и **текст `idempotencyPurgeSql(kit)` байт в байт**, после строки `--> statement-breakpoint`. Текст получить после `make build` командой:
    ```bash
    node --input-type=module -e "import { pgSchema } from 'drizzle-orm/pg-core'; import { idempotencyPurgeSql } from './dist/idempotency/table.js'; process.stdout.write(idempotencyPurgeSql(pgSchema('kit')));"
    ```
 4. U-тест задачи 33 сверяет файл с выводом функции (защита от расхождения).
+5. Новая миграция попадает и в копию фикстуры теста AC-4.17 (задача 11): там роли `kit_*` и схема заменяются на `kitcli_*`/`kitcli` — после этой задачи прогнать `make test-module M='cli'`.
 
 ## Task 33: Тесты U
 
@@ -236,8 +238,8 @@ UC-7, AC-4.14, §3.3а.
    - `AC-4.14: имя схемы вне ^[a-z][a-z0-9_]{1,31}$ → TypeError` (`it.each`: `Kit`, `k`, `kit-app`, `kit;drop`, 33 знака);
    - `AC-4.14: 0003_idempotency_purge.sql фикстуры содержит текст idempotencyPurgeSql(kit) без изменений`.
 2. `test/unit/idempotency/fingerprint.spec.ts` (`Skill: nestjs-code test unit idempotency fingerprint (CREATE)`): `AC-4.14: canonicalJson — порядок ключей не влияет, вложенные объекты сортируются, массивы по порядку`; `AC-4.14: отпечаток — метод + путь без query + SHA-256 тела`; `AC-4.14: scopeOf — user (tenant, user:sub), agent (tenant, agent:sub), service (null, service:client)`; `AC-4.14: service + tenantFromBody 'org.slug' — tenant из тела; поле пустое / нет / не строка — null без ошибки`; `AC-4.14: user с подложным tenant в теле — область из токена`.
-3. `test/unit/http/ac-3-7-openapi-idempotency.spec.ts` (`Skill: nestjs-code test unit http openapi-idempotency (CREATE)`): фикстура-контроллер с `@Idempotent()` и `@Idempotent({required: true})`: `AC-3.7: Idempotency-Key в parameters, required по опции, pattern O`; `AC-3.7: Idempotent-Replayed в заголовках успешного ответа`; `AC-3.7: 409 IDEMPOTENCY_IN_PROGRESS, 422 IDEMPOTENCY_KEY_REUSED, 400 IDEMPOTENCY_KEY_REQUIRED (только required)`; `AC-3.7: маршрут без @Idempotent — без этих заголовков`; документ валиден `@seriousme/openapi-schema-validator`.
-4. `test/unit/idempotency/ac-1-2-idempotency-peer.spec.ts`: граф — первый импорт `src/idempotency/index.ts` — `./peer.js`; `pg` не импортируется статически.
+3. `test/unit/http/ac-3-7-openapi-idempotency.spec.ts` (`Skill: nestjs-code test unit http openapi-idempotency (CREATE)`): фикстура-контроллер с `@Idempotent()` и `@Idempotent({required: true})`: `AC-3.7: Idempotency-Key в parameters, required по опции, pattern O`; `AC-3.7: Idempotent-Replayed в заголовках успешного ответа`; `AC-3.7: 409 IDEMPOTENCY_IN_PROGRESS, 422 IDEMPOTENCY_KEY_REUSED, 400 IDEMPOTENCY_KEY_REQUIRED (только required)`; `AC-3.7: маршрут без @Idempotent — без этих заголовков`; `AC-3.7: expectMatchesApi принимает 409 IDEMPOTENCY_IN_PROGRESS и 400 IDEMPOTENCY_KEY_REQUIRED на маршруте с @Idempotent({required: true})` (ответы — объекты `{statusCode, json()}` по образцу `test/unit/http/ac-3-7-openapi.spec.ts`); документ валиден `@seriousme/openapi-schema-validator`.
+4. `test/unit/idempotency/ac-1-2-idempotency-peer.spec.ts` (`Skill: nestjs-code test unit idempotency peer (CREATE)`): граф — первый импорт `src/idempotency/index.ts` — `./peer.js`; `pg` не импортируется статически.
 
 ### Проверка
 - `make test`.
@@ -245,7 +247,7 @@ UC-7, AC-4.14, §3.3а.
 ## Task 34: Тесты I AC-4.14 и AC-9.5
 
 ### Шаги
-1. Общий стенд `test/integration/idempotency/support.ts` (`Skill: nestjs-code test integration idempotency support (CREATE)`): модуль приложения — `KitConfigModule.forRoot` (окружение `envBase` + `envDatabase`), `VerdeectAuthModule.forRoot({issuers: [signer.issuer], resource: TEST_RESOURCE})` с издателем `createTestSigner()` (`@verdeect/auth/testing`: JWKS на своём локальном сервере, `signer.close()` в `afterAll`), `KitDatabaseModule.forRoot({schema})`, `KitIdempotencyModule.forRoot({table: idempotency})`, контроллер `POST /echo` (`@UseGuards(VerdeectAuthGuard)`, `@Idempotent()`, ставит `Location: /echo/<n>`, может ждать «шлагбаум», бросать `Error` или `DomainError('VALIDATION_FAILED')`), `POST /strict` (`required: true`), `POST /service` (`tenantFromBody: 'tenant'`, `RequireService`), `POST /open` (`@Idempotent()` без guard'а); токены — `signer.userToken({sub, tenant, tenant_id})`, `signer.serviceToken({client_id, sub})`; `tenant` по умолчанию — `workerScope().tenant`, вторая компания — `globex`; приложение — `createDbApp` (задача 24); `beforeEach` — `TRUNCATE kit.idempotency_key`.
+1. Общий стенд `test/integration/idempotency/support.ts` (`Skill: nestjs-code test integration idempotency support (CREATE)`): модуль приложения — `KitConfigModule.forRoot` (окружение `envBase` + `envDatabase`), `VerdeectAuthModule.forRoot({issuers: [signer.issuer], resource: TEST_RESOURCE})` с издателем `createTestSigner()` (`@verdeect/auth/testing`: JWKS на своём локальном сервере, `signer.close()` в `afterAll`), `KitDatabaseModule.forRoot({schema})`, `KitIdempotencyModule.forRoot({table: idempotency})`, контроллер `POST /echo` (`@UseGuards(VerdeectAuthGuard)`, `@Idempotent()`, ставит `Location: /echo/<n>`, может ждать «шлагбаум», бросать `Error` или `DomainError('VALIDATION_FAILED')`), `POST /strict` (`required: true`), `POST /service` (`tenantFromBody: 'tenant'`, `RequireService`), `POST /open` (`@Idempotent()` без guard'а); токены — `signer.userToken({sub, tenant, tenant_id})`, `signer.serviceToken({client_id, sub})`; `tenant` по умолчанию — `workerScope().tenant`, вторая компания — `globex`; приложение — `createDbApp({module, schema: <схема окружения стенда>, env})` (задача 24, `setPreparsedEnv`); после создания приложения стенд ждёт `app.get(IdempotencyCleanup).idle()` (первый проход после старта завершён — он не держит блокировку, не удваивает метрику и не удаляет строки теста); `beforeEach` — `TRUNCATE kit.idempotency_key`; базовые значения метрик снимаются после `idle()`.
 2. `test/integration/idempotency/ac-4-14-idempotency.spec.ts` (`Skill: nestjs-code test integration idempotency http (CREATE)`) — **проект `isolated`** (`initFakeSentry`: процесс-глобальный Sentry), `describe('UC-7: Idempotency-Key')`, эквивалентность O `http/shared/idempotency` и `ac-2-2-idempotency`:
    - `AC-4.14: повтор с тем же ключом и телом — сохранённый статус 201, тело, Location + Idempotent-Replayed: true; обработчик один раз`;
    - `AC-4.14: другое тело — 422 IDEMPOTENCY_KEY_REUSED`;
@@ -257,6 +259,7 @@ UC-7, AC-4.14, §3.3а.
    - `AC-4.14: запись старше 24 ч — запрос выполняется заново без Idempotent-Replayed`;
    - `AC-4.14: ключ одного sub не виден другому sub и другой компании` (тот же ключ: `sub` A/B, компании `acme`/`globex` — оба 201 без повтора);
    - `AC-4.14: сервисный вызов с tenantFromBody 'tenant' — ключ одного client_id в двух компаниях не пересекается; без поля tenant — область client_id`;
+   - `AC-4.14: сервисный вызов без tenantFromBody (tenant NULL) — повтор → сохранённый ответ и Idempotent-Replayed; параллельный первый → 409 IDEMPOTENCY_IN_PROGRESS`;
    - `AC-4.14: вызов пользователя с подложным tenant в теле не меняет область`;
    - `AC-4.14: обработчик бросил — повтор выполняется заново; ошибка не сохраняется`;
    - `AC-4.14: маршрут с @Idempotent без guard'а — 500 INTERNAL_ERROR, обработчик не вызван, событие GlitchTip ровно одно` (`delivered` фейкового транспорта после `Sentry.flush`);
@@ -268,11 +271,11 @@ UC-7, AC-4.14, §3.3а.
    - `AC-9.5: записей больше batchSize × maxBatches → result="partial"` — 5 просроченных строк, `run({batchSize: 2, maxBatches: 2})`;
    - `AC-9.5: ошибка БД во время прохода → result="error", error-лог, captureError` (функция `idempotency_purge` в `createScratchDatabase()` заменяется администратором на функцию с `RAISE EXCEPTION`);
    - `AC-4.11: остановка во время прохода — пачка дорабатывает, новая не начинается` (`batchSize` фиксирован, проверка по числу пачек через `countQueries`).
-4. `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` — **проект `isolated`** (`vi.stubEnv`, перехват `process.exit` — `useBootstrapStand`): БД из `createScratchDatabase()` с `DROP FUNCTION kit.idempotency_purge(integer)`:
+4. `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` (`Skill: nestjs-code test integration idempotency missing-purge-function (CREATE)`) — **проект `isolated`** (`vi.stubEnv`, перехват `process.exit` — `useBootstrapStand`): БД из `createScratchDatabase()` с `DROP FUNCTION kit.idempotency_purge(integer)`:
    - `AC-4.14: без функции idempotency_purge createTestApp отказывает, текст называет idempotencyPurgeSql`;
    - `AC-4.14: bootstrapService без функции — fatal через failStartup с текстом про idempotencyPurgeSql, exit 1, порт не открыт`.
-5. `test/integration/idempotency/ac-9-5-cleanup-observability.spec.ts`, проект `shared`: `AC-9.5: проход очистки — verdeect_cleanup_runs_total{service="kit",table="idempotency_key",result="ok"} растёт; лог «очистка идемпотентности: проход» с полями service, replica, table, deleted` — лог перехватывается потоком pino стенда (`LOG_LEVEL=info` одной конфигурацией на файл, RULES.md).
-6. `vitest.integration.config.ts` (MODIFY): `ISOLATED` — `test/integration/idempotency/ac-4-14-idempotency.spec.ts` (причина: `initFakeSentry` — процесс-глобальный Sentry) и `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` (причина: `vi.stubEnv` и `process.exit` — стенд `bootstrapService`).
+5. `test/integration/idempotency/ac-9-5-cleanup-observability.spec.ts` (`Skill: nestjs-code test integration idempotency cleanup-observability (CREATE)`), проект `shared`: `AC-9.5: проход очистки — verdeect_cleanup_runs_total{service="kit",table="idempotency_key",result="ok"} растёт; лог «очистка идемпотентности: проход» с полями service, replica, table, deleted` — лог перехватывается подменой `KIT_LOGGER` в `overrides` стенда (логгер pino с потоком в память и тем же `base`, что даёт `createLoggerOptions`) — так проект `shared` не зависит от корневого логгера nestjs-pino.
+6. `vitest.integration.config.ts` (`Skill: none — конфиг Vitest`): `ISOLATED` — `test/integration/idempotency/ac-4-14-idempotency.spec.ts` (причина: `initFakeSentry` — процесс-глобальный Sentry) и `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` (причина: `vi.stubEnv` и `process.exit` — стенд `bootstrapService`).
 
 ### Требования
 AC-4.14 (полностью, v1.14), AC-9.5 (очистка идемпотентности), AC-4.11 (остановка очистки), UC-7, UC-9.
@@ -282,7 +285,7 @@ AC-4.14 (полностью, v1.14), AC-9.5 (очистка идемпотент
 
 ## Риски
 - Риск: `ON CONFLICT ON CONSTRAINT` с `NULLS NOT DISTINCT` — поддержано PostgreSQL 15+. Mitigation: `TEST_IMAGES.postgres` 17.11, тест AC-4.14 «без компании» (сервисный вызов без `tenantFromBody`) проверяет повтор с `tenant NULL`.
-- Риск: nestjs-pino держит один pino-http на процесс (RULES.md). Mitigation: файл AC-9.5 — одна конфигурация логгера; перехват — по `KIT_LOGGER` приложения.
+- Риск: nestjs-pino держит один pino-http и корневой логгер на процесс (RULES.md). Mitigation: очистка логирует через `KIT_LOGGER` экземпляра; тесты подменяют `KIT_LOGGER` и читают свой поток.
 
 ## Чек-лист фазы
 - Задачи 25–34 выполнены; `make lint analyse test test-integration` зелёные.

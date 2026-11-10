@@ -28,7 +28,8 @@ Depends on: Phase 1 (Task 1 — `drizzle-kit`, lint; Task 2 — `ids`)
 
 | Путь | Действие | Изменение |
 |---|---|---|
-| `src/database/pg.ts` | create | `pg` через `loadPeer`, драйвер Drizzle — динамически |
+| `src/internal/peer.ts` | modify | `requirePeer` — синхронная проверка peer с текстом AC-1.2 |
+| `src/database/pg.ts` | create | `requirePeer('pg')` при импорте; `loadPg`, `loadDrizzle` — ленивый `import()` |
 | `src/database/tenant.ts` | create | `DbContext`, `tenantColumn`, `tenantPolicy`, `TENANT_SETTING` |
 | `src/database/prepare-database.ts` | create | `prepareDatabase`, внутренняя `grantDatabaseAccess` |
 | `src/database/migrations.ts` | create | `runMigrations`, внутренняя `moveJournal`, `MIGRATIONS_TABLE` |
@@ -42,29 +43,38 @@ Depends on: Phase 1 (Task 1 — `drizzle-kit`, lint; Task 2 — `ids`)
 ## Task 4: Загрузчик `pg` и драйвера Drizzle
 
 ### Назначение
-`/database` и `/idempotency` без `pg` падают при импорте текстом AC-1.2. Драйвер `drizzle-orm/node-postgres` импортирует `pg` статически, поэтому грузится только после `loadPeer`.
+`/database` и `/idempotency` без `pg` падают при импорте текстом AC-1.2. Драйвер `drizzle-orm/node-postgres` импортирует `pg` статически, поэтому грузится только после проверки. **Без top-level await в статическом графе точек входа:** схему сервиса (`schema.ts` с `tenantColumn`, `createIdempotencyTable` из `@verdeect/kit/database`, `/idempotency`) загружает `drizzle-kit` 0.31.11 через CJS-хук `tsx` и `require`, а `require` ESM-графа с top-level await падает `ERR_REQUIRE_ASYNC_MODULE` (воспроизведено на tsx 4.23 / Node 24).
+
+**Architectural deviation** (ARCHITECTURE.md «Правила зависимостей»: «опциональный peer грузится только через `await loadPeer(...)` на верхнем уровне модуля подпути»): (1) top-level await делает `@verdeect/kit/database` и `/idempotency` непригодными для `drizzle-kit` — инструмента, которым сервисы генерируют миграции по фабрикам пакета (§3.3 «SQL генерирует `drizzle-kit`»); (2) синхронная проверка через `createRequire(import.meta.url).resolve` даёт тот же текст AC-1.2 при импорте подпути, а сам модуль `pg` и драйвер грузятся `import()` лениво в асинхронных функциях — поведение AC-1.2 не меняется. Отступление осознанное. `ARCHITECTURE.md` план не правит (владелец — `/aif-architecture`): шапки `src/database/pg.ts` и `src/idempotency/peer.ts` содержат пометку `[DEVIATION П15] ARCHITECTURE «Правила зависимостей»: top-level await заменён requirePeer + ленивым import() — drizzle-kit загружает схему через require`, README описывает правило (задача 39), правка ARCHITECTURE.md (стр. 84, 91, 175, 270) передаётся чату kit вместе с П15.
 
 ### Шаги
-1. Создать `src/database/pg.ts` (`Skill: nestjs-code generic src/database/pg.ts (CREATE)`). Шапка: «pg и драйвер Drizzle для /database (prd.md §3.3, AC-1.2, NFR-3): pg — loadPeer('pg', 'database') top-level await; drizzle-orm/node-postgres — динамический import() после него (драйвер импортирует pg статически)».
-2. Верхний уровень модуля: дождаться `loadPeer` для `pg` с подпутём `database`, затем динамически импортировать `drizzle-orm/node-postgres`.
-3. Экспортировать (внутри пакета, не из `index.ts`): `pg` (значение модуля по умолчанию: `Pool`, `Client`, `escapeIdentifier`, `escapeLiteral`), функцию `drizzle` драйвера, типы `Pool`, `PoolClient`, `PoolConfig` (через `import type` из `pg`) и `NodePgDatabase` (`import type` из драйвера); `migrate` из `drizzle-orm/node-postgres/migrator` (динамический импорт рядом с драйвером); константу `CONNECTION_TIMEOUT_MS` = 5000 (срок соединения CLI, миграций и `prepareDatabase`, эталон O `pool-options.ts`).
-4. Не экспортировать из публичного `index.ts` (задача 22) ничего, кроме реэкспортов §3.3.
+1. `src/internal/peer.ts` (`Skill: nestjs-code generic src/internal/peer.ts (MODIFY)`): новая функция `requirePeer(library, subpath)` — синхронно `createRequire(import.meta.url).resolve(library)`; ошибка `MODULE_NOT_FOUND` о самом пакете `library` → `Error` с текстом `missingPeerMessage(library, subpath)` и `cause`; прочие ошибки — как есть. Существующие `loadPeer`/`loadPeerWith` не меняются. Тест — `test/unit/internal/ac-1-2-load-peer.spec.ts` (MODIFY, `Skill: nestjs-code test unit internal load-peer (MODIFY)`): `AC-1.2: requirePeer — отсутствующий пакет → текст AC-1.2; установленный — без ошибки`.
+2. Создать `src/database/pg.ts` (`Skill: nestjs-code generic src/database/pg.ts (CREATE)`). Шапка: «pg и драйвер Drizzle для /database (prd.md §3.3, AC-1.2, NFR-3): requirePeer('pg', 'database') синхронно при импорте; pg, drizzle-orm/node-postgres и его migrator — ленивый import() (драйвер импортирует pg статически). Top-level await нет: drizzle-kit загружает схему сервиса через require».
+3. Верхний уровень модуля: `requirePeer('pg', 'database')` (синхронно, без `await`).
+4. Экспортировать (внутри пакета, не из `index.ts`):
+   - `loadPg()` — мемоизированный промис модуля `pg` (значение по умолчанию: `Pool`, `Client`, `escapeIdentifier`, `escapeLiteral`);
+   - `loadDrizzle()` — мемоизированный промис `{drizzle, migrate}` из `drizzle-orm/node-postgres` и `drizzle-orm/node-postgres/migrator`;
+   - типы `Pool`, `PoolClient`, `PoolConfig` (`import type` из `pg`), `NodePgDatabase` (`import type` из драйвера);
+   - константу `CONNECTION_TIMEOUT_MS` = 5000 (срок соединения CLI, миграций и `prepareDatabase`, эталон O `pool-options.ts`).
+5. Все потребители — асинхронные функции (`prepareDatabase`, `runMigrations`, `moveJournal`, фабрики `KitDatabaseModule`, `createPools`): берут `pg` и драйвер через `await loadPg()` / `await loadDrizzle()`. Синхронные фабрики схемы (`tenantColumn`, `tenantPolicy`, `occurredAtColumn`, `ifNewer`, `createIdempotencyTable`, `idempotencyPurgeSql`) `pg` не трогают.
+6. Не экспортировать из публичного `index.ts` (задача 22) ничего, кроме реэкспортов §3.3.
 
 ### Контракты
-- Любой файл `src/database/**`, которому нужен `pg` или драйвер, импортирует их только из `./pg.js`.
-- `src/database/index.ts` первым импортом подключает `./pg.js` (задача 22): ошибка AC-1.2 возникает раньше других модулей.
+- Любой файл `src/database/**`, которому нужен `pg` или драйвер, получает их только из `./pg.js`.
+- `src/database/index.ts` первым импортом подключает `./pg.js` (задача 22): ошибка AC-1.2 возникает при импорте раньше других модулей.
+- В статическом графе `dist/database/index.js` и `dist/idempotency/index.js` нет top-level await (проверка — задача 38).
 
 ### Ошибки и логи
-Нет `pg` → `Error` «@verdeect/kit/database требует pg — добавьте в зависимости сервиса» (`loadPeer`). Логов нет.
+Нет `pg` → `Error` «@verdeect/kit/database требует pg — добавьте в зависимости сервиса» (`requirePeer`). Логов нет.
 
 ### Тесты
-Проверка поведения без `pg` — уровень C в задаче 38 (проект `no-testcontainers` без `pg`); граф импортов — U в задаче 22.
+Проверка поведения без `pg` — уровень C в задаче 38 (проект `no-testcontainers` без `pg`); загрузка схемы потребителя `drizzle-kit` — задача 38; граф импортов — U в задаче 22.
 
 ### Критерии приёмки
-- `make lint analyse` зелёные; `drizzle-orm/node-postgres` нигде не импортируется статически значением.
+- `make lint analyse test` зелёные; `drizzle-orm/node-postgres` нигде не импортируется статически значением; `await` на верхнем уровне `src/database/**`, `src/idempotency/**` отсутствует.
 
 ### Проверка
-- `make lint analyse`.
+- `make lint analyse test`; `grep -rn '^await\|^const .* = await' src/database src/idempotency` — пусто.
 
 ## Task 5: `DbContext`, `tenantColumn`, `tenantPolicy`
 
@@ -110,10 +120,10 @@ CREATE POLICY "tenant_isolation" ON "kit"."note" AS PERMISSIVE FOR ALL TO public
 3. `prepareDatabase(options): Promise<KitPrepareDatabaseResult>`:
    1. `assertServiceName(service, 'prepareDatabase')`.
    2. Имена ролей: `<svc>_owner`, `<svc>_app`, `<svc>_directory`; схема — `<svc>`. Все имена в SQL — только через `escapeIdentifier`, пароли — через `escapeLiteral` (DDL не принимает параметры).
-   3. `pg.Client` с `connectionString: adminUrl`, `connectionTimeoutMillis: 5000` (константа `CONNECTION_TIMEOUT_MS` из `pg.ts`, задача 4; эталон O `pool-options.ts`); обработчик `error` клиента — no-op до `end()`.
+   3. `pg.Client` (`await loadPg()`) с `connectionString: adminUrl`, `connectionTimeoutMillis: 5000` (константа `CONNECTION_TIMEOUT_MS` из `pg.ts`, задача 4; эталон O `pool-options.ts`); обработчик `error` клиента — no-op до `end()`.
    4. Для каждой роли — `SELECT 1 FROM pg_roles WHERE rolname = $1`, затем `CREATE ROLE` или `ALTER ROLE` с атрибутами: owner и app — `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '<…>'`; directory — `NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS`. Повтор меняет пароль на переданный (как O) и не создаёт ничего нового.
    5. `GRANT <svc>_directory TO <svc>_owner` (владелец передаёт функции `SECURITY DEFINER` роли directory).
-   6. `grantDatabaseAccess(client, service, database)` — внутренняя экспортируемая функция этого файла (её вызывает `createScratchDatabase`, задача 13): `GRANT CONNECT, CREATE ON DATABASE <db> TO <svc>_owner`; `GRANT CONNECT ON DATABASE <db> TO <svc>_app`. Имя БД — `SELECT current_database()`.
+   6. `grantDatabaseAccess(client, service, database)` — внутренняя экспортируемая функция этого файла (её вызывают `startTestStack` и `createScratchDatabase`, задачи 12, 13): права выдаются **на БД из параметра `database`** (`escapeIdentifier`), а не на `current_database()` — вызывающий может быть подключён к БД `postgres`: `GRANT CONNECT, CREATE ON DATABASE <database> TO <svc>_owner`; `GRANT CONNECT ON DATABASE <database> TO <svc>_app`. `prepareDatabase` сам передаёт `SELECT current_database()` своего соединения.
    7. `CREATE SCHEMA IF NOT EXISTS <svc> AUTHORIZATION <svc>_owner`; `ALTER SCHEMA <svc> OWNER TO <svc>_owner`; `GRANT USAGE ON SCHEMA <svc> TO <svc>_app, <svc>_directory`.
    8. `client.end()` в `finally`.
 4. Лог: функция принимает необязательный `logger` (тип `Logger` из `pino`) во втором параметре; `info` `{service, database, created}` сообщение «prepareDatabase: готово»; `debug` на каждой роли `{role, action: 'create'|'alter'}`. Пароли, адрес и SQL с паролем не логируются.
@@ -145,10 +155,10 @@ CREATE POLICY "tenant_isolation" ON "kit"."note" AS PERMISSIVE FOR ALL TO public
 1. Создать `src/database/migrations.ts` (`Skill: nestjs-code generic src/database/migrations.ts (CREATE)`). Шапка: «runMigrations, moveJournal (prd.md §3.3, AC-4.7, AC-4.17). Эталон — O migrator.ts: пул max 1, срок соединения 5 с, подсчёт применённых двумя запросами. По PRD: журнал <schema>.__migrations, папка и схема — от сервиса».
 2. Константы: `MIGRATIONS_TABLE` = `__migrations`; регулярка имени схемы `^[a-z][a-z0-9_-]{1,31}$` (имя схемы = имя сервиса, дефис допустим; в SQL — только `escapeIdentifier`).
 3. `runMigrations({url, folder, schema}, logger?)` → `Promise<{applied: number}>`:
-   1. Схема вне формата → `TypeError` «runMigrations: схема …»; папки `folder` или файла `meta/_journal.json` в ней нет → `Error` «runMigrations: нет журнала drizzle-kit в <folder>».
-   2. `new pg.Pool({connectionString: url, max: 1, connectionTimeoutMillis: CONNECTION_TIMEOUT_MS})`, `pool.on('error')` — no-op.
+   1. Схема вне формата → `TypeError` «runMigrations: схема …»; папки `folder` или файла `meta/_journal.json` в ней нет → `KitUsageError` (внутренний класс файла, наследник `Error`, `name = 'KitUsageError'`; CLI переводит его в `USAGE`, задача 10) «runMigrations: нет журнала drizzle-kit в <folder>».
+   2. `new pg.Pool({connectionString: url, max: 1, connectionTimeoutMillis: CONNECTION_TIMEOUT_MS})` (`pg` — `await loadPg()`), `pool.on('error')` — no-op.
    3. `countApplied(pool, schema)`: сначала `select to_regclass($1) is not null as exists` с `<schema>.__migrations` (идентификатор в кавычках), если таблицы нет — 0, иначе `select count(*)::int as count from <schema>.__migrations`.
-   4. `migrate` из `drizzle-orm/node-postgres/migrator` (экспорт `pg.ts`, задача 4) на `drizzle(client)` выделенного клиента: `migrationsFolder: folder`, `migrationsSchema: schema`, `migrationsTable: MIGRATIONS_TABLE`. Клиент — `pool.connect()`, `release()` в `finally` (при ошибке соединения — `release(error)`).
+   4. `migrate` и `drizzle` — `await loadDrizzle()` (задача 4) на `drizzle(client)` выделенного клиента: `migrationsFolder: folder`, `migrationsSchema: schema`, `migrationsTable: MIGRATIONS_TABLE`. Клиент — `pool.connect()`, `release()` в `finally` (при ошибке соединения — `release(error)`).
    5. `applied = after − before`; `pool.end()` в `finally`.
    6. Лог: `info` `{schema, applied}` «runMigrations: готово»; `debug` `{schema, before}` перед применением. Адрес не логируется.
 4. `moveJournal({url, from, to}, logger?)` → `Promise<{moved: number}>` (внутренняя, не реэкспортируется из `index.ts`; её вызывает CLI):
@@ -194,7 +204,7 @@ CREATE POLICY "tenant_isolation" ON "kit"."note" AS PERMISSIVE FOR ALL TO public
 ### Шаги
 1. `test/fixtures/database/schema.ts` (`Skill: none — фикстура теста, TypeScript схемы Drizzle; соглашения nestjs-code test`): `pgSchema('kit')` (в `test/**` lint AC-9.4 не действует); таблица `note`: `id text primary key`, `tenant` — `tenantColumn()`, `body text not null`, `occurred_at` — `timestamp with time zone`, nullable (для `ifNewer`, AC-4.13), `counter integer not null default 0`; политика `tenantPolicy` на `tenant`. Таблица `setting`: `key text primary key`, `value text not null` (без тенанта — для `readGlobal`). Импорт `tenantColumn`/`tenantPolicy` — из `../../../src/database/tenant.js` (файл без `pg`).
 2. `test/fixtures/database/drizzle.config.ts`: `dialect: 'postgresql'`, `schema: './test/fixtures/database/schema.ts'`, `out: './test/fixtures/database/migrations'`, `schemaFilter: ['kit']`, `strict: true`, `verbose: true`, `entities.roles: false` (роли — `prepareDatabase`). URL БД генерации не нужен.
-3. `pnpm db:fixtures` → `migrations/0000_<имя>.sql` + `meta/`. Проверить вручную: в SQL есть `ENABLE ROW LEVEL SECURITY` и `CREATE POLICY "tenant_isolation" … current_setting('app.tenant', true)`.
+3. `pnpm db:fixtures` → `migrations/0000_<имя>.sql` + `meta/`. **Первую строку `CREATE SCHEMA "kit";` заменить на `CREATE SCHEMA IF NOT EXISTS "kit";`** — схему заранее создаёт `prepareDatabase` (задача 6), иначе `runMigrations` падает 42P06; так же сделано у O (`verdeect-orchestrator/apps/orchestrator/drizzle/0000_tables.sql:1`; у I строка без правки — `verdeect-identity/apps/identity/drizzle/0001_tables.sql:1`). Снимок `meta/` при этом не меняется. Проверить вручную: в SQL есть `ENABLE ROW LEVEL SECURITY` и `CREATE POLICY "tenant_isolation" … current_setting('app.tenant', true)`.
 4. `pnpm exec drizzle-kit generate --config test/fixtures/database/drizzle.config.ts --custom --name force_grants` → `0001_force_grants.sql`; содержимое:
    ```sql
    ALTER TABLE "kit"."note" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -240,7 +250,7 @@ CREATE POLICY "tenant_isolation" ON "kit"."note" AS PERMISSIVE FOR ALL TO public
    - `AC-4.7: runMigrations пишет журнал в kit.__migrations, схема drizzle не создаётся, applied = числу миграций`;
    - `AC-4.7: повторный runMigrations — applied: 0`;
    - `AC-4.7: pg_dump -n kit + восстановление в пустую подготовленную БД + runMigrations — applied: 0` — `docker exec <контейнер> pg_dump -U postgres -n kit <БД>` → `psql` в новую БД через `docker exec -i`; перед восстановлением — `prepareDatabase` на новой БД;
-   - `AC-4.7: moveJournal переносит drizzle.__drizzle_migrations в kit.__migrations, схема drizzle удалена, повтор — moved: 0` — журнал источника создаётся суперпользователем SQL (`CREATE SCHEMA drizzle; CREATE TABLE drizzle.__drizzle_migrations …` с двумя строками);
+   - `AC-4.7: moveJournal переносит drizzle.__drizzle_migrations в kit.__migrations, схема drizzle удалена, повтор — moved: 0` — журнал источника создаётся **под ролью `kit_owner`** (у неё `CREATE` на БД; иначе `DROP TABLE`/`DROP SCHEMA` в `moveJournal` под владельцем падают 42501): `CREATE SCHEMA drizzle; CREATE TABLE drizzle.__drizzle_migrations …` с двумя строками, хеши которых **нет** в `kit.__migrations` (иначе `moved: 0`);
    - `AC-4.7: в журнале назначения строки не дублируются при совпадении hash`;
    - `§3.3: папка без meta/_journal.json → Error с путём папки`.
 

@@ -14,7 +14,7 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
 |---|---|---|
 | `package.json` | `devDependencies`, `scripts` | точные версии; `drizzle-kit` нет |
 | `eslint.config.js` | `COMMON_PATTERNS`, `restrictedImports`, блоки `src/observability`, `src/http`, `src/cli` | шаблон блоков границ; блоков `src/database`, `src/idempotency` нет |
-| `node_modules/drizzle-orm/node-postgres/driver.js` | первая строка — статический импорт `pg` | статический импорт `drizzle-orm/node-postgres` падает `ERR_MODULE_NOT_FOUND` без `pg` до `loadPeer` (AC-1.2) |
+| `node_modules/drizzle-orm/node-postgres/driver.js` | первая строка — статический импорт `pg` | статический импорт `drizzle-orm/node-postgres` падает `ERR_MODULE_NOT_FOUND` без `pg` раньше проверки `requirePeer` (AC-1.2); драйвер — только ленивый `loadDrizzle()` (задача 4) |
 | `src/internal/pg-errors.ts` | `causeChain`, `isPoolTimeout` | обход `cause`; сюда — пометка пула |
 | `src/http/kit-exception.filter.ts:100-109` | ветка `isPoolTimeout`, `pool: 'unknown'` | меняется в фазе 5 (задача 22) |
 | O `apps/orchestrator/src/shared/database/ids.ts` | `ulid(now)`, `newId(prefix)`, алфавит Crockford | эталон `ids` (inventory §1) |
@@ -39,9 +39,10 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
 Фикстуры миграций (фаза 2) генерирует `drizzle-kit`, как в сервисах: так `tenantPolicy` проверяется настоящей генерацией SQL (§3.3 «SQL генерирует `drizzle-kit`»). Lint заранее закрывает границы `database` и `idempotency` по таблице `ARCHITECTURE.md`.
 
 ### Шаги
+(`Skill: none — манифест и конфиг lint`)
 1. `package.json`, `devDependencies`: добавить `"drizzle-kit": "0.31.11"` (точно, версия сервисов — inventory §3). Выполнить `pnpm install` (lockfile обновится). Если `minimumReleaseAge` не пускает версию — остановиться и сообщить (не обходить настройку).
 2. `package.json`, `scripts`: `"db:fixtures": "drizzle-kit generate --config test/fixtures/database/drizzle.config.ts"` (файл конфига появится в задаче 8).
-3. `eslint.config.js`, `COMMON_PATTERNS`: новый элемент — группа `drizzle-orm/node-postgres`, `allowTypeImports: true`, сообщение «драйвер Drizzle тянет pg статически — только динамический import() после loadPeer (src/database/pg.ts, AC-1.2)».
+3. `eslint.config.js`, `COMMON_PATTERNS`: новый элемент — группа `drizzle-orm/node-postgres`, `allowTypeImports: true`, сообщение «драйвер Drizzle тянет pg статически — только через loadDrizzle() из src/database/pg.ts (requirePeer + ленивый import(), AC-1.2)». Сообщение существующей группы `pg` дополнить: «… только через loadPeer, либо requirePeer + ленивый import() в src/database/pg.ts».
 4. `eslint.config.js`: блок `files: ['src/database/**/*.ts']` — `restrictedImports` с группой `../testing/*`, `../http/*`, `../idempotency/*`, `../messaging/*`, `../redis/*`, `../crypto/*`, `../cli/*`, `shell-quote` и сообщением «database импортирует только observability, config и internal (ARCHITECTURE.md)».
 5. Блок `files: ['src/idempotency/**/*.ts']` — группа `../testing/*`, `../messaging/*`, `../redis/*`, `../crypto/*`, `../cli/*`, `shell-quote`, сообщение «idempotency импортирует database, http, observability, config, internal (ARCHITECTURE.md)».
 6. Блок `src/http/**` уже запрещает `../database/*` и `../idempotency/*` — не трогать.
@@ -69,7 +70,7 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
 `newId` нужен `/database` (реэкспорт, §3.3) и в E5 `/messaging` без значения из `database` (ARCHITECTURE «Чистые функции … лежат в internal»). AC-4.9.
 
 ### Шаги
-1. Создать `src/internal/ids.ts`. Шапка: «ulid, newId (prd.md §3.3, AC-4.9). Эталон — O ids.ts: алфавит Crockford, 10 знаков времени, 16 случайных; по PRD — проверка префикса ^[a-z]{2,5}$, без монотонности внутри миллисекунды».
+1. Создать `src/internal/ids.ts` (`Skill: nestjs-code generic src/internal/ids.ts (CREATE)`). Шапка: «ulid, newId (prd.md §3.3, AC-4.9). Эталон — O ids.ts: алфавит Crockford, 10 знаков времени, 16 случайных; по PRD — проверка префикса ^[a-z]{2,5}$, без монотонности внутри миллисекунды».
 2. Константа `CROCKFORD` — `0123456789ABCDEFGHJKMNPQRSTVWXYZ`; `ID_PREFIX` — регулярка `^[a-z]{2,5}$`.
 3. `ulid(now?: number): string`: `now` по умолчанию `Date.now()`; не целое, отрицательное или больше 2^48 − 1 → `RangeError` «ulid: время вне диапазона». Время — 10 знаков (остаток от деления на 32, старший знак первым), случайная часть — 16 знаков из `randomBytes(16)` (каждый байт по модулю 32, как O: 256 делится на 32 без смещения).
 4. `newId(prefix: string): string`: префикс не по `ID_PREFIX` → `TypeError` «newId: префикс «…» вне формата ^[a-z]{2,5}$» (сам префикс в тексте допустим — это не секрет); иначе `<prefix>_<ulid()>`.
@@ -103,10 +104,10 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
 (а) `@Idempotent` (фаза 6) пишет метаданные, `@Api`/OpenAPI (`http`) их читает без импорта `idempotency` (ARCHITECTURE «Правила зависимостей»). (б) Решение E3 и KT-19 п. 3: пул `/database` (обёртка `connect`, задача 18) помечает ошибку срока именем пула и учитывает её один раз, фильтр `/http` перестаёт писать `pool: 'unknown'` (AC-4.5).
 
 ### Шаги
-1. Создать `src/internal/metadata.ts`. Шапка: «ключи метаданных декораторов: Idempotent → @Api без цикла http ↔ idempotency (ARCHITECTURE.md; prd.md §3.3а, §3.5)».
+1. Создать `src/internal/metadata.ts` (`Skill: nestjs-code generic src/internal/metadata.ts (CREATE)`). Шапка: «ключи метаданных декораторов: Idempotent → @Api без цикла http ↔ idempotency (ARCHITECTURE.md; prd.md §3.3а, §3.5)».
    - `IDEMPOTENT_METADATA` — строка `verdeect-kit:idempotent`.
    - Тип `KitIdempotentOptions`: `required?: boolean` (умолчание `false`), `tenantFromBody?: string` (путь поля через точку). TSDoc полей — текст §3.3а.
-2. `src/internal/pg-errors.ts`:
+2. `src/internal/pg-errors.ts` (`Skill: nestjs-code generic src/internal/pg-errors.ts (MODIFY)`):
    - тип `KitPoolName` — союз `'main' | 'read'`;
    - внутренний символ `POOL_TAG` (`Symbol.for('verdeect-kit.pool')`);
    - `tagPoolTimeout(error: unknown, pool: KitPoolName): boolean` — находит в цепочке `causeChain` первый узел с сообщением срока пула и, если он объект без метки, ставит неперечисляемое свойство `POOL_TAG` = имя пула; возвращает `true`, если метку поставил сейчас (вызывающий считает метрику один раз), `false` — если узла нет или метка уже стоит;

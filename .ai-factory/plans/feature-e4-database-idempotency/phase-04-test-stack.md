@@ -53,7 +53,7 @@ Depends on: Phase 2 (Tasks 4, 6, 7, 8, 9)
    - `kitDatabaseService` — имя сервиса (схема и роли);
    - `kitDatabaseTemplate` — имя шаблонной БД.
 5. После старта контейнера `postgres` (в `postgresPart.provide` — сделать его асинхронным; порядок частей стека не меняется) — функция `prepareStackDatabase(adminUrl, service, migrations)`:
-   1. динамический импорт `../database/prepare-database.js` и `../database/migrations.js`;
+   1. `pg` — `loadPeer('pg', 'testing')` внутри функции (статический импорт значения `pg` запрещён lint, `/testing` импортируется без `pg`); клиент суперпользователя и `escapeIdentifier` — из него; динамический импорт `../database/prepare-database.js` и `../database/migrations.js`;
    2. пароли `<svc>_owner`/`<svc>_app` — `randomBytes(16)` hex на прогон;
    3. суперпользователем к БД `postgres`: `CREATE DATABASE "<svc>_template"`;
    4. `prepareDatabase` с `adminUrl` к `<svc>_template`;
@@ -178,11 +178,12 @@ Depends on: Phase 2 (Tasks 4, 6, 7, 8, 9)
 4. `test/integration/testing/ac-4-18-scratch-database.spec.ts` (`Skill: nestjs-code test integration testing scratch-database (CREATE)`), `describe('UC-14: пустая БД из шаблона')`:
    - `AC-4.18: kitDatabaseUrl, kitDatabaseOwnerUrl, kitDatabaseAdminUrl, kitDatabaseService, kitDatabaseTemplate переданы через provide`;
    - `AC-4.18: БД kit подготовлена и мигрирована — журнал kit.__migrations, таблицы note и setting, FORCE RLS у note`;
+   - `AC-4.18: первая строка 0000_*.sql фикстуры — CREATE SCHEMA IF NOT EXISTS "kit"` (защита от перегенерации без правки, задача 8);
    - `AC-4.18: createScratchDatabase — пустая мигрированная БД за < 1 с` (`performance.now()`, граница `1000 × TEST_TIMEOUT_SCALE`; в БД таблицы фикстуры, 0 строк в `note`);
    - `AC-4.18: роль kit_app подключается к пустой БД, drop() удаляет её, повторный drop() — без ошибки`;
    - `AC-4.18: два одновременных createScratchDatabase — обе БД созданы` (повтор `55006`).
-5. `test/integration/database/ac-4-6-prepare-database.spec.ts` (MODIFY): `AC-4.6: assertAppRoleIsNotOwner проходит под kitprep_app` и `AC-4.6: assertAppRoleIsNotOwner падает под kitprep_owner (владелец схемы)`; `AC-4.6: kitprep_app без CREATE на базе и схеме после prepareDatabase` (`has_database_privilege`, `has_schema_privilege`); `AC-4.6: assertAppRoleIsNotOwner падает после GRANT CREATE ON DATABASE … TO kitprep_app` и `… падает после GRANT CREATE ON SCHEMA kitprep TO kitprep_app` (права выдаёт и в `finally` отзывает суперпользователь) — соединения `pg.Client` с паролями теста.
-6. `test/integration/database/ac-4-7-migrations.spec.ts` (MODIFY): исходная БД — `createScratchDatabase()` (уже мигрированная: проверка «applied: 0» и журнала — на ней); случай «первый runMigrations пишет журнал» — на новой пустой БД, подготовленной суперпользователем (`CREATE DATABASE`, `grantDatabaseAccess`, `CREATE SCHEMA kit AUTHORIZATION kit_owner`), миграции — под `kitDatabaseOwnerUrl` с заменой имени БД; восстановление дампа — так же; `prepareDatabase` с ролями `kit_*` в файле больше не вызывается.
+5. `test/integration/database/ac-4-6-prepare-database.spec.ts` (`Skill: nestjs-code test integration database prepare-database (MODIFY)`): `AC-4.6: assertAppRoleIsNotOwner проходит под kitprep_app` и `AC-4.6: assertAppRoleIsNotOwner падает под kitprep_owner (владелец схемы)`; `AC-4.6: kitprep_app без CREATE на базе и схеме после prepareDatabase` (`has_database_privilege`, `has_schema_privilege`); `AC-4.6: assertAppRoleIsNotOwner падает после GRANT CREATE ON DATABASE … TO kitprep_app` и `… падает после GRANT CREATE ON SCHEMA kitprep TO kitprep_app` (права выдаёт и в `finally` отзывает суперпользователь) — соединения `pg.Client` с паролями теста.
+6. `test/integration/database/ac-4-7-migrations.spec.ts` (`Skill: nestjs-code test integration database migrations (MODIFY)`): исходная БД — `createScratchDatabase()` (уже мигрированная: проверка «applied: 0» и журнала — на ней); случай «первый runMigrations пишет журнал» — на новой пустой БД, подготовленной суперпользователем (`CREATE DATABASE`, `grantDatabaseAccess`, `CREATE SCHEMA kit AUTHORIZATION kit_owner`), миграции — под `kitDatabaseOwnerUrl` с заменой имени БД; восстановление дампа — так же; `prepareDatabase` с ролями `kit_*` в файле больше не вызывается.
 7. `test/unit/testing/worker-scope.spec.ts` (`Skill: nestjs-code test unit testing worker-scope (CREATE)`), `describe('UC-14: workerScope')`:
    - `§3.8: tenant — слаг ^[a-z0-9][a-z0-9-]{0,48}$, начинается с w<VITEST_POOL_ID>-`;
    - `§3.8: повторный вызов в воркере — то же значение`;
