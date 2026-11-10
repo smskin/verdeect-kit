@@ -30,6 +30,8 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
 | `src/internal/ids.ts` | create | `ulid`, `newId`, `ID_PREFIX` |
 | `src/internal/metadata.ts` | create | `IDEMPOTENT_METADATA`, тип `KitIdempotentOptions` |
 | `src/internal/pg-errors.ts` | modify | `tagPoolTimeout`, `poolTimeoutOf`, тип `KitPoolName` |
+| `src/internal/sql-identifier.ts` | create | `quoteIdentifier` (KT-20 п. 1) |
+| `test/unit/internal/sql-identifier.spec.ts` | create | экранирование идентификаторов |
 | `test/unit/internal/ac-4-9-ids.spec.ts` | create | AC-4.9 |
 | `test/unit/internal/pg-errors.spec.ts` | modify | пометка пула |
 
@@ -114,6 +116,7 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
    - `poolTimeoutOf(error: unknown): KitPoolName | null` — имя пула из метки первого помеченного узла цепочки или `null`.
    - Изменить комментарий шапки: «… tagPoolTimeout/poolTimeoutOf — метка пула /database: срок учтён (решение E3, KT-19 п. 3, AC-4.5)».
 3. Существующие функции не менять.
+4. KT-20 п. 1 — общий помощник экранирования идентификаторов SQL: создать `src/internal/sql-identifier.ts` (`Skill: nestjs-code generic src/internal/sql-identifier.ts (CREATE)`; файл меньше 30 строк — отдельным файлом, потому что его используют `database`, `idempotency` и `testing`, а `idempotency/table.ts` и `testing` не должны тянуть `pg`). Шапка: «quoteIdentifier — экранирование идентификаторов PostgreSQL без pg (KT-20 п. 1; алгоритм escapeIdentifier pg: двойные кавычки по краям, внутренняя `"` удваивается)». `quoteIdentifier(name: string): string` — пустая строка или символ NUL → `TypeError`; иначе `"` + имя с удвоенными `"` + `"`. Единственный способ подстановки идентификатора в текст SQL в `prepareDatabase`, `runMigrations`, `moveJournal`, `startTestStack`, `createScratchDatabase`, `idempotencyPurgeSql`; строковой подстановки без экранирования нет. Тест — `test/unit/internal/sql-identifier.spec.ts` (`Skill: nestjs-code test unit internal sql-identifier (CREATE)`): `KT-20: quoteIdentifier("bff-app") → "\"bff-app\""`, `KT-20: внутренняя кавычка удваивается`, `KT-20: пустое имя → TypeError`, `KT-20: совпадает с pg.escapeIdentifier на наборе имён` (`pg` — devDependency, импорт значения в тесте разрешён).
 
 ### Контракты
 - Метка неперечисляемая: `sanitizeError`, JSON-лог и событие GlitchTip её не выводят.

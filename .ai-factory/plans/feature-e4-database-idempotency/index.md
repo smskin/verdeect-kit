@@ -36,7 +36,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 | Решение | Источник | Задачи |
 |---|---|---|
 | `workerScope().tenant` — случайный слаг `w<VITEST_POOL_ID>-<8 hex>` формата claim `tenant`, один на воркер; `tenantId` — фабрика сервиса; полей E5/E8 в типе нет | PRD v1.14 §3.8 (KT-18 п. 1) | 14, 16 |
-| Очистка: функция `<svc>.idempotency_purge(batch int) returns int` `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, `REVOKE ALL FROM PUBLIC`, `GRANT EXECUTE TO <svc>_app`; текст — `idempotencyPurgeSql(pgSchema)`, имена только идентификаторами после проверки `^[a-z][a-z0-9_]{1,31}$`; нет функции — отказ запуска с текстом про `idempotencyPurgeSql`; `assertStrictTenantIsolation` проверяет функцию | PRD v1.14 §3.3а, §3.8, AC-4.8, AC-4.14 (KT-18 п. 2–3) | 26, 29, 32, 33, 34, 35, 36, 37 |
+| Очистка: функция `<svc>.idempotency_purge(batch int) returns int` `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, `REVOKE ALL FROM PUBLIC`, `GRANT EXECUTE TO <svc>_app`; текст — `idempotencyPurgeSql(pgSchema)`; имя схемы — той же `assertServiceName`, что имя сервиса (`^[a-z][a-z0-9-]{1,31}$`; KT-20 п. 1 исправляет регулярку KT-18), все идентификаторы — в двойных кавычках через общий `quoteIdentifier` (`src/internal/sql-identifier.ts`); нет функции — отказ запуска с текстом про `idempotencyPurgeSql`; `assertStrictTenantIsolation` проверяет функцию | PRD v1.14 §3.3а, §3.8, AC-4.8, AC-4.14 (KT-18 п. 2–3, KT-20 п. 1) | 3, 26, 29, 32, 33, 34, 35, 36, 37 |
 | CLI `db prepare --service <svc>`; без флага или неверный формат — `{error: {code: 'USAGE'}}`, выход 1; `prepareEnvSchema` не меняется | PRD v1.14 §3.3, AC-4.17 | 10, 11 |
 | `@Idempotent` без проверенного принципала — 500 `INTERNAL_ERROR`, `error`-лог, одно событие GlitchTip, обработчик не вызывается; README: только с `VerdeectAuthGuard` | PRD v1.14 §3.3а, AC-4.14 | 28, 34, 39 |
 | Решение E3: модули kit закрываются хуками Nest — пулы в `onApplicationShutdown` (шаг 4), очистка идемпотентности и пачки `Db` — в `beforeApplicationShutdown` (шаг 3); участников `KitLifecycle` не регистрируют | E3, README «Жизненный цикл», ARCHITECTURE | 17, 18, 29 |
@@ -66,7 +66,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 | П11 | `KitDatabaseModule` внедряет `HealthRegistry` и `KIT_METRICS` необязательно: без `createHttpApp` (контекст CLI сервиса) — без проб и метрики; пробы `database` и `database-read` — критичные, `select 1` на своём пуле | §3.3 «пробы обоих пулов (критичные)» | 18 |
 | П12 | `assertStrictTenantIsolation(db, …)`, `assertAppRoleIsNotOwner(db)` — `db` — соединение роли приложения (объект с `query`: `pg.Pool`/`Client`); колонка тенанта — `tenant`; `outbox` — исключение по имени (политика и FORCE обязательны, счёт строк не проверяется до E5) | §3.8 | 15, 35 |
 | П13 | `countQueries(pool, fn)` → `{result, count, queries}`; считает все запросы пула за время `fn` (обёртка `query` выданных клиентов) | §3.8 | 23 |
-| П15 | Отступление от ARCHITECTURE «`await loadPeer` на верхнем уровне» для `/database` и `/idempotency`: синхронный `requirePeer` (новая внутренняя функция `src/internal/peer.ts`) + ленивый `import()` `pg` и драйвера. Причина: `drizzle-kit` 0.31.11 грузит схему сервиса через `require` (tsx), а ESM с top-level await даёт `ERR_REQUIRE_ASYNC_MODULE`; текст и момент ошибки AC-1.2 не меняются; проверка — `drizzle-kit generate` в потребителе (задача 38). Сообщается чату kit (итерация 3 `/aif-improve`) | §3.3 «SQL генерирует `drizzle-kit`»; AC-1.2 | 4, 22, 30, 38 |
+| П15 | Отступление от ARCHITECTURE «`await loadPeer` на верхнем уровне» для `/database` и `/idempotency`: синхронный `requirePeer` (новая внутренняя функция `src/internal/peer.ts`) + ленивый `import()` `pg` и драйвера. Причина: `drizzle-kit` 0.31.11 грузит схему сервиса через `require` (tsx), а ESM с top-level await даёт `ERR_REQUIRE_ASYNC_MODULE`; текст и момент ошибки AC-1.2 не меняются; проверка — `drizzle-kit generate` в потребителе (задача 38). Принято чатом kit в KT-20 п. 2; правило `ARCHITECTURE.md` обновлено коммитом `754cc15` (проверка peer — синхронная при загрузке, peer — `import()` при вызове) | §3.3 «SQL генерирует `drizzle-kit`»; AC-1.2 | 4, 22, 30, 38 |
 | П14 | `Db`, `DbTx`, `DbReader`, `TenantRequiredError`, `AfterCommitInReadOnlyError`, `AfterCommitTask`, `KitPrepareDatabaseOptions/Result`, `KitDeleteInBatchesOptions`, `KitIdempotencyTable`, `KitIdempotentOptions`, `KitScratchDatabase`, `KitWorkerScope`, `KitQueryable`, `KitTenantIsolationOptions`, `KitCountablePool` — имена типов и ошибок пакета (§3 «точные типы уточняет реализация») | §3; rules/base.md «Именование» | 5–36 |
 
 Сочетания поведения `@Idempotent` (§3.3а; каждое — тест задачи 33 или 34):
@@ -125,13 +125,13 @@ Authority (запрос пользователя, skill-context «Requirements P
 ### Фаза 1: Основа — манифест, lint, `internal`
 - [ ] Task 1: `drizzle-kit` в devDependencies, `db:fixtures`, lint границ `database`/`idempotency` и запрет `drizzle-orm/node-postgres` ([details](phase-01-foundation.md#task-1-манифест-и-lint-новых-подпутей))
 - [ ] Task 2: `newId`, `ulid` в `src/internal/ids.ts` + U AC-4.9 ([details](phase-01-foundation.md#task-2-newid-и-ulid-в-internal)) (depends on 1)
-- [ ] Task 3: `internal/metadata.ts` и метка пула `tagPoolTimeout`/`poolTimeoutOf` ([details](phase-01-foundation.md#task-3-ключ-метаданных-idempotent-и-пометка-пула-в-ошибке)) (depends on 1)
+- [ ] Task 3: `internal/metadata.ts`, метка пула `tagPoolTimeout`/`poolTimeoutOf`, `quoteIdentifier` ([details](phase-01-foundation.md#task-3-ключ-метаданных-idempotent-и-пометка-пула-в-ошибке)) (depends on 1)
 
 ### Фаза 2: Схема, подготовка БД и миграции
 - [ ] Task 4: `requirePeer` и `src/database/pg.ts` — синхронная проверка `pg`, ленивый драйвер Drizzle ([details](phase-02-schema-migrations.md#task-4-загрузчик-pg-и-драйвера-drizzle)) (depends on 1)
 - [ ] Task 5: `DbContext`, `tenantColumn`, `tenantPolicy` ([details](phase-02-schema-migrations.md#task-5-dbcontext-tenantcolumn-tenantpolicy)) (depends on 1)
-- [ ] Task 6: `prepareDatabase` и `grantDatabaseAccess` ([details](phase-02-schema-migrations.md#task-6-preparedatabase)) (depends on 4)
-- [ ] Task 7: `runMigrations` и `moveJournal` ([details](phase-02-schema-migrations.md#task-7-runmigrations-и-movejournal)) (depends on 4)
+- [ ] Task 6: `prepareDatabase` и `grantDatabaseAccess` ([details](phase-02-schema-migrations.md#task-6-preparedatabase)) (depends on 3, 4)
+- [ ] Task 7: `runMigrations` и `moveJournal` ([details](phase-02-schema-migrations.md#task-7-runmigrations-и-movejournal)) (depends on 3, 4)
 - [ ] Task 8: Фикстура схемы и миграций `test/fixtures/database` ([details](phase-02-schema-migrations.md#task-8-фикстура-схемы-и-миграций-пакета)) (depends on 1, 5)
 - [ ] Task 9: I AC-4.6 (роли, повтор) и AC-4.7 (журнал, дамп, перенос) ([details](phase-02-schema-migrations.md#task-9-тесты-ac-46-роли-и-ac-47-журнал)) (depends on 6, 7, 8)
 
@@ -158,7 +158,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 
 ### Фаза 6: Подпуть `/idempotency`
 - [ ] Task 25: метрика `verdeect_cleanup_runs_total` и правило `VerdeectCleanupFailing` (AC-9.5, AC-2.11) ([details](phase-06-idempotency.md#task-25-метрика-очистки-и-правило-алерта-ac-95-ac-211))
-- [ ] Task 26: `createIdempotencyTable`, `idempotencyPurgeSql` ([details](phase-06-idempotency.md#task-26-createidempotencytable-и-idempotencypurgesql)) (depends on 5)
+- [ ] Task 26: `createIdempotencyTable`, `idempotencyPurgeSql` ([details](phase-06-idempotency.md#task-26-createidempotencytable-и-idempotencypurgesql)) (depends on 3, 5)
 - [ ] Task 27: `@Idempotent` ([details](phase-06-idempotency.md#task-27-idempotent)) (depends on 3)
 - [ ] Task 28: интерсептор и хранилище ([details](phase-06-idempotency.md#task-28-интерсептор-и-хранилище)) (depends on 3, 17, 22, 26, 27)
 - [ ] Task 29: `KitIdempotencyModule` — проверка функции, очистка ([details](phase-06-idempotency.md#task-29-kitidempotencymodule)) (depends on 17, 18, 19, 20, 22, 25, 26, 28)
@@ -196,7 +196,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 | AC-4.11 (UC-8, UC-9) | 17, 19, 24, 29, 34 | `ac-4-11-delete-in-batches.spec.ts` → `AC-4.11: shouldContinue = false…`, `AC-4.11: Db.beforeApplicationShutdown во время пачки…`; `ac-4-14-cleanup.spec.ts` → `AC-4.11: остановка во время прохода…` |
 | AC-4.12 (UC-9) | 20, 24 | `ac-4-12-run-exclusive.spec.ts` → `AC-4.12: одновременно — fn ровно раз…`, `AC-4.12: исключение в fn — блокировка снята…` |
 | AC-4.13 (UC-6) | 21, 24 | `ac-4-13-if-newer.spec.ts` → `AC-4.13: событие старее … updated: 0`, `…новее…`, `…NULL…` |
-| AC-4.14 (UC-7) | 26–34 | `test/integration/idempotency/ac-4-14-idempotency.spec.ts` (все случаи AC-4.14 HTTP, в т. ч. `…без guard'а — 500 … GlitchTip ровно одно`); `ac-4-14-cleanup.spec.ts` → `AC-4.14: очистка под kit_app удаляет записи старше 24 ч двух компаний и запись без компании…`; `ac-4-14-missing-purge-function.spec.ts` → `AC-4.14: без функции idempotency_purge createTestApp отказывает…`, `AC-4.14: bootstrapService без функции — fatal через failStartup…`; U `idempotency-purge-sql.spec.ts`, `fingerprint.spec.ts` |
+| AC-4.14 (UC-7) | 26–34 | `test/integration/idempotency/ac-4-14-idempotency.spec.ts` (все случаи AC-4.14 HTTP, в т. ч. `…без guard'а — 500 … GlitchTip ровно одно`); `ac-4-14-cleanup.spec.ts` → `AC-4.14: очистка под kit_app удаляет записи старше 24 ч двух компаний и запись без компании…`; `ac-4-14-purge-sql-hyphen.spec.ts` → `KT-20: функция "bff-app"."idempotency_purge" создана…`; `ac-4-14-missing-purge-function.spec.ts` → `AC-4.14: без функции idempotency_purge createTestApp отказывает…`, `AC-4.14: bootstrapService без функции — fatal через failStartup…`; U `idempotency-purge-sql.spec.ts`, `fingerprint.spec.ts` |
 | AC-4.15 (UC-4, UC-14) | 23, 24 | `test/integration/testing/ac-4-15-count-queries.spec.ts` → `AC-4.15: transaction с одним запросом домена — count 4…` |
 | AC-4.16 (UC-5) | 17, 24 | `ac-4-16-set-local.spec.ts` → `AC-4.16: имя вне ^app\.[a-z_]{1,48}$ → TypeError`, `AC-4.16: значение со ' передаётся параметром…` |
 | AC-4.17 (UC-12) | 10, 11 | `test/integration/cli/ac-4-17-db-commands.spec.ts` → `AC-4.17: db prepare --service kitcli…`, `AC-4.17: db prepare без --service → USAGE`, `AC-4.17: db prepare --service Kit_1 → USAGE…`, `AC-4.17: … DATABASE_UNAVAILABLE…`, `AC-4.17: db migrate…`, `AC-4.17: db move-journal…` |
@@ -229,5 +229,5 @@ Authority (запрос пользователя, skill-context «Requirements P
 - `make ci` зелёный (lint → analyse → test → test-integration → build → pack-check); `make test-timing` не затронут.
 - Все AC скоупа — в Traceability с зелёными тестами; названия тестов начинаются с ID.
 - `src/**` без `console.*`, без имён схем сервисов (AC-9.4); статических импортов `pg`/`drizzle-orm/node-postgres` нет.
-- Итог `/goal` отправлен чату kit (KT-19: хеш коммита плана с решениями KT-19) вместе с П15 и просьбой поправить `ARCHITECTURE.md` (стр. 84, 91, 175, 270: `requirePeer` + ленивый `import()` для `/database` и `/idempotency`).
+- Итог `/goal` отправлен чату kit (KT-19); решения KT-20 (формат имени в `idempotencyPurgeSql`, П15, `ARCHITECTURE.md` `754cc15`) внесены.
 - README, CHANGELOG `[Unreleased]`, TSDoc у каждого нового экспорта; `version` не меняется (G14).

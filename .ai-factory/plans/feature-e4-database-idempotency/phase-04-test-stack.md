@@ -53,14 +53,14 @@ Depends on: Phase 2 (Tasks 4, 6, 7, 8, 9)
    - `kitDatabaseService` — имя сервиса (схема и роли);
    - `kitDatabaseTemplate` — имя шаблонной БД.
 5. После старта контейнера `postgres` (в `postgresPart.provide` — сделать его асинхронным; порядок частей стека не меняется) — функция `prepareStackDatabase(adminUrl, service, migrations)`:
-   1. `pg` — `loadPeer('pg', 'testing')` внутри функции (статический импорт значения `pg` запрещён lint, `/testing` импортируется без `pg`); клиент суперпользователя и `escapeIdentifier` — из него; динамический импорт `../database/prepare-database.js` и `../database/migrations.js`;
+   1. `pg` — `loadPeer('pg', 'testing')` внутри функции (статический импорт значения `pg` запрещён lint, `/testing` импортируется без `pg`); клиент суперпользователя — из него, идентификаторы — `quoteIdentifier` (задача 3); динамический импорт `../database/prepare-database.js` и `../database/migrations.js`;
    2. пароли `<svc>_owner`/`<svc>_app` — `randomBytes(16)` hex на прогон;
    3. суперпользователем к БД `postgres`: `CREATE DATABASE "<svc>_template"`;
    4. `prepareDatabase` с `adminUrl` к `<svc>_template`;
    5. при `migrations` — `runMigrations({url: <owner к шаблону>, folder: resolve(migrations), schema: service})`; пул миграций закрыт к концу вызова;
    6. `CREATE DATABASE "<svc>" TEMPLATE "<svc>_template"` (к шаблону в этот момент нет соединений), затем `grantDatabaseAccess` на `<svc>` (права уровня БД при копировании не переносятся);
    7. `provide` пяти ключей из шага 4; `kitPostgresUrl` — как в E1.
-   Имена БД — `escapeIdentifier`; имя сервиса уже проверено `assertServiceName`.
+   Имена БД — `quoteIdentifier` (задача 3); имя сервиса уже проверено `assertServiceName`.
 6. Ошибка подготовки — как отказ старта контейнера: текст `[startTestStack] не удалось подготовить БД: <сообщение>` в stderr до `throw` (Vite теряет текст ошибок `globalSetup`, эталон O `setup-error.ts`), контейнеры останавливаются. Печатаются только имя шага (`create-template`, `prepare`, `migrate`, `copy`) и `code` ошибки (SQLSTATE или системный код), без `message`: текст ошибки `pg` может содержать адрес и имя роли. Исключение — шаг `migrate`: печатается и `message` (текст ошибки SQL миграции нужен разработчику; адреса и паролей в нём нет — соединение уже установлено). Исходная ошибка — `cause` брошенной.
 7. Логи: `startTestStack` пишет только в stderr при отказе (как E1, `console.*` запрещён — `process.stderr.write`).
 

@@ -110,31 +110,31 @@ NFR-8, AC-9.5: фоновая операция (очистка идемпоте�
      tenant IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')
      ```
 3. `idempotencyPurgeSql(schema: PgSchema): string`:
-   1. Имя схемы — `schema.schemaName`; не по `^[a-z][a-z0-9_]{1,31}$` → `TypeError` «idempotencyPurgeSql: имя схемы вне ^[a-z][a-z0-9_]{1,31}$»; роли — `<схема>_directory`, `<схема>_app`, `<схема>_owner` (имена проверяются тем же форматом после склейки, длина ≤ 63). Подстановка — только идентификаторами в двойных кавычках после проверки.
+   1. Имя схемы — `schema.schemaName`; проверка той же внутренней функцией, что имя сервиса: `assertServiceName(name, 'idempotencyPurgeSql')` (`^[a-z][a-z0-9-]{1,31}$`, как у `bootstrapService`, `prepareDatabase`, `createCipher`; KT-20 п. 1 — регулярка KT-18 `^[a-z][a-z0-9_]{1,31}$` не используется); вне формата → `TypeError`. Роли — `<схема>_directory`, `<схема>_app` (длина ≤ 63). **Все идентификаторы** — схема, таблица `idempotency_key`, функция `idempotency_purge`, роли — только через `quoteIdentifier` (`src/internal/sql-identifier.ts`, задача 3), строковой подстановки без экранирования нет.
    2. Текст — операторы через `\n--> statement-breakpoint\n` (разделитель миграций Drizzle):
       ```sql
-      CREATE OR REPLACE FUNCTION "<s>".idempotency_purge(batch integer) RETURNS integer
+      CREATE OR REPLACE FUNCTION "<s>"."idempotency_purge"(batch integer) RETURNS integer
           LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = "<s>", pg_temp AS $$
       DECLARE deleted integer;
       BEGIN
-          DELETE FROM "<s>".idempotency_key i WHERE i.ctid IN (
-              SELECT o.ctid FROM "<s>".idempotency_key o
+          DELETE FROM "<s>"."idempotency_key" i WHERE i.ctid IN (
+              SELECT o.ctid FROM "<s>"."idempotency_key" o
               WHERE o.created_at < now() - interval '24 hours' ORDER BY o.created_at LIMIT batch);
           GET DIAGNOSTICS deleted = ROW_COUNT;
           RETURN deleted;
       END $$;
       --> statement-breakpoint
-      GRANT SELECT, DELETE ON "<s>".idempotency_key TO "<s>_directory";
+      GRANT SELECT, DELETE ON "<s>"."idempotency_key" TO "<s>_directory";
       --> statement-breakpoint
       GRANT CREATE ON SCHEMA "<s>" TO "<s>_directory";
       --> statement-breakpoint
-      ALTER FUNCTION "<s>".idempotency_purge(integer) OWNER TO "<s>_directory";
+      ALTER FUNCTION "<s>"."idempotency_purge"(integer) OWNER TO "<s>_directory";
       --> statement-breakpoint
       REVOKE CREATE ON SCHEMA "<s>" FROM "<s>_directory";
       --> statement-breakpoint
-      REVOKE ALL ON FUNCTION "<s>".idempotency_purge(integer) FROM PUBLIC;
+      REVOKE ALL ON FUNCTION "<s>"."idempotency_purge"(integer) FROM PUBLIC;
       --> statement-breakpoint
-      GRANT EXECUTE ON FUNCTION "<s>".idempotency_purge(integer) TO "<s>_app";
+      GRANT EXECUTE ON FUNCTION "<s>"."idempotency_purge"(integer) TO "<s>_app";
       ```
       (временный `GRANT CREATE` нужен смене владельца — эталон O `0002_functions.sql:97,103`; миграция выполняется под `<s>_owner`, который член `<s>_directory` — `prepareDatabase`).
    3. TSDoc: сервис кладёт текст в свою SQL-миграцию (`drizzle-kit generate --custom`), README — пример.
@@ -233,9 +233,10 @@ UC-7, AC-4.14, §3.3а.
 
 ### Шаги
 1. `test/unit/idempotency/idempotency-purge-sql.spec.ts` (`Skill: nestjs-code test unit idempotency purge-sql (CREATE)`), `describe('UC-7: idempotencyPurgeSql')`:
-   - `AC-4.14: функция "kit".idempotency_purge(batch integer) RETURNS integer, SECURITY DEFINER, SET search_path = "kit", pg_temp`;
+   - `AC-4.14: функция "kit"."idempotency_purge"(batch integer) RETURNS integer, SECURITY DEFINER, SET search_path = "kit", pg_temp`;
    - `AC-4.14: владелец kit_directory, REVOKE ALL … FROM PUBLIC, GRANT EXECUTE … TO kit_app, удаление старше 24 ч`;
-   - `AC-4.14: имя схемы вне ^[a-z][a-z0-9_]{1,31}$ → TypeError` (`it.each`: `Kit`, `k`, `kit-app`, `kit;drop`, 33 знака);
+   - `KT-20: имя схемы вне формата имени сервиса ^[a-z][a-z0-9-]{1,31}$ → TypeError` (`it.each`: `Kit`, `k`, `kit_app`, `kit;drop`, `kit"x`, 33 знака);
+   - `KT-20: idempotencyPurgeSql(pgSchema('bff-app')) — "bff-app"."idempotency_purge", OWNER TO "bff-app_directory", GRANT EXECUTE … TO "bff-app_app", SET search_path = "bff-app", pg_temp; все идентификаторы в двойных кавычках`;
    - `AC-4.14: 0003_idempotency_purge.sql фикстуры содержит текст idempotencyPurgeSql(kit) без изменений`.
 2. `test/unit/idempotency/fingerprint.spec.ts` (`Skill: nestjs-code test unit idempotency fingerprint (CREATE)`): `AC-4.14: canonicalJson — порядок ключей не влияет, вложенные объекты сортируются, массивы по порядку`; `AC-4.14: отпечаток — метод + путь без query + SHA-256 тела`; `AC-4.14: scopeOf — user (tenant, user:sub), agent (tenant, agent:sub), service (null, service:client)`; `AC-4.14: service + tenantFromBody 'org.slug' — tenant из тела; поле пустое / нет / не строка — null без ошибки`; `AC-4.14: user с подложным tenant в теле — область из токена`.
 3. `test/unit/http/ac-3-7-openapi-idempotency.spec.ts` (`Skill: nestjs-code test unit http openapi-idempotency (CREATE)`): фикстура-контроллер с `@Idempotent()` и `@Idempotent({required: true})`: `AC-3.7: Idempotency-Key в parameters, required по опции, pattern O`; `AC-3.7: Idempotent-Replayed в заголовках успешного ответа`; `AC-3.7: 409 IDEMPOTENCY_IN_PROGRESS, 422 IDEMPOTENCY_KEY_REUSED, 400 IDEMPOTENCY_KEY_REQUIRED (только required)`; `AC-3.7: маршрут без @Idempotent — без этих заголовков`; `AC-3.7: expectMatchesApi принимает 409 IDEMPOTENCY_IN_PROGRESS и 400 IDEMPOTENCY_KEY_REQUIRED на маршруте с @Idempotent({required: true})` (ответы — объекты `{statusCode, json()}` по образцу `test/unit/http/ac-3-7-openapi.spec.ts`); документ валиден `@seriousme/openapi-schema-validator`.
@@ -271,6 +272,10 @@ UC-7, AC-4.14, §3.3а.
    - `AC-9.5: записей больше batchSize × maxBatches → result="partial"` — 5 просроченных строк, `run({batchSize: 2, maxBatches: 2})`;
    - `AC-9.5: ошибка БД во время прохода → result="error", error-лог, captureError` (функция `idempotency_purge` в `createScratchDatabase()` заменяется администратором на функцию с `RAISE EXCEPTION`);
    - `AC-4.11: остановка во время прохода — пачка дорабатывает, новая не начинается` (`batchSize` фиксирован, проверка по числу пачек через `countQueries`).
+3a. `test/integration/idempotency/ac-4-14-purge-sql-hyphen.spec.ts` (`Skill: nestjs-code test integration idempotency purge-sql-hyphen (CREATE)`), проект `shared`, своя БД (`test/support/postgres.ts`), сервис `bff-app` (KT-20 п. 1): `prepareDatabase({service: 'bff-app'})`; под `"bff-app_owner"` — таблица `"bff-app"."idempotency_key"` (DDL — `0002_*.sql` фикстуры с заменой схемы) и текст `idempotencyPurgeSql(pgSchema('bff-app'))` по операторам:
+   - `KT-20: функция "bff-app"."idempotency_purge" создана — SECURITY DEFINER, владелец bff-app_directory, search_path задан, у PUBLIC нет EXECUTE`;
+   - `KT-20: под bff-app_app вызов функции удаляет запись старше 24 ч, свежая остаётся`.
+   В `afterAll` — `DROP DATABASE … WITH (FORCE)`, `DROP OWNED BY` и `DROP ROLE` ролей `bff-app_*`.
 4. `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` (`Skill: nestjs-code test integration idempotency missing-purge-function (CREATE)`) — **проект `isolated`** (`vi.stubEnv`, перехват `process.exit` — `useBootstrapStand`): БД из `createScratchDatabase()` с `DROP FUNCTION kit.idempotency_purge(integer)`:
    - `AC-4.14: без функции idempotency_purge createTestApp отказывает, текст называет idempotencyPurgeSql`;
    - `AC-4.14: bootstrapService без функции — fatal через failStartup с текстом про idempotencyPurgeSql, exit 1, порт не открыт`.
