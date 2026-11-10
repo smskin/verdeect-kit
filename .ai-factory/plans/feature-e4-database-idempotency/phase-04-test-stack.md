@@ -150,6 +150,8 @@ Depends on: Phase 2 (Tasks 4, 6, 7, 8, 9)
    - `select rolsuper, rolbypassrls from pg_roles where rolname = current_user` — `rolsuper` или `rolbypassrls` → нарушение;
    - `select nspname from pg_namespace where nspowner = (select oid from pg_roles where rolname = current_user)` — непустой список → нарушение со списком схем;
    - `select n.nspname, c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relowner = (… current_user) and n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg_toast%' and n.nspname not like 'pg_temp%'` — непустой → нарушение;
+   - KT-19 п. 1 — нет `CREATE` на БД: `select has_database_privilege(current_user, current_database(), 'CREATE')` истина → нарушение «CREATE на базе <БД>»;
+   - нет `CREATE` ни на одной схеме БД: `select nspname from pg_namespace where nspname not in ('pg_catalog', 'information_schema') and nspname not like 'pg_toast%' and nspname not like 'pg_temp%' and has_schema_privilege(current_user, oid, 'CREATE')` — непустой → нарушение «CREATE на схеме <имя>» (в PostgreSQL 15+ у `PUBLIC` нет `CREATE` на `public`, поэтому чистая БД проходит);
    - нарушения собираются; есть хоть одно → `Error` «assertAppRoleIsNotOwner: <роль>: <перечень нарушений через «; »»».
 
 ### Контракты
@@ -162,7 +164,7 @@ Depends on: Phase 2 (Tasks 4, 6, 7, 8, 9)
 Задача 16.
 
 ### Критерии приёмки
-- Проходит под `<svc>_app`, падает под `<svc>_owner` и суперпользователем.
+- Проходит под `<svc>_app`, падает под `<svc>_owner` и суперпользователем, падает при `CREATE` роли приложения на БД или схеме.
 
 ### Проверка
 - задача 16.
@@ -179,7 +181,7 @@ Depends on: Phase 2 (Tasks 4, 6, 7, 8, 9)
    - `AC-4.18: createScratchDatabase — пустая мигрированная БД за < 1 с` (`performance.now()`, граница `1000 × TEST_TIMEOUT_SCALE`; в БД таблицы фикстуры, 0 строк в `note`);
    - `AC-4.18: роль kit_app подключается к пустой БД, drop() удаляет её, повторный drop() — без ошибки`;
    - `AC-4.18: два одновременных createScratchDatabase — обе БД созданы` (повтор `55006`).
-5. `test/integration/database/ac-4-6-prepare-database.spec.ts` (MODIFY): `AC-4.6: assertAppRoleIsNotOwner проходит под kitprep_app` и `AC-4.6: assertAppRoleIsNotOwner падает под kitprep_owner (владелец схемы)` — соединения `pg.Client` с паролями теста.
+5. `test/integration/database/ac-4-6-prepare-database.spec.ts` (MODIFY): `AC-4.6: assertAppRoleIsNotOwner проходит под kitprep_app` и `AC-4.6: assertAppRoleIsNotOwner падает под kitprep_owner (владелец схемы)`; `AC-4.6: kitprep_app без CREATE на базе и схеме после prepareDatabase` (`has_database_privilege`, `has_schema_privilege`); `AC-4.6: assertAppRoleIsNotOwner падает после GRANT CREATE ON DATABASE … TO kitprep_app` и `… падает после GRANT CREATE ON SCHEMA kitprep TO kitprep_app` (права выдаёт и в `finally` отзывает суперпользователь) — соединения `pg.Client` с паролями теста.
 6. `test/integration/database/ac-4-7-migrations.spec.ts` (MODIFY): исходная БД — `createScratchDatabase()` (уже мигрированная: проверка «applied: 0» и журнала — на ней); случай «первый runMigrations пишет журнал» — на новой пустой БД, подготовленной суперпользователем (`CREATE DATABASE`, `grantDatabaseAccess`, `CREATE SCHEMA kit AUTHORIZATION kit_owner`), миграции — под `kitDatabaseOwnerUrl` с заменой имени БД; восстановление дампа — так же; `prepareDatabase` с ролями `kit_*` в файле больше не вызывается.
 7. `test/unit/testing/worker-scope.spec.ts` (`Skill: nestjs-code test unit testing worker-scope (CREATE)`), `describe('UC-14: workerScope')`:
    - `§3.8: tenant — слаг ^[a-z0-9][a-z0-9-]{0,48}$, начинается с w<VITEST_POOL_ID>-`;

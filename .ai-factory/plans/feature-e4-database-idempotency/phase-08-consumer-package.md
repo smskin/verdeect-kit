@@ -70,7 +70,7 @@ AC-9.1 этапа E4: потребитель на упакованном арх�
    - `AC-9.1: newId('cmp') по формату`.
 8. `src/observability.spec.ts` (MODIFY): `DATABASE_URL` процесса — `inject('kitDatabaseUrl')`; новые случаи:
    - `AC-9.1: /health — database и database-read up` (вместо TCP-пробы);
-   - `AC-9.5: после старта — лог «очистка идемпотентности: проход» с service consumer и replica consumer-1; /metrics — verdeect_cleanup_runs_total{service="consumer",table="idempotency_key",result="done"} ≥ 1` (ожидание строки лога — без `sleep`, по потоку stdout);
+   - `AC-9.5: после старта — лог «очистка идемпотентности: проход» с service consumer и replica consumer-1; /metrics — verdeect_cleanup_runs_total{service="consumer",table="idempotency_key",result="ok"} ≥ 1` (ожидание строки лога — без `sleep`, по потоку stdout);
    - остановка по `SIGTERM` в срок с выходом 0 — существующий случай теперь закрывает пулы (шаг 4) и очистку (шаг 3).
 9. Снимок OpenAPI: `pnpm build` и `pnpm openapi` в копии проекта → обновлённый `contracts/openapi.json` (маршрут `POST /companies` с `Idempotency-Key` required, `Idempotent-Replayed`, 409/422/400) закоммитить в шаблон; `openapi.spec.ts` — `operations: 2`.
 10. `import-check.mjs`: + `database:<probe 'newId'>`, `idempotency:<probe 'Idempotent'>` — строка `config:ok database:ok http:ok idempotency:ok observability:ok testing:…` (порядок по алфавиту). `types-check.ts` — использование типов `DbContext`, `KitIdempotentOptions`, `KitWorkerScope` (проверка `tsc`).

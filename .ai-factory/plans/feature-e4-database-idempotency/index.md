@@ -40,7 +40,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 | CLI `db prepare --service <svc>`; без флага или неверный формат — `{error: {code: 'USAGE'}}`, выход 1; `prepareEnvSchema` не меняется | PRD v1.14 §3.3, AC-4.17 | 10, 11 |
 | `@Idempotent` без проверенного принципала — 500 `INTERNAL_ERROR`, `error`-лог, одно событие GlitchTip, обработчик не вызывается; README: только с `VerdeectAuthGuard` | PRD v1.14 §3.3а, AC-4.14 | 28, 34, 39 |
 | Решение E3: модули kit закрываются хуками Nest — пулы в `onApplicationShutdown` (шаг 4), очистка идемпотентности и пачки `Db` — в `beforeApplicationShutdown` (шаг 3); участников `KitLifecycle` не регистрируют | E3, README «Жизненный цикл», ARCHITECTURE | 17, 18, 29 |
-| Решение E3: `Db` помечает ошибку срока пула именем пула (`main`/`read`) внутренней `tagPoolTimeout` и **сам** пишет `verdeect_db_pool_wait_timeouts_total{pool}` и `captureThrottled`; фильтр `/http` отвечает 503 + `Retry-After: 1` без метрики и события (`pool: 'unknown'` удалён) | E3; AC-4.5 | 3, 17, 22 |
+| Решение E3 + KT-19 п. 3: срок пула учитывается **на уровне пула** — при ошибке получения соединения (обёртка `connect` экземпляров основного пула и пула чтения): `verdeect_db_pool_wait_timeouts_total{pool: main\|read}` и `captureThrottled`, ошибка помечается учтённой (`tagPoolTimeout`); учитываются и `Db`, и прямые запросы `DRIZZLE`/`DRIZZLE_READ`; фильтр `/http` отвечает 503 + `Retry-After: 1` без метрики и GlitchTip — событие одно; `pool: 'unknown'` не остаётся нигде | E3; AC-4.5; KT-19 п. 3 | 3, 17, 18, 22, 24 |
 | `/database` реэкспортирует `isUniqueViolation`/`isConnectionError`/`isPoolTimeout` из `internal/pg-errors.ts` (E3), не дублирует | §3.3; E3 | 22 |
 | `/idempotency` бросает `DomainError` с кодами `IDEMPOTENCY_*` словаря `kitErrors` (E3) | §3.3а; E3 | 28 |
 | `drizzle-orm/node-postgres` импортирует `pg` статически → грузится динамически после `loadPeer` в `src/database/pg.ts`; статический импорт значения запрещён lint; `index.ts` подпутей первым импортирует модуль с `loadPeer` (`./pg.js`, `./peer.js`) — текст AC-1.2 называет свой подпуть | AC-1.2; ARCHITECTURE «Правила зависимостей»; разведка `drizzle-orm/node-postgres/driver.js` | 1, 4, 22, 30, 38 |
@@ -49,18 +49,18 @@ Authority (запрос пользователя, skill-context «Requirements P
 | `runExclusive` — `pg_try_advisory_lock(hashtextextended(key, 0))` на выделенном соединении; O `job-lock` (Redis) не переносится | §3.3 | 20 |
 | `newId`/`ulid` — эталон O (`internal/ids.ts`), проверка префикса `^[a-z]{2,5}$` | §3.3, AC-4.9; ARCHITECTURE `internal/ids.ts` | 2 |
 
-**Решения плана вне формулировок PRD** (отправляются чату kit до `/goal`):
+**Решения плана вне формулировок PRD** — рассмотрены чатом kit в KT-19 (10.11.2026): приняты как есть, П2 и П8 — с условиями (внесены ниже); `requirements/0000-kit/README.md` — «PRD v1.14» (коммит `1e4bb0e`):
 
 | # | Решение | Обоснование | Задачи |
 |---|---|---|---|
 | П1 | Ключи `provide` `startTestStack`: `kitDatabaseUrl` (роль `<svc>_app`), `kitDatabaseOwnerUrl`, `kitDatabaseAdminUrl`, `kitDatabaseService`, `kitDatabaseTemplate`; БД `<svc>` — копия шаблона `<svc>_template`; при `postgres: true` подготовка всегда, миграции — при `migrations` (путь от `cwd`); `migrations` без `postgres` — `TypeError` | §3.8 «адреса — `provide`», AC-4.18 | 12 |
-| П2 | `prepareDatabase` дополнительно: `GRANT CONNECT, CREATE ON DATABASE` владельцу, `CONNECT` приложению, `GRANT USAGE ON SCHEMA` приложению и directory; схема `drizzle` не создаётся; права на таблицы — SQL-миграцией сервиса (как O) | эталон O; AC-4.7 | 6 |
+| П2 | `prepareDatabase` дополнительно: `GRANT CONNECT, CREATE ON DATABASE` владельцу, `CONNECT` приложению, `GRANT USAGE ON SCHEMA` приложению и directory; схема `drizzle` не создаётся; права на таблицы — SQL-миграцией сервиса (как O). **KT-19 п. 1:** `<svc>_app` не получает `CREATE` ни на БД, ни на схему; проверяет `assertAppRoleIsNotOwner`, тест AC-4.6 | эталон O; AC-4.7; KT-19 п. 1 (принято с условием) | 6, 15, 16 |
 | П3 | Результаты CLI: `prepare` → `{database, roles, created}`, `migrate` → `{schema, applied}`, `move-journal` → `{from, to, moved}`; коды ошибок `USAGE`, `INVALID_ENVIRONMENT` (`keys`), `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED` (`sqlState`); текст ошибки `pg` не выводится | AC-4.17 «без адресов и паролей» | 10 |
 | П4 | `move-journal`: перенос строк по `hash` в `<to>.__migrations`, удаление `<from>.__drizzle_migrations` и пустой схемы `<from>` в одной транзакции; повтор — `moved: 0` | §3.3 | 7 |
 | П5 | `deleteInBatches({db, sql, …})`: `sql` — функция размера пачки → SQL с одной строкой и целой колонкой `deleted`; пачка — `Db.transaction` с системным контекстом (`tenant: null`, `channel: 'system'`); `Db` отслеживает проходы и прекращает новые пачки на шаге 3 | §3.3 «`Db` отслеживает идущие пачки»; эталоны O/I | 17, 19 |
 | П6 | Уникальность области — `UNIQUE NULLS NOT DISTINCT (tenant, subject, key)` вместо PK (PK по nullable-колонке невозможен); `subject` — `user:<sub>`, `agent:<sub>`, `service:<client_id>` (виды субъектов не пересекаются) | §6 «PK по области и ключу» + `tenant?` | 26, 28 |
 | П7 | `Idempotency-Key` — формат O `^[\x21-\x7E]{1,200}$`, иначе 422 `VALIDATION_FAILED` `path: Idempotency-Key`; сохраняются только успешные ответы (ошибка обработчика — строка удаляется, повтор выполняется заново); статус — `@HttpCode` или POST 201; `complete` — один повтор (O) | эталон O | 28 |
-| П8 | Метрики очистки AC-9.5: `verdeect_cleanup_runs_total{table, result}` (`done`/`skipped`/`failed`), `verdeect_cleanup_deleted_total{table}`, `table` — имя таблицы без схемы (`idempotency_key`; E5 — `outbox`, `inbox`); лог `info` «очистка идемпотентности: проход» с `service`/`replica` из `base` | AC-9.5, NFR-8 — имён в PRD нет | 25, 29, 34, 37 |
+| П8 | Метрика очистки AC-9.5 (KT-19 п. 2 и ответ на вопрос AC-2.11): одна общая метрика пакета `verdeect_cleanup_runs_total{table, result}` в `kitMetrics`, `result`: `ok` / `partial` (упёрся в `maxBatches`, записи старше срока остались) / `error`; `table` — имя таблицы без схемы, только таблицы пакета (`idempotency_key`; E5 — `outbox`, `inbox`); проход без блокировки метрику не меняет; `verdeect_cleanup_deleted_total` **нет** — число удалённых строк в `info`-логе прохода (`service`, `replica`, `table`, `deleted`); правило `VerdeectCleanupFailing`: `increase(verdeect_cleanup_runs_total{result=~"error\|partial"}[2h]) > 0` с порогом `verdeect_kit_threshold:cleanup_runs` по `service`, аннотация различает `error` и `partial`; тест AC-2.11 (vmalert) проходит | AC-9.5, NFR-8, AC-2.11; KT-19 п. 2 | 25, 29, 34, 37 |
 | П9 | Расписание очистки — первый проход сразу после старта (`onApplicationBootstrap`), затем раз в час (`setInterval`, `unref`); ключ `runExclusive` — `verdeect-kit:idempotency-cleanup:<схема>`; пачка 1000, не больше 100 пачек за проход (O) | эталон O `@Cron` раз в час; `@nestjs/schedule` не peer kit; AC-9.5 в потребителе | 29 |
 | П10 | OpenAPI: `Idempotency-Key` — параметр заголовка (`required` по опции, `pattern` O), `Idempotent-Replayed` — заголовок успешного ответа, ошибки 409/422 и 400 (при `required`) | §3.5 «заголовки идемпотентности — `@Idempotent`» | 31, 37 |
 | П11 | `KitDatabaseModule` внедряет `HealthRegistry` и `KIT_METRICS` необязательно: без `createHttpApp` (контекст CLI сервиса) — без проб и метрики; пробы `database` и `database-read` — критичные, `select 1` на своём пуле | §3.3 «пробы обоих пулов (критичные)» | 18 |
@@ -146,8 +146,8 @@ Authority (запрос пользователя, skill-context «Requirements P
 - [ ] Task 16: экспорты `/testing`, `globalSetup` с миграциями, тесты AC-4.18, AC-1.13, AC-4.6, AC-4.7, `workerScope` ([details](phase-04-test-stack.md#task-16-экспорты-globalsetup-пакета-и-тесты-фазы)) (depends on 8, 9, 12, 13, 14, 15)
 
 ### Фаза 5: `Db`, `KitDatabaseModule` и подпуть `/database`
-- [ ] Task 17: `Db` — `transaction/read/readGlobal/afterCommit/setLocal`, `withPoolClient`, метка и метрика срока пула ([details](phase-05-db-module.md#task-17-db)) (depends on 3, 4, 5)
-- [ ] Task 18: `KitDatabaseModule`, `DRIZZLE`, `DRIZZLE_READ`, пробы, шаг 4 ([details](phase-05-db-module.md#task-18-kitdatabasemodule)) (depends on 4, 17)
+- [ ] Task 17: `Db` — `transaction/read/readGlobal/afterCommit/setLocal`, `withPoolClient` ([details](phase-05-db-module.md#task-17-db)) (depends on 3, 4, 5)
+- [ ] Task 18: `KitDatabaseModule`, `DRIZZLE`, `DRIZZLE_READ`, учёт срока на уровне пула, пробы, шаг 4 ([details](phase-05-db-module.md#task-18-kitdatabasemodule)) (depends on 3, 4, 17)
 - [ ] Task 19: `deleteInBatches` ([details](phase-05-db-module.md#task-19-deleteinbatches)) (depends on 2, 17)
 - [ ] Task 20: `runExclusive` ([details](phase-05-db-module.md#task-20-runexclusive)) (depends on 17)
 - [ ] Task 21: `occurredAtColumn`, `ifNewer` ([details](phase-05-db-module.md#task-21-occurredatcolumn-и-ifnewer))
@@ -156,7 +156,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 - [ ] Task 24: I AC-4.1–4.5, 4.10–4.13, 4.15, 4.16 ([details](phase-05-db-module.md#task-24-тесты-i-фазы)) (depends on 16, 17, 18, 19, 20, 21, 22, 23)
 
 ### Фаза 6: Подпуть `/idempotency`
-- [ ] Task 25: метрики очистки в `kitMetrics` (AC-9.5) ([details](phase-06-idempotency.md#task-25-метрики-очистки-ac-95))
+- [ ] Task 25: метрика `verdeect_cleanup_runs_total` и правило `VerdeectCleanupFailing` (AC-9.5, AC-2.11) ([details](phase-06-idempotency.md#task-25-метрика-очистки-и-правило-алерта-ac-95-ac-211))
 - [ ] Task 26: `createIdempotencyTable`, `idempotencyPurgeSql` ([details](phase-06-idempotency.md#task-26-createidempotencytable-и-idempotencypurgesql)) (depends on 5)
 - [ ] Task 27: `@Idempotent` ([details](phase-06-idempotency.md#task-27-idempotent)) (depends on 3)
 - [ ] Task 28: интерсептор и хранилище ([details](phase-06-idempotency.md#task-28-интерсептор-и-хранилище)) (depends on 3, 17, 22, 26, 27)
@@ -186,8 +186,8 @@ Authority (запрос пользователя, skill-context «Requirements P
 | AC-4.2 (UC-4) | 17, 18, 24 | `ac-4-2-read.spec.ts` → `AC-4.2: read без тенанта → TenantRequiredError…`, `AC-4.2: запрос дольше 5 с в readGlobal → отмена 57014` |
 | AC-4.3 (UC-5) | 17, 24 | `ac-4-3-after-commit.spec.ts` → `AC-4.3: задачи после COMMIT…`, `AC-4.3: afterCommit в read → AfterCommitInReadOnlyError` |
 | AC-4.4 (UC-4) | 17, 18, 24 | `ac-4-4-connection-lost.spec.ts` → `AC-4.4: 2 × DB_POOL_MAX обрывов до BEGIN — пул не исчерпан…` |
-| AC-4.5 (UC-4) | 3, 17, 22, 24 | `test/unit/internal/pg-errors.spec.ts` → `AC-4.5: tagPoolTimeout…`; `ac-4-5-pool-timeout.spec.ts` → `AC-4.5: исчерпание основного пула…{pool="main"} +1`, `AC-4.5: HTTP … 503 SERVICE_UNAVAILABLE + Retry-After: 1…`; `test/unit/http/ac-3-3-exception-filter.spec.ts` → `AC-3.3: срок пула → 503…; метрику пишет Db (AC-4.5)` |
-| AC-4.6 (UC-1, UC-12) | 6, 9, 15, 16 | `ac-4-6-prepare-database.spec.ts` → `AC-4.6: роли … созданы`, `AC-4.6: повторный prepareDatabase — … created: []`, `AC-4.6: assertAppRoleIsNotOwner проходит под kitprep_app` |
+| AC-4.5 (UC-4) | 3, 17, 18, 22, 24 | `test/unit/internal/pg-errors.spec.ts` → `AC-4.5: tagPoolTimeout…`; `ac-4-5-pool-timeout.spec.ts` → `AC-4.5: исчерпание основного пула через Db.transaction…{pool="main"} +1`, `AC-4.5: исчерпание … прямым запросом через DRIZZLE…`, `…DRIZZLE_READ → pool="read" +1`, `AC-4.5: HTTP … 503 … событие GlitchTip ровно одно`; `test/unit/http/ac-3-3-exception-filter.spec.ts` → `AC-3.3: срок пула → 503…; метрику пишет Db (AC-4.5)` |
+| AC-4.6 (UC-1, UC-12) | 6, 9, 15, 16 | `ac-4-6-prepare-database.spec.ts` → `AC-4.6: роли … созданы`, `AC-4.6: повторный prepareDatabase — … created: []`, `AC-4.6: assertAppRoleIsNotOwner проходит под kitprep_app`, `AC-4.6: kitprep_app без CREATE на базе и схеме…`, `AC-4.6: assertAppRoleIsNotOwner падает после GRANT CREATE ON DATABASE…` / `…ON SCHEMA…` |
 | AC-4.7 (UC-1) | 7, 9, 16 | `ac-4-7-migrations.spec.ts` → `AC-4.7: runMigrations пишет журнал в kit.__migrations, схема drizzle не создаётся…`, `AC-4.7: pg_dump -n kit + восстановление…`, `AC-4.7: moveJournal переносит…` |
 | AC-4.8 (UC-1) | 5, 26, 35, 36 | `test/integration/testing/ac-4-8-strict-isolation.spec.ts` → `AC-4.8: note с tenantPolicy и FORCE…`, `AC-4.8: таблица без политики → падает`, `…без FORCE…`, `…нестрогая политика…`, `…функции idempotency_purge нет…`, `…без SECURITY DEFINER…`, `…владелец не kit_directory…`, `…у PUBLIC есть EXECUTE…` |
 | AC-4.9 (UC-5) | 2, 22 | `test/unit/internal/ac-4-9-ids.spec.ts` → `AC-4.9: newId('fil') — fil_ + 26 знаков Crockford`, `AC-4.9: префикс вне ^[a-z]{2,5}$ → TypeError` |
@@ -200,7 +200,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 | AC-4.16 (UC-5) | 17, 24 | `ac-4-16-set-local.spec.ts` → `AC-4.16: имя вне ^app\.[a-z_]{1,48}$ → TypeError`, `AC-4.16: значение со ' передаётся параметром…` |
 | AC-4.17 (UC-12) | 10, 11 | `test/integration/cli/ac-4-17-db-commands.spec.ts` → `AC-4.17: db prepare --service kitcli…`, `AC-4.17: db prepare без --service → USAGE`, `AC-4.17: db prepare --service Kit_1 → USAGE…`, `AC-4.17: … DATABASE_UNAVAILABLE…`, `AC-4.17: db migrate…`, `AC-4.17: db move-journal…` |
 | AC-4.18 (UC-14) | 12, 13, 16 | `test/integration/testing/ac-4-18-scratch-database.spec.ts` → `AC-4.18: createScratchDatabase — пустая мигрированная БД за < 1 с` |
-| AC-9.5 (NFR-8) | 25, 29, 34, 37 | `test/unit/observability/ac-2-8-metrics.spec.ts` → `AC-9.5: kitMetrics — verdeect_cleanup_runs_total…`; `test/integration/idempotency/ac-9-5-cleanup-observability.spec.ts` → `AC-9.5: проход очистки…`; `test/consumer/minimal/src/observability.spec.ts` → `AC-9.5: после старта — лог «очистка идемпотентности: проход»…` |
+| AC-9.5 (NFR-8) | 25, 29, 34, 37 | `test/unit/observability/ac-2-8-metrics.spec.ts` → `AC-9.5: kitMetrics — verdeect_cleanup_runs_total…`; `ac-4-14-cleanup.spec.ts` → `AC-9.5: обычный проход → result="ok"…`, `AC-9.5: … → result="partial"`, `AC-9.5: ошибка БД … → result="error"…`; `test/package/ac-2-11-alert-rules.spec.ts` (правило `VerdeectCleanupFailing`, vmalert); `test/integration/idempotency/ac-9-5-cleanup-observability.spec.ts` → `AC-9.5: проход очистки…`; `test/consumer/minimal/src/observability.spec.ts` → `AC-9.5: после старта — лог «очистка идемпотентности: проход»…` |
 | AC-1.1 (UC-16) | 22, 30, 38 | `test/unit/package/package-manifest.spec.ts` → `AC-1.1: exports — ровно …./database…./idempotency…`; `test/package/ac-1-1-package.spec.ts` → состав архива; `test/package/ac-9-1-consumer.spec.ts` → `AC-1.1: /testing без условия development…` |
 | AC-1.2 (UC-1) | 1, 4, 22, 30, 33, 38 | `test/unit/database/ac-1-2-database-without-pg.spec.ts`; `test/unit/idempotency/ac-1-2-idempotency-peer.spec.ts`; `test/package/ac-1-1-package.spec.ts` → `AC-1.2: dist/database и dist/idempotency не импортируют pg … статически`; `test/package/ac-9-1-consumer.spec.ts` → `AC-1.2: без pg … /database — «@verdeect/kit/database требует pg…»` |
 | AC-1.13 (UC-14) | 12, 16 | `test/integration/testing/ac-1-13-postgres.spec.ts` → `AC-1.13: startTestStack({postgres: true}) без migrations — роли … и схема есть, таблиц нет` |
@@ -220,7 +220,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 - **Commit 3** (после задач 10–11): `feat(cli): verdeect-kit db prepare --service, migrate, move-journal`
 - **Commit 4** (после задач 12–16): `feat(testing): подготовка БД в startTestStack, createScratchDatabase, workerScope, assertAppRoleIsNotOwner`
 - **Commit 5** (после задач 17–24): `feat(database): Db, KitDatabaseModule, deleteInBatches, runExclusive, ifNewer; подпуть ./database`
-- **Commit 6** (после задач 25–34): `feat(idempotency): @Idempotent, интерсептор, очистка idempotency_purge; подпуть ./idempotency`
+- **Commit 6** (после задач 25–34): `feat(idempotency): @Idempotent, интерсептор, очистка idempotency_purge, метрика и алерт очистки; подпуть ./idempotency`
 - **Commit 7** (после задач 35–36): `feat(testing): assertStrictTenantIsolation с проверкой функции очистки`
 - **Commit 8** (после задач 37–39): `test(consumer): БД и идемпотентность на архиве; docs: README и CHANGELOG E4`
 
@@ -228,5 +228,5 @@ Authority (запрос пользователя, skill-context «Requirements P
 - `make ci` зелёный (lint → analyse → test → test-integration → build → pack-check); `make test-timing` не затронут.
 - Все AC скоупа — в Traceability с зелёными тестами; названия тестов начинаются с ID.
 - `src/**` без `console.*`, без имён схем сервисов (AC-9.4); статических импортов `pg`/`drizzle-orm/node-postgres` нет.
-- Решения П1–П14 и итог `/goal` отправлены чату kit (KT-18: хеш коммита r9 `7d5e28a`).
+- Итог `/goal` отправлен чату kit (KT-19: хеш коммита плана с решениями KT-19).
 - README, CHANGELOG `[Unreleased]`, TSDoc у каждого нового экспорта; `version` не меняется (G14).

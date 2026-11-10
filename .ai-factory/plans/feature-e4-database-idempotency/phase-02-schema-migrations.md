@@ -120,6 +120,7 @@ CREATE POLICY "tenant_isolation" ON "kit"."note" AS PERMISSIVE FOR ALL TO public
 
 ### Контракты
 - Права на таблицы роли приложения (`SELECT, INSERT, UPDATE, DELETE`) и `FORCE RLS` — в SQL-миграциях сервиса, не здесь (эталон O; README).
+- **KT-19 п. 1:** `<svc>_app` получает только `CONNECT` на БД и `USAGE` на схему — **никогда `CREATE`** ни на БД, ни на схему (иначе роль приложения создаёт объекты и становится их владельцем в обход миграций). `CREATE` на БД — только `<svc>_owner`. Проверка — `assertAppRoleIsNotOwner` (задача 15) и тест AC-4.6 (задача 16).
 - Ошибка подключения или SQL — исключение `pg` как есть (CLI переводит в JSON без адресов, задача 10).
 
 ### Ошибки и логи

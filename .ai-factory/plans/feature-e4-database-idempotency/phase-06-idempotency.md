@@ -29,7 +29,8 @@ Depends on: Phase 1 (Task 3), Phase 5 (Tasks 17–24)
 
 | Путь | Действие | Изменение |
 |---|---|---|
-| `src/observability/metrics.ts` | modify | `cleanupRuns`, `cleanupDeleted` |
+| `src/observability/metrics.ts` | modify | `cleanupRuns` (`verdeect_cleanup_runs_total`) |
+| `alerts/verdeect-kit.rules.yml`, `test/fixtures/alerts/verdeect-kit.test.yml`, `test/package/ac-2-11-alert-rules.spec.ts` | modify | правило `VerdeectCleanupFailing` и его проверки (AC-2.11) |
 | `src/idempotency/table.ts` | create | `createIdempotencyTable`, `idempotencyPurgeSql`, тип `KitIdempotencyTable` |
 | `src/idempotency/idempotent.decorator.ts` | create | `Idempotent` |
 | `src/idempotency/idempotency.interceptor.ts` | create | `IdempotencyInterceptor`, хранилище, отпечаток |
@@ -43,24 +44,45 @@ Depends on: Phase 1 (Task 3), Phase 5 (Tasks 17–24)
 | `test/integration/idempotency/*.spec.ts` | create | I AC-4.14, AC-9.5 |
 | `vitest.integration.config.ts` | modify | `ISOLATED` с причинами |
 
-## Task 25: Метрики очистки (AC-9.5)
+## Task 25: Метрика очистки и правило алерта (AC-9.5, AC-2.11)
 
 ### Назначение
-NFR-8, AC-9.5: фоновая операция (очистка идемпотентности — с E4; outbox/inbox — E5) пишет метрику с `service`. Имён в PRD нет — решение плана (отправляется чату kit).
+NFR-8, AC-9.5: фоновая операция (очистка идемпотентности — с E4; outbox/inbox — E5 использует ту же метрику) пишет метрику с `service`. Решение плана П8 с условиями KT-19 п. 2: одна общая метрика очистки пакета; число удалённых строк — в `info`-логе прохода; AC-2.11 — правило на каждую метрику пакета.
 
 ### Шаги
-1. `src/observability/metrics.ts` (`Skill: nestjs-code generic src/observability/metrics.ts (MODIFY)`): в `KitMetrics` и `kitMetrics`:
-   - `cleanupRuns: Counter<'table' | 'result'>` — `verdeect_cleanup_runs_total`, help «Проходы фоновой очистки по таблице и итогу (done, skipped, failed)»;
-   - `cleanupDeleted: Counter<'table'>` — `verdeect_cleanup_deleted_total`, help «Удалённые фоновой очисткой строки по таблице».
-   TSDoc полей; метка `table` — имя таблицы без схемы (`idempotency_key`; в E5 — `outbox`, `inbox`).
-2. Шапку файла дополнить «AC-9.5 (E4): метрики очистки».
-3. `test/unit/observability/ac-2-8-metrics.spec.ts` (MODIFY): случай `AC-9.5: kitMetrics — verdeect_cleanup_runs_total{table,result} и verdeect_cleanup_deleted_total{table} с меткой service`.
+1. `src/observability/metrics.ts` (`Skill: nestjs-code generic src/observability/metrics.ts (MODIFY)`): в `KitMetrics` и `kitMetrics` — `cleanupRuns: Counter<'table' | 'result'>`, имя `verdeect_cleanup_runs_total`, help «Проходы фоновой очистки по таблице и итогу (ok, partial, error)». TSDoc: `table` — имя таблицы без схемы, значения ограничены таблицами пакета (`idempotency_key`; в E5 — `outbox`, `inbox`); `result`: `ok` — проход завершён, `partial` — упёрся в `maxBatches`, а записи старше срока остались (очистка не успевает), `error` — проход упал. Проход, не взявший блокировку (другая реплика), метрику не меняет. Метрики числа удалённых строк нет.
+2. Шапку файла дополнить «AC-9.5 (E4): метрика очистки».
+3. `alerts/verdeect-kit.rules.yml` (`Skill: none — правила vmalert (YAML)`): правило `VerdeectCleanupFailing` в группе `verdeect-kit`, по образцу `VerdeectEventsDlq` (порог по умолчанию 0, переопределение по `service`):
+   ```yaml
+   - alert: VerdeectCleanupFailing
+     # Порог по умолчанию — 0: любой неудачный или неполный проход очистки за 2 часа.
+     expr: |
+       sum by (service, table, result) (increase(verdeect_cleanup_runs_total{result=~"error|partial"}[2h]))
+         > on (service) group_left ()
+       (
+         max by (service) (verdeect_kit_threshold:cleanup_runs)
+           or on (service) (max by (service) (verdeect_cleanup_runs_total) * 0)
+       )
+     labels:
+       severity: warning
+     annotations:
+       summary: 'Очистка {{ $labels.table }} сервиса {{ $labels.service }}: {{ $labels.result }}'
+       description: >-
+         За 2 часа проход очистки таблицы {{ $labels.table }} сервиса {{ $labels.service }} завершился с итогом
+         {{ $labels.result }} (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса
+         («очистка … : ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка
+         не успевает за потоком записей.
+   ```
+   Комментарий в шапке файла — добавить `:cleanup_runs` в список имён порогов.
+4. `test/fixtures/alerts/verdeect-kit.test.yml` (`Skill: none — фикстура vmalert-tool`): случаи `VerdeectCleanupFailing` — `result="error"` прирост 1 → алерт с `result: error`; `result="partial"` → алерт с `result: partial`; только `ok` → `exp_alerts: []`; переопределение порога `verdeect_kit_threshold:cleanup_runs` = 5 для сервиса — прирост 1 без алерта (как у существующих правил).
+5. `test/package/ac-2-11-alert-rules.spec.ts` (`Skill: nestjs-code test unit package alert-rules (MODIFY)`): `toHaveLength(5)` → 6 (метрики `verdeect_*` реестра); список порогов `THRESHOLDS` — + `verdeect_kit_threshold:cleanup_runs`.
+6. `test/unit/observability/ac-2-8-metrics.spec.ts` (MODIFY): случай `AC-9.5: kitMetrics — verdeect_cleanup_runs_total{table,result} с меткой service`.
 
 ### Ошибки и логи
 Нет.
 
 ### Проверка
-- `make test FILTER='AC-9.5'`.
+- `make test FILTER='AC-9.5'`; `make pack-check` (AC-2.11 — vmalert в Docker).
 
 ## Task 26: `createIdempotencyTable` и `idempotencyPurgeSql`
 
@@ -169,8 +191,8 @@ UC-7, AC-4.14, §3.3а.
 4. `IdempotencyCleanup` (внедряет `Db`, таблицу и `KIT_METRICS` с `optional: true`; `KitLifecycle` не нужен — остановка через хуки Nest):
    - `onModuleInit` (до прослушивания порта): `db.readGlobal` — `select to_regprocedure($1) is not null as ok` с `"<схема>".idempotency_purge(integer)`; `false` → `Error` «KitIdempotencyModule: нет функции <схема>.idempotency_purge — добавьте idempotencyPurgeSql(<схема>) в SQL-миграцию сервиса» (в `bootstrapService` — `failStartup`, в тестах — отказ `createTestApp`);
    - `onApplicationBootstrap`: первый проход — `setTimeout(…, 0).unref()`, затем `setInterval(…, CLEANUP_INTERVAL_MS).unref()`, `CLEANUP_INTERVAL_MS` = 3 600 000 (O — раз в час);
-   - проход (`run()`, повтор проходов не накладывается: идущий — пропуск): `runExclusive(db, 'verdeect-kit:idempotency-cleanup:<схема>', …)` → `deleteInBatches({db, sql: batch → select "<схема>".idempotency_purge(batch) as deleted, batchSize: 1000, maxBatches: 100, shouldContinue: () → !stopped})`;
-   - итог: `{ran: false}` → `cleanupRuns.inc({table: 'idempotency_key', result: 'skipped'})`, `debug` «очистка идемпотентности: другая реплика»; успех → `result: 'done'`, `cleanupDeleted.inc({table}, deleted)`, `info` `{table, deleted, batches}` «очистка идемпотентности: проход» (`service`, `replica` — из `base` логгера приложения); ошибка → `result: 'failed'`, `error` `{table, err: sanitizeError}`, `captureError`; ошибка не пробрасывается;
+   - проход — `run(limits?)`; пределы по умолчанию — константа файла `CLEANUP_LIMITS` `{batchSize: 1000, maxBatches: 100}`; параметр `limits` нужен только тестам пакета (класс не экспортируется из `index.ts`, публичный API не меняется); повтор проходов не накладывается (идущий — пропуск): `runExclusive(db, 'verdeect-kit:idempotency-cleanup:<схема>', …)` → `deleteInBatches({db, sql: batch → select "<схема>".idempotency_purge(batch) as deleted, ...limits, shouldContinue: () → !stopped})`;
+   - итог (KT-19 п. 2): `{ran: false}` → метрика не меняется, `debug` «очистка идемпотентности: другая реплика»; успех — `result` = `partial`, если `complete` ложь и `batches === maxBatches` (остались записи старше срока), иначе `ok`; `cleanupRuns.inc({table: 'idempotency_key', result})`; `info` `{table, deleted, batches, result}` «очистка идемпотентности: проход» (`service`, `replica` — из `base` логгера приложения); ошибка → `result: 'error'`, `error` `{table, err: sanitizeError}` «очистка идемпотентности: ошибка», `captureError`; ошибка не пробрасывается;
    - `beforeApplicationShutdown` (шаг 3, решение E3): `stopped = true`, снять таймеры, дождаться идущего прохода (пачка дорабатывает, новая не начинается).
 5. Участников `KitLifecycle` модуль не регистрирует.
 
@@ -241,12 +263,15 @@ UC-7, AC-4.14, §3.3а.
    - `AC-4.14: запись компании недоступна под другой компанией и без компании (политика IS NOT DISTINCT FROM)` — прямые запросы роли `kit_app` с `set_config`.
 3. `test/integration/idempotency/ac-4-14-cleanup.spec.ts` (`Skill: nestjs-code test integration idempotency cleanup (CREATE)`), проект `shared`, эквивалентность O `idempotency-cleanup.int`: строки вставляет администратор (`acme` 25 ч, `globex` 30 ч, без компании 26 ч, `acme` 1 ч); `IdempotencyCleanup` — из приложения стенда (`app.get`), проход — `run()`; под ролью `kit_app`:
    - `AC-4.14: очистка под kit_app удаляет записи старше 24 ч двух компаний и запись без компании, запись моложе 24 ч остаётся`;
-   - `AC-4.14: две реплики одновременно — проход выполняет одна (вторая skipped)`;
+   - `AC-4.14: две реплики одновременно — проход выполняет одна, вторая не берёт блокировку и метрику не меняет`;
+   - `AC-9.5: обычный проход → verdeect_cleanup_runs_total{result="ok"} +1, лог с deleted`;
+   - `AC-9.5: записей больше batchSize × maxBatches → result="partial"` — 5 просроченных строк, `run({batchSize: 2, maxBatches: 2})`;
+   - `AC-9.5: ошибка БД во время прохода → result="error", error-лог, captureError` (функция `idempotency_purge` в `createScratchDatabase()` заменяется администратором на функцию с `RAISE EXCEPTION`);
    - `AC-4.11: остановка во время прохода — пачка дорабатывает, новая не начинается` (`batchSize` фиксирован, проверка по числу пачек через `countQueries`).
 4. `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` — **проект `isolated`** (`vi.stubEnv`, перехват `process.exit` — `useBootstrapStand`): БД из `createScratchDatabase()` с `DROP FUNCTION kit.idempotency_purge(integer)`:
    - `AC-4.14: без функции idempotency_purge createTestApp отказывает, текст называет idempotencyPurgeSql`;
    - `AC-4.14: bootstrapService без функции — fatal через failStartup с текстом про idempotencyPurgeSql, exit 1, порт не открыт`.
-5. `test/integration/idempotency/ac-9-5-cleanup-observability.spec.ts`, проект `shared`: `AC-9.5: проход очистки — verdeect_cleanup_runs_total{service="kit",table="idempotency_key",result="done"} и verdeect_cleanup_deleted_total растут; лог «очистка идемпотентности: проход» с полями service и replica` — лог перехватывается потоком pino стенда (`LOG_LEVEL=info` одной конфигурацией на файл, RULES.md).
+5. `test/integration/idempotency/ac-9-5-cleanup-observability.spec.ts`, проект `shared`: `AC-9.5: проход очистки — verdeect_cleanup_runs_total{service="kit",table="idempotency_key",result="ok"} растёт; лог «очистка идемпотентности: проход» с полями service, replica, table, deleted` — лог перехватывается потоком pino стенда (`LOG_LEVEL=info` одной конфигурацией на файл, RULES.md).
 6. `vitest.integration.config.ts` (MODIFY): `ISOLATED` — `test/integration/idempotency/ac-4-14-idempotency.spec.ts` (причина: `initFakeSentry` — процесс-глобальный Sentry) и `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` (причина: `vi.stubEnv` и `process.exit` — стенд `bootstrapService`).
 
 ### Требования

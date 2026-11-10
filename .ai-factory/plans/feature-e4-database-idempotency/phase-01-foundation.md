@@ -100,7 +100,7 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
 ## Task 3: Ключ метаданных `@Idempotent` и пометка пула в ошибке
 
 ### Назначение
-(а) `@Idempotent` (фаза 6) пишет метаданные, `@Api`/OpenAPI (`http`) их читает без импорта `idempotency` (ARCHITECTURE «Правила зависимостей»). (б) Решение E3: `Db` помечает ошибку срока пула именем пула, фильтр `/http` перестаёт писать `pool: 'unknown'` (AC-4.5).
+(а) `@Idempotent` (фаза 6) пишет метаданные, `@Api`/OpenAPI (`http`) их читает без импорта `idempotency` (ARCHITECTURE «Правила зависимостей»). (б) Решение E3 и KT-19 п. 3: пул `/database` (обёртка `connect`, задача 18) помечает ошибку срока именем пула и учитывает её один раз, фильтр `/http` перестаёт писать `pool: 'unknown'` (AC-4.5).
 
 ### Шаги
 1. Создать `src/internal/metadata.ts`. Шапка: «ключи метаданных декораторов: Idempotent → @Api без цикла http ↔ idempotency (ARCHITECTURE.md; prd.md §3.3а, §3.5)».
@@ -111,7 +111,7 @@ Depends on: none (коммит требований r9 `7d5e28a` уже в ве�
    - внутренний символ `POOL_TAG` (`Symbol.for('verdeect-kit.pool')`);
    - `tagPoolTimeout(error: unknown, pool: KitPoolName): boolean` — находит в цепочке `causeChain` первый узел с сообщением срока пула и, если он объект без метки, ставит неперечисляемое свойство `POOL_TAG` = имя пула; возвращает `true`, если метку поставил сейчас (вызывающий считает метрику один раз), `false` — если узла нет или метка уже стоит;
    - `poolTimeoutOf(error: unknown): KitPoolName | null` — имя пула из метки первого помеченного узла цепочки или `null`.
-   - Изменить комментарий шапки: «… tagPoolTimeout/poolTimeoutOf — метка пула от Db (решение E3, AC-4.5)».
+   - Изменить комментарий шапки: «… tagPoolTimeout/poolTimeoutOf — метка пула /database: срок учтён (решение E3, KT-19 п. 3, AC-4.5)».
 3. Существующие функции не менять.
 
 ### Контракты
