@@ -18,17 +18,22 @@
 
 ## Структура проекта
 
-Состояние после E2 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability` и `/testing`. Следующие подпути появляются по этапам E3–E8 (`requirements/0000-kit/README.md`).
+Состояние после E3 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/testing` и CLI `verdeect-kit openapi`. Следующие подпути появляются по этапам E4–E8 (`requirements/0000-kit/README.md`).
 
 ```
 verdeect-kit/
 ├── src/
-│   ├── internal/                 # без точки входа: peer.ts (loadPeer, AC-1.2), service-name.ts
+│   ├── internal/                 # без точки входа: peer.ts (loadPeer, AC-1.2), service-name.ts, pg-errors.ts,
+│                                 #   preparsed-env.ts, tokens.ts
 │   ├── config/                   # ./config — §3.1: fragments, helpers, define-env, parse-env, cli-schemas, kit-config.module
 │   ├── observability/            # ./observability — §3.2: redaction, sanitize-error, logger-options, sentry, fail-startup,
 │                                 #   health-registry, metrics, metrics-server, lifecycle
-│   └── testing/                  # ./testing (только development) — §3.8 E1: images, start-test-stack, repo-files,
-│                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale
+│   ├── http/                     # ./http — §3.5: bootstrap-service, create-http-app, kit-http-core.module, errors,
+│                                 #   zod-validation.pipe, kit-exception.filter, pagination, api/ (@Api, OpenAPI)
+│   ├── testing/                  # ./testing (только development) — §3.8 E1, E3: images, start-test-stack, repo-files,
+│                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale, create-test-app,
+│                                 #   expect-problem, expect-matches-api
+│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts
 ├── alerts/verdeect-kit.rules.yml # шаблон правил vmalert (alertRulesTemplate, §3.2), входит в архив
 ├── test/
 │   ├── unit/<подпуть>/           # U: без сети и Docker (+ *.test-d.ts)
@@ -36,7 +41,8 @@ verdeect-kit/
 │   ├── timing/<подпуть>/         # T: timingGuard, global-setup.ts
 │   ├── package/                  # R и C: архив, потребители, publish.mjs, lint AC-9.4, документы
 │   ├── consumer/                 # шаблоны проектов-потребителей: minimal, no-testcontainers
-│   ├── fixtures/                 # repo-conventions/valid (AC-1.8), lint (AC-9.4), alerts (AC-2.11), observability/shutdown-child.mjs (AC-2.10)
+│   ├── fixtures/                 # repo-conventions/valid (AC-1.8), lint (AC-9.4), alerts (AC-2.11), observability/shutdown-child.mjs (AC-2.10),
+│                                 #   http/api-app.module.ts (AC-3.7), http/shutdown-app.mjs (AC-3.9)
 │   └── support/                  # общие помощники: docker.ts, fake-sentry.ts (поддельный транспорт GlitchTip)
 ├── .github/workflows/ci.yml      # CI: lint, test (Node 22, 24: U + I), timing, package, publish по тегу v*
 ├── Makefile                      # единая точка входа: make help
@@ -49,7 +55,7 @@ verdeect-kit/
 └── README.md, CHANGELOG.md
 ```
 
-Позже (prd.md §8): `src/<подпуть>/` следующих этапов, `src/cli/` (поле `bin` — с первой CLI-командой в E3).
+Позже (prd.md §8): `src/<подпуть>/` следующих этапов и их CLI-команды.
 
 ## Команды
 
@@ -74,6 +80,8 @@ verdeect-kit/
 |---|---|
 | `src/config/index.ts` | публичная поверхность `@verdeect/kit/config` |
 | `src/observability/index.ts` | публичная поверхность `@verdeect/kit/observability` |
+| `src/http/index.ts` | публичная поверхность `@verdeect/kit/http` |
+| `src/cli/main.ts` | CLI `verdeect-kit` (поле `bin`) |
 | `src/testing/index.ts` | публичная поверхность `@verdeect/kit/testing` |
 | `package.json` | `exports`, peer-зависимости (NFR-3), скрипты |
 | `scripts/publish.mjs` | публикация по тегу (AC-1.10) |

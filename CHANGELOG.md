@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11).
+Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13).
 
 ### Added
 
@@ -34,8 +34,23 @@
 - `/observability`: `alertRulesTemplate` — путь к шаблону правил vmalert.
 - `/observability`: `failStartup` и интерфейс `StartupFailure` — `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`.
 - `/observability`: `KitLifecycle` и типы `KitShutdownParticipant`, `KitShutdownStep` — остановка по шагам 1–5; по сигналу — сторож `SHUTDOWN_TIMEOUT_MS` (`SHUTDOWN_TIMEOUT`, `SHUTDOWN_NOT_EXITED`, `exit(1)`), программный `close()` — без сторожа и `exit`.
+- `/http`: `bootstrapService` и тип `KitBootstrapOptions` — точка входа `main.ts`: окружение до создания приложения (ошибка — `failStartup`, порт не открывается), логгер, `warn` `SENTRY_NOT_PRELOADED`, сервер метрик (шаг 5), `KitLifecycle.listen()`, `PORT` на `0.0.0.0`; опции по роли `logger.trustTraceparent`, `logger.quietRoutes`, `http.bodyLimit`, `redaction`; имя сервиса вне формата — отказ запуска.
+- `/http`: `createHttpApp` и тип `KitHttpAppOptions` — Fastify-приложение Nest: `nosniff`, `Referrer-Policy: no-referrer`, trace-id, `GET /ok`, фильтр ошибок, 404 `ROUTE_NOT_FOUND`; участники остановки `http` (шаг 2) и `nest` (шаг 3), `app.close()` = `lifecycle.close()`; модули сервиса внедряют `KitLifecycle` и `HealthRegistry`.
+- `/http`: `kitErrors`, `defineErrors` и типы `KitErrorDictionary`, `KitErrorEntry` — словарь кодов на процесс; код пакета с другим статусом — ошибка компиляции, тот же код с другим статусом — ошибка при определении. Коды пакета: `UNAUTHENTICATED` 401, `FORBIDDEN` 403, `VALIDATION_FAILED` 422, `BAD_REQUEST` 400, `PAYLOAD_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415, `ROUTE_NOT_FOUND` 404, `VERSION_CONFLICT` 409, `RATE_LIMITED` 429, `INTERNAL_ERROR` 500, `SERVICE_UNAVAILABLE` 503, `SERVICE_STOPPING` 503, `PLATFORM_UNAVAILABLE` 503, `IDEMPOTENCY_KEY_REUSED` 422, `IDEMPOTENCY_IN_PROGRESS` 409, `IDEMPOTENCY_KEY_REQUIRED` 400.
+- `/http`: `DomainError` — ошибка домена со статусом из словаря и `{cause}`; незарегистрированный код — 500 `INTERNAL_ERROR` и событие GlitchTip.
+- `/http`: `KitExceptionFilter` — `{error: {code, message, details}}`; тело guard'ов `@verdeect/auth` без изменений; срок пула БД — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1`, метрика, `captureThrottled`; `HttpException` без тела 400/401/403/404/413/415/429 — код по статусу, прочие — 500.
+- `/http`: `ZodValidationPipe` — 422 `VALIDATION_FAILED` с `issues: [{path, code}]` без значений.
+- `/http`: keyset-пагинация `PageQuerySchema`, `pageOf`, `afterCursor`, `encodeCursor`, `decodeCursor` и тип `Page` — `limit` 100/200, неверный курсор — 422 `path: cursor`, последний ключ — уникальный.
+- `/http`: `Api` и тип `KitApiOptions` — описание маршрута для OpenAPI 3.1.
+- CLI `verdeect-kit` (поле `bin`): команда `openapi --out <файл> [--module <файл>#<экспорт>]` — документ по метаданным без запуска приложения, слияние `contracts/openapi.extra.json`, результат `{written, operations}`; ошибки — `{error: {code, message}}` и выход 1, коды `USAGE`, `MODULE_NOT_FOUND`, `INVALID_PACKAGE_JSON`, `INVALID_EXTRA`, `INVALID_ENVIRONMENT`, `OPENAPI_FAILED`, `UNKNOWN_COMMAND`.
+- `/testing`: `createTestApp` и типы `KitTestAppOptions`, `KitTestOverride` — тот же `createHttpApp` на `Test.createTestingModule`, `overrides`.
+- `/testing`: `expectProblem` и типы `KitExpectedProblem`, `KitTestResponse` — утверждение об ответе-ошибке.
+- `/testing`: `expectMatchesApi` — ответ по схеме `@Api` маршрута (Ajv 2020).
+- Опциональный peer `@nestjs/testing` `^12.1.0` — только для `createTestApp`, грузится при вызове; зависимость `ajv` 8.20.0 — внутренняя деталь `/testing`.
 - Шаблон алертов `alerts/verdeect-kit.rules.yml` (в архиве пакета): правило на каждую метрику пакета, порог по умолчанию и переопределение `verdeect_kit_threshold:<метрика>` по `service`.
 
 ### Changed
+
+- `KitConfigModule.forRoot({schema})` разбирает окружение при сборке контекста, а не при импорте `AppModule`: неверное окружение отклоняет сборку контекста, сам `forRoot` не отклоняется. Умолчания в `process.env` не дописываются, `ConfigService` читает только разобранные значения. При запуске через `bootstrapService` окружение не разбирается повторно.
 
 - Обязательный peer `prom-client` заменён на `@prometheus-io/client` `^0.16.1` (`prom-client` помечен deprecated, преемник — тот же API; PRD v1.12, NFR-3): `kitMetrics` и `MetricsServer` работают на `Registry`, `Counter`, `Gauge` из `@prometheus-io/client`. Сервис ставит `@prometheus-io/client` вместо `prom-client`.

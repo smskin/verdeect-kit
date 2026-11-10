@@ -95,7 +95,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 1: Манифест, границы, внутренние модули
 
-- [ ] **Task 1: `package.json`, ESLint и тест манифеста для `/http` и `bin`** — AC-1.1, AC-1.2, NFR-3
+- [x] **Task 1: `package.json`, ESLint и тест манифеста для `/http` и `bin`** — AC-1.1, AC-1.2, NFR-3
   - **Skill:** none — манифест и конфиг lint; тест — `nestjs-code test unit package package-manifest (MODIFY)`
   - Файлы: `package.json`, `pnpm-lock.yaml`, `eslint.config.js`, `test/unit/package/package-manifest.spec.ts`.
   - `exports`: `"./http": {"types": "./dist/http/index.d.ts", "default": "./dist/http/index.js"}` между `./config` и `./observability`, остальное не менять. `"bin": {"verdeect-kit": "./dist/cli/main.js"}` (ARCHITECTURE «Сборка и загрузка»).
@@ -113,14 +113,14 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
   - Логи: нет.
   - Готово, когда: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm exec vitest run test/unit/package` зелёные.
 
-- [ ] **Task 2: `src/internal/pg-errors.ts` — распознавание ошибок PostgreSQL по форме** — §3.3 (строка `isUniqueViolation…`), AC-3.3 (основа) (depends on 1)
+- [x] **Task 2: `src/internal/pg-errors.ts` — распознавание ошибок PostgreSQL по форме** — §3.3 (строка `isUniqueViolation…`), AC-3.3 (основа) (depends on 1)
   - **Skill:** nestjs-code generic src/internal/pg-errors.ts (CREATE)
   - Шапка: `// isUniqueViolation, isConnectionError, isPoolTimeout — по форме объекта, обход cause, без pg и drizzle-orm (prd.md §3.3; rules/base.md). Эталоны: isUniqueViolation — I pg-errors.ts; isPoolTimeout — O pool-client.ts (сообщения); isConnectionError — по PRD (у I/O — instanceof DrizzleQueryError, не переносится).`
   - API: `isUniqueViolation(err: unknown, constraint?: string): boolean` (первый узел с `code === '23505'` → `constraint === undefined || node.constraint === constraint`); `isConnectionError(err: unknown): boolean`; `isPoolTimeout(err: unknown): boolean`. Внутренний `causeChain(err)` — до 10 уровней, только объекты (`typeof === 'object' && !== null`), защита от циклов (`Set`). Коды и сообщения — константы с источником (см. Reconciliation).
   - Тест `test/unit/internal/pg-errors.spec.ts` (`nestjs-code test unit internal pg-errors`): перенос I `pg-errors.spec.ts`, переписанного на объекты по форме. Случаи: `23505` с и без `constraint`; `23505` во 2-м `cause`; цикл `cause` не зацикливает; `isPoolTimeout` на двух сообщениях O, внутри `DomainError`-подобного `cause` и на 11-м уровне (`false`); `isConnectionError` — по случаю на каждую форму (KT-15 п. 9): `08006`, `08001`, `57P01`, `57P02`, `57P03`, `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EPIPE`, `ENOTFOUND`, «Connection terminated unexpectedly», «terminating connection due to administrator command», форма во 2-м `cause`, форма на 11-м уровне (`false`); `false` для `23505`, `57014` и обычной `Error`. Названия — `§3.3: …`.
   - Логи: нет (чистые функции).
 
-- [ ] **Task 3: `KitConfigModule` — ленивый разбор и окружение из `bootstrapService`** — §3.1, AC-1.7, AC-3.13 (depends on 1)
+- [x] **Task 3: `KitConfigModule` — ленивый разбор и окружение из `bootstrapService`** — §3.1, AC-1.7, AC-3.13 (depends on 1)
   - **Skill:** nestjs-code generic src/config/kit-config.module.ts (MODIFY); nestjs-code generic src/internal/preparsed-env.ts (CREATE)
   - `src/internal/preparsed-env.ts`: `WeakMap<object, Record<string, unknown>>`; `setPreparsedEnv(schema, env)` — пишет `bootstrapService`; `takePreparsedEnv(schema)` — возвращает значение и удаляет его: окружение отдаётся одной сборке контекста, следующая сборка в том же процессе (AC-1.7) разбирает сама. Ключ — объект схемы (тот же `env`, что в `bootstrapService({env})` и `KitConfigModule.forRoot({schema})`).
   - `kit-config.module.ts`: `forRoot` по-прежнему возвращает `Promise<DynamicModule>`, но больше не разбирает окружение синхронно. Новый вызов: `ConfigModule.forRoot({isGlobal: true, ignoreEnvFile: true, skipProcessEnv: true, load: [() => takePreparsedEnv(schema) ?? parseEnv(schema, process.env)]})`. Нужно проверить в Context7 и в `node_modules/@nestjs/config/dist`, что фабрика `load` выполняется при сборке каждого контекста (провайдер DI), а `ConfigService.get('PORT')` с `skipProcessEnv` возвращает разобранное число. Если `load` кладёт значения не в корень, использовать собственный провайдер `ConfigService` с `useFactory` (`new ConfigService(env)`) — решение записать в шапке. Обновить TSDoc: «при запуске через `bootstrapService` окружение не разбирается повторно; иначе — разбор при сборке контекста; `.env` не читается, в `process.env` ничего не пишется».
@@ -129,7 +129,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 2: Ошибки и проверка ввода
 
-- [ ] **Task 4: `src/http/errors.ts` — `kitErrors`, `defineErrors`, `DomainError`** — §3.5, AC-3.2 (depends on 1)
+- [x] **Task 4: `src/http/errors.ts` — `kitErrors`, `defineErrors`, `DomainError`** — §3.5, AC-3.2 (depends on 1)
   - **Skill:** nestjs-code generic src/http/errors.ts (CREATE)
   - Шапка: эталон O `domain-error.ts` + `error-messages.ts` (форма словаря `код → текст`, `FALLBACK_MESSAGE`); по PRD — запись `{status, message}`, глобальный реестр, коды §3.5.
   - API:
@@ -146,13 +146,13 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
   - Тесты: `test/unit/http/ac-3-2-define-errors.test-d.ts` — «AC-3.2: код пакета с другим статусом — ошибка компиляции» (`// @ts-expect-error` на `defineErrors({...kitErrors, FORBIDDEN: {status: 401, message: 'x'}})`, без ошибки — свой код и `kitErrors` как есть); `test/unit/http/ac-3-2-error-dictionary.spec.ts` — «AC-3.2: неизвестный код — общий русский текст «Ошибка запроса»», «§3.5: DomainError берёт статус из словаря», «AC-3.2: повторный defineErrors объединяет словари — коды обоих вызовов дают свои статусы», «AC-3.2: тот же код с другим статусом во втором defineErrors — ошибка при определении», «AC-3.2: DomainError с незарегистрированным кодом — статус 500» (ответ, лог и GlitchTip — в тесте фильтра, задача 6), «§3.5: все коды §3.5 и их статусы в kitErrors» (таблица из PRD).
   - Логи: нет (типы и реестр).
 
-- [ ] **Task 5: `src/http/zod-validation.pipe.ts` — 422 `VALIDATION_FAILED`** — §3.5, AC-3.1 (depends on 4)
+- [x] **Task 5: `src/http/zod-validation.pipe.ts` — 422 `VALIDATION_FAILED`** — §3.5, AC-3.1 (depends on 4)
   - **Skill:** nestjs-code generic src/http/zod-validation.pipe.ts (CREATE)
   - Эталон O `zod-validation.pipe.ts` (P — идентичен) + O `validation-failed.error.ts` (форма `issues`). `@Injectable() export class ZodValidationPipe<T extends z.ZodType> implements PipeTransform { constructor(readonly schema: T) }` — `schema` публичное: его читает построитель OpenAPI (эталон I). `transform`: `safeParse`; ошибка → `DomainError('VALIDATION_FAILED', {issues: issues.map(i => ({path: i.path.map(String).join('.') || '(body)', code: i.code}))})`; успех — `result.data`. 400/413/415 пайп не порождает: их даёт парсер тела Fastify до пайпа, а отображает фильтр (задача 6).
   - Тест `test/unit/http/zod-validation.pipe.spec.ts`: перенос O `zod-validation.pipe.spec.ts` и I `zod-validation.pipe.spec.ts` (обобщены): «AC-3.1: верный ввод возвращает данные с умолчаниями», «AC-3.1: 422 с путями `title` и `tags.0` через точку, значений в теле нет (подстрока MARK_SECRET)», «AC-3.1: `(body)` для `unrecognized_keys` у strict-схемы».
   - Логи: `debug` `{issues: ['path:code']}` «запрос отклонён схемой» — только пути и коды, без значений (эталон O); логгер — `new Logger(ZodValidationPipe.name)` из `@nestjs/common` (уходит в nestjs-pino через `useLogger`).
 
-- [ ] **Task 6: `src/http/kit-exception.filter.ts` — `KitExceptionFilter`** — §3.5, AC-3.3, AC-3.2, AC-3.1, AC-3.4 (depends on 2, 4)
+- [x] **Task 6: `src/http/kit-exception.filter.ts` — `KitExceptionFilter`** — §3.5, AC-3.3, AC-3.2, AC-3.1, AC-3.4 (depends on 2, 4)
   - **Skill:** nestjs-code generic src/http/kit-exception.filter.ts (CREATE); nestjs-code generic src/internal/tokens.ts (CREATE)
   - `src/internal/tokens.ts`: `KIT_METRICS = Symbol('KIT_METRICS')`, `KIT_LOGGER = Symbol('KIT_LOGGER')` — создаётся здесь, потому что фильтр внедряет `KIT_METRICS`; задача 8 его использует.
   - Эталон O `app-exception-filter.ts` (182 строки): порядок веток, `libraryBody`, `send()` с `Content-Type: application/json; charset=utf-8`, `reportUnexpected`. Взято из B: ответ при `reply.raw.headersSent` — только `warn`. По PRD: коды статусов — таблица Reconciliation; `codeOf` с путями O, `maskSecretPath` и `instance-shutdown` не переносятся; путь в логе — `maskPathOf(redaction)` не передаётся (фильтр пишет только `method`, `traceId`, `code`, `status`: путь уже есть в строке доступа).
@@ -167,14 +167,14 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 3: Пагинация и приложение
 
-- [ ] **Task 7: `src/http/pagination.ts` — keyset** — §3.5, AC-3.6 (U-часть) (depends on 4)
+- [x] **Task 7: `src/http/pagination.ts` — keyset** — §3.5, AC-3.6 (U-часть) (depends on 4)
   - **Skill:** nestjs-code generic src/http/pagination.ts (CREATE)
   - Эталон I `pagination.ts` (66 строк): `encodeCursor`, `decodeCursor`, `pageOf`, `PageQuerySchema`. По PRD: `limit` умолчание 100, максимум 200; неверный курсор → `DomainError('VALIDATION_FAILED', {issues: [{path: 'cursor', code: 'invalid'}]})` (у I — 400 `VALIDATION`); значения ключей — JSON-скаляры (`string | number | boolean | null`), а не только строки; новое — `afterCursor`.
   - API: `PageQuerySchema = z.object({cursor: z.string().min(1).max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(100)})`; `type Page<T> = {items: T[]; nextCursor: string | null}`; `encodeCursor(keys: readonly CursorValue[])`; `decodeCursor(cursor: string | undefined, arity: number): CursorValue[] | null`; `pageOf(rows, limit, keyOf): Page<T>`; `afterCursor(cols: readonly AnyColumn[], cursor: readonly CursorValue[] | null, dir: 'asc' | 'desc'): SQL | undefined` (null → `undefined`; иначе `or(gt(c1,v1), and(eq(c1,v1), gt(c2,v2)), …)`; длина `cols` ≠ длине курсора → ошибка `VALIDATION_FAILED path: cursor`; последний столбец не `primary`/`isUnique` → `Error` «последний ключ сортировки должен быть уникальным»).
   - Тест `test/unit/http/pagination.spec.ts`: перенос I `pagination.spec.ts` (49 строк) с правками PRD. Случаи: «AC-3.6: limit по умолчанию 100, 200 принимается, 0 и 201 — ошибка схемы», «AC-3.6: круговой обмен курсора», «AC-3.6: неверный курсор (`%%%`, другая арность, не массив) → 422 `path: cursor`», «AC-3.6: pageOf — limit+1 строк → курсор последнего, ровно limit → null», «AC-3.6: afterCursor без уникального последнего столбца — ошибка помощника» (таблица `pgTable` в памяти теста, без БД).
   - Логи: нет (чистые функции).
 
-- [ ] **Task 8: `createHttpApp` и ядро — заголовки, `/ok`, фильтр, логгер, участники остановки** — §3.5, AC-3.4, AC-3.5, §3.2 шаг 2 (depends on 3, 5, 6)
+- [x] **Task 8: `createHttpApp` и ядро — заголовки, `/ok`, фильтр, логгер, участники остановки** — §3.5, AC-3.4, AC-3.5, §3.2 шаг 2 (depends on 3, 5, 6)
   - **Skill:** nestjs-code generic src/http/create-http-app.ts (CREATE); nestjs-code generic src/http/kit-http-core.module.ts (CREATE)
   - Шапка: эталоны — O/P `main.ts` (`NestFactory.create`, `FastifyAdapter({genReqId})`, `bufferLogs`, `useLogger`), P/O `configure-http-server.ts` + `security-headers.ts` (хук `onRequest` на `reply.raw`), O `get-ok.controller.ts`, регистрация фильтра `APP_FILTER` (O/I/P `app.module.ts`). По PRD: участники `KitLifecycle` вместо `enableShutdownHooks`/`InstanceShutdown`, своих парсеров тела нет (лимит — `bodyLimit` адаптера и `route.bodyLimit` сервиса).
   - Токены `KIT_METRICS`, `KIT_LOGGER` — из `src/internal/tokens.ts` (задача 6).
@@ -188,7 +188,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
   - 404 `ROUTE_NOT_FOUND` даёт обработчик Nest (`NotFoundException` → фильтр), своего `setNotFoundHandler` нет.
   - Логи: `debug` «http: приложение собрано» `{service, bodyLimit}`; `debug` «http: участник шага 2 зарегистрирован» `{participant: 'http'}` (KT-14); `debug` «http: приём соединений остановлен» `{durationMs}` в участнике шага 2; `debug` «http: хуки Nest завершены» на шаге 3; ошибки участников логирует `KitLifecycle` (E2).
 
-- [ ] **Task 9: `bootstrapService` — точка входа `main.ts`** — §3.5, AC-3.10, AC-3.11, AC-3.12, AC-3.13, UC-3, UC-8 (depends on 8)
+- [x] **Task 9: `bootstrapService` — точка входа `main.ts`** — §3.5, AC-3.10, AC-3.11, AC-3.12, AC-3.13, UC-3, UC-8 (depends on 8)
   - **Skill:** nestjs-code generic src/http/bootstrap-service.ts (CREATE)
   - Шапка: эталон O `main.ts` (`failStartup` с запасным логгером, `listen(port, '0.0.0.0')`, лог «слушает»); по PRD — порядок §3.5, шаги пронумерованы в комментариях.
   - `export interface KitBootstrapOptions<S> { module; service; env: S; logger?: {trustTraceparent?, quietRoutes?, extraBase?}; http?: {bodyLimit?}; redaction?: KitRedaction }`; `bootstrapService(options): Promise<NestFastifyApplication>`.
@@ -208,7 +208,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
     Отказ на шагах 7–10 → `failStartup(error, logger)`. `enableShutdownHooks` не вызывается.
   - Логи: `debug` на каждом шаге («bootstrap: окружение разобрано», «bootstrap: приложение собрано», «bootstrap: метрики слушают»); `warn` `SENTRY_NOT_PRELOADED`; `info` «сервис слушает»; отказ — `fatal` через `failStartup` (E2).
 
-- [ ] **Task 10: `src/http/index.ts` и проверка импорта без `pg`** — §3.5, AC-1.2 (depends on 7, 9)
+- [x] **Task 10: `src/http/index.ts` и проверка импорта без `pg`** — §3.5, AC-1.2 (depends on 7, 9)
   - **Skill:** nestjs-code generic src/http/index.ts (CREATE)
   - Явный список экспортов §3.5 (см. Architecture), кроме `Api`/`KitApiOptions` — их добавляет задача 11. Типы — `export type`.
   - Тест `test/unit/http/ac-1-2-http-without-pg.spec.ts`: «AC-1.2: /http не импортирует pg статически» — граф `import` из `src/http/**` (разбор исходников, как `test/package/ac-1-1-package.spec.ts` для `dist/observability`) не содержит `pg`, `../database`, `../testing`.
@@ -216,13 +216,13 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 4: OpenAPI и CLI
 
-- [ ] **Task 11: `@Api` и построитель OpenAPI 3.1** — §3.5, AC-3.7 (depends on 4, 5, 7, 10)
+- [x] **Task 11: `@Api` и построитель OpenAPI 3.1** — §3.5, AC-3.7 (depends on 4, 5, 7, 10)
   - **Skill:** nestjs-code generic src/http/api/api.decorator.ts (CREATE); nestjs-code generic src/http/api/openapi-document.ts (CREATE); nestjs-code generic src/http/index.ts (MODIFY — экспорт `Api`, `export type KitApiOptions`)
   - Эталон I `open-api.decorator.ts` (22 строки) и `openapi-document.ts` (361 строка). Из I берутся: путь из `PATH_METADATA` (`:x` → `{x}`), статус из `HTTP_CODE_METADATA` (POST 201, иначе 200), тело и query — из `ZodValidationPipe` в `ROUTE_ARGS_METADATA`, `z.toJSONSchema(schema, {io, unrepresentable: 'any'})` без `$schema` (`io: 'input'` для запроса, `'output'` для ответа), `operationId`, `ErrorResponse`, схемы `serviceToken`/`userToken`. По PRD: обход метаданных модулей без создания приложения (`imports`, включая `DynamicModule` и промисы `forRoot`, `forwardRef`; `controllers`); маршруты без `@Api` пропускаются, кроме `/ok` — тоже пропуск; `X-On-Behalf-Of` и `Idempotency-Key` не переносятся (домен I / E4); ошибки — `errors` маршрута (коды → статусы из реестра `defineErrors`) + стандартные 400, 401, 403, 422, 429 (401/403 — только у защищённых маршрутов). Защищённость, ключи `Require*` строками и выбор схемы — по Reconciliation, строка «Безопасность в OpenAPI»; импорта `REQUIRE_*` из `@verdeect/auth` нет; `path` из `@Param` с пайпом — схема параметра; `extra` — глубокое слияние в операцию.
   - API: `Api(options: KitApiOptions): MethodDecorator` (`SetMetadata('verdeect-kit:api', options)`); внутренняя `buildOpenApiDocument(module, {title, version}): Promise<OpenApiDocument>` и `routeResponseSchema([Controller, method])` — для `expectMatchesApi`. Документ детерминирован: пути и коды отсортированы.
   - Логи: `debug` «openapi: собран» `{operations}`; маршрут с `@Api`, но без пути/метода — `Error` с именем `Controller.method`.
 
-- [ ] **Task 12: CLI `verdeect-kit` и команда `openapi`** — §3.5, AC-3.7, AC-3.8 (depends on 11)
+- [x] **Task 12: CLI `verdeect-kit` и команда `openapi`** — §3.5, AC-3.7, AC-3.8 (depends on 11)
   - **Skill:** nestjs-code generic src/cli/main.ts (CREATE); nestjs-code generic src/cli/commands/openapi.ts (CREATE)
   - `main.ts` (`#!/usr/bin/env node`): разбор `process.argv` через `node:util` `parseArgs`; команда → динамический `import('./commands/openapi.js')` (ARCHITECTURE «CLI»). Обработчик команды возвращает код выхода (0/1), `main.ts` ставит `process.exitCode`. `process.exit` не вызывается: ARCHITECTURE разрешает его только `failStartup` и сторожу. Неизвестная команда → JSON `{error: {code: 'UNKNOWN_COMMAND', message}}` в stdout, `exitCode = 1`. Импорт `reflect-metadata` — первым. Правило lint на `src/cli/**` (задача 1) не меняется: подпути в `src/cli/commands/openapi.ts` грузятся динамически, путь от `commands/`: построитель — `await import('../../http/api/openapi-document.js')` (`buildOpenApiDocument` внутренний, в `src/http/index.ts` его нет); `'../../observability/index.js'` (`createLoggerOptions`) и `'../../config/index.js'` (`envBase`); `import type` разрешён. Динамический `import()` правило `no-restricted-imports` не проверяет.
   - `openapi.ts`: `--out <файл>` обязателен, `--module <файл>#<экспорт>` (умолчание `dist/app.module.js#AppModule`), `--title`/`--version` берутся из полей `name`/`version` `package.json` в cwd. Нет файла или поля → JSON `{error: {code: 'INVALID_PACKAGE_JSON'}}`, код 1: `info.version` обязателен в OpenAPI 3.1. Модуль загружается `import(pathToFileURL(resolve(cwd, file)))`; нет файла или экспорта → `{error: {code: 'MODULE_NOT_FOUND', message}}`, выход 1. Документ сливается с `contracts/openapi.extra.json` (рядом с `--out`), если файл есть. Запись — JSON с отступом 2 и `\n` в конце. Результат — `{"written": "<путь>", "operations": N}` в stdout, выход 0. Логгер CLI — `pino(...createLoggerOptions({service: 'verdeect-kit', entry: 'cli', env}).pinoHttp)` → stderr. `env` — результат `z.object({LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID}).safeParse(process.env)` (CLI разбирает только свои ключи, по образцу `cli-schemas.ts`). Неверное значение → JSON `{error: {code: 'INVALID_ENVIRONMENT', keys}}` без значений и код 1.
@@ -230,14 +230,14 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 5: Помощники `/testing` этапа E3
 
-- [ ] **Task 13: `createTestApp`** — §3.8 (E3), UC-14 (depends on 8)
+- [x] **Task 13: `createTestApp`** — §3.8 (E3), UC-14 (depends on 8)
   - **Skill:** nestjs-code generic src/testing/create-test-app.ts (CREATE)
   - Эталон O `test/support/app.ts` (67 строк): `Test.createTestingModule` → `overrideProvider(...).useValue(...)` → `compile` → `createNestApplication(adapter)` → `init` → `getInstance().ready()`. По PRD: через `buildHttpApp({…, compile})` — тот же адаптер, хуки, фильтр, участники; `inject` без порта.
   - `createTestApp({module, service, overrides?: readonly {provide, useValue}[], bodyLimit?}): Promise<NestFastifyApplication>`; первым делом `assertServiceName(service, 'createTestApp')` — та же проверка, что у `bootstrapService` (KT-15 п. 3); `import type * as NestTesting from '@nestjs/testing'` и `const {Test} = await loadPeer<typeof NestTesting>('@nestjs/testing', 'testing')` внутри функции. Образец — `start-test-stack.ts`. `typeof import(…)` не проходит `@typescript-eslint/consistent-type-imports`. Закрытие — `app.close()` (= `lifecycle.close()`, без сторожа и `exit`).
   - Экспорт в `src/testing/index.ts`.
   - Логи: `debug` «testing: приложение собрано» `{service, overrides: число}`.
 
-- [ ] **Task 14: `expectProblem` и `expectMatchesApi`** — §3.8 (E3), AC-3.7 (depends on 11, 13)
+- [x] **Task 14: `expectProblem` и `expectMatchesApi`** — §3.8 (E3), AC-3.7 (depends on 11, 13)
   - **Skill:** nestjs-code generic src/testing/expect-problem.ts (CREATE); nestjs-code generic src/testing/expect-matches-api.ts (CREATE)
   - Эталона нет: ближайшее — O `test/support/http.ts` (`errorCode`). Пишется по PRD.
   - `expectProblem(res: {statusCode: number; json(): unknown}, {status, code, issues?})`: статус, форма `{error: {code, message: string, details: object}}`, `code`; `issues` — глубокое сравнение `details.issues`. Утверждения — `node:assert/strict` (`strictEqual`, `deepStrictEqual` с понятным текстом); peer `vitest` не загружается (в `/testing` его во время выполнения не грузит ни один модуль).
@@ -247,7 +247,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 6: Тесты HTTP
 
-- [ ] **Task 15: U — ошибки запросов, 404, заголовки безопасности на `createTestApp`** — AC-3.1, AC-3.4, AC-3.5 (depends on 10, 14)
+- [x] **Task 15: U — ошибки запросов, 404, заголовки безопасности на `createTestApp`** — AC-3.1, AC-3.4, AC-3.5 (depends on 10, 14)
   - **Skill:** nestjs-code test unit http request-errors (CREATE)
   - Файлы: `test/unit/http/ac-3-1-request-errors.spec.ts`, `test/unit/http/ac-3-4-route-not-found.spec.ts`, `test/unit/http/ac-3-5-security-headers.spec.ts`, общий `test/unit/http/support.ts` (пробный модуль: `KitConfigModule.forRoot({schema: defineEnv({...envBase})})`, контроллер `POST /probe` с `@Body(new ZodValidationPipe(z.strictObject({title: z.string(), tags: z.array(z.string())})))`, `GET /boom` с `throw new Error('MARK_SECRET')`).
   - Перенос: P/O `test/http/errors/request-errors.http-spec.ts`, B `test/http/shared/request-errors.http-spec.ts` (400/413/415 — с кодами PRD), I `ac-8-3-security-headers.http-spec.ts` (только базовые заголовки API).
@@ -270,7 +270,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
     - «§3.2: `app.close()` на слушающем приложении с keep-alive клиентом (`fetch` долгого маршрута) завершается не позже ~1 с после ответа» (`listen({port: 0})`).
   - Логи: нет (тесты); логгер приложения — уровень `silent` через `LOG_LEVEL`.
 
-- [ ] **Task 16: U — `bootstrapService`** — AC-3.10, AC-3.11, AC-3.12, AC-3.13 (depends on 15)
+- [x] **Task 16: U — `bootstrapService`** — AC-3.10, AC-3.11, AC-3.12, AC-3.13 (depends on 15)
   - **Skill:** nestjs-code test unit http bootstrap-service (CREATE)
   - Файлы: `test/unit/http/ac-3-10-service-name.spec.ts`, `ac-3-11-sentry-not-preloaded.spec.ts`, `ac-3-12-role-options.spec.ts`, `ac-3-13-env-before-app.spec.ts`. Общее: `vi.spyOn(process, 'exit')` бросает маркер; `PORT=0`, `METRICS_PORT=0`; перехват stdout логгера (`process.stdout.write` spy) с разбором JSON-строк; после теста — `app.close()` и снятие обработчиков `SIGTERM`/`SIGINT`, добавленных `listen()` (`process.listeners` до/после); `vi.stubEnv` + `vi.unstubAllEnvs`.
   - Случаи:
@@ -287,7 +287,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
     - «§3.2: после `bootstrapService` `SIGTERM` слушает ровно один новый обработчик (`KitLifecycle.listen`), `enableShutdownHooks` не вызван» (`process.listenerCount('SIGTERM')` до/после = +1; KT-15 п. 1).
   - Логи: нет (тесты).
 
-- [ ] **Task 17: U — OpenAPI, `expectMatchesApi`, CLI** — AC-3.7 (depends on 12, 14)
+- [x] **Task 17: U — OpenAPI, `expectMatchesApi`, CLI** — AC-3.7 (depends on 12, 14)
   - **Skill:** nestjs-code test unit http openapi (CREATE)
   - Файлы: `test/unit/http/ac-3-7-openapi.spec.ts`, `test/unit/cli/ac-3-7-openapi-command.spec.ts`, фикстура `test/fixtures/http/api-app.module.ts` (контроллер с `@Api` на `GET /items` (`envelope: 'page'`, query `PageQuerySchema`), `POST /items` (тело, `errors: ['VERSION_CONFLICT']`), `GET /items/:id`; класс под `@UseGuards(VerdeectAuthGuard)` + `@RequireScope('items:read')`; маршрут без защиты).
   - Перенос: I `test/http/api/openapi.http-spec.ts` (схемы компилируются Ajv, безопасность по маршрутам, ответы соответствуют схеме).
@@ -303,7 +303,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
     - «AC-3.7: `--module <fixture>#NoSuchExport` → JSON `{error}`, выход 1» (оба — вызов обработчика команды в процессе; проверяются возвращённый код выхода и JSON, записанный в stdout; spy на `process.exit` не нужен — CLI его не вызывает).
   - Логи: нет.
 
-- [ ] **Task 18: I — keyset на PostgreSQL** — AC-3.6 (depends on 7)
+- [x] **Task 18: I — keyset на PostgreSQL** — AC-3.6 (depends on 7)
   - **Skill:** nestjs-code test integration http keyset (CREATE)
   - Файл `test/integration/http/ac-3-6-keyset.spec.ts`. PostgreSQL — из `test/integration/global-setup.ts` (`inject`, E1), `pg` + `drizzle-orm/node-postgres`, своя временная схема с уникальным именем на файл, удаляется в `afterAll`.
   - Случаи:
@@ -315,7 +315,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
     Порядок проверяется по уникальному `id`, не по тексту (правило «Deterministic Test Data Order»).
   - Логи: нет.
 
-- [ ] **Task 19: T — остановка HTTP под нагрузкой** — AC-3.9, UC-8 (depends on 9)
+- [x] **Task 19: T — остановка HTTP под нагрузкой** — AC-3.9, UC-8 (depends on 9)
   - **Skill:** nestjs-code test integration http shutdown (CREATE)
   - Файлы: `test/timing/http/ac-3-9-shutdown.spec.ts`, дочерний процесс `test/fixtures/http/shutdown-app.mjs`. Он берёт `bootstrapService` из собранного `dist` (как `test/fixtures/observability/shutdown-child.mjs` E2), декораторы применяются функциями (`Module({...})(AppModule)`, `Controller()(…)`, `Get('slow')(…)`). Контур timing `dist` не собирает (`test/timing/global-setup.ts` — только `timingGuard`). Поэтому спек в `beforeAll` собирает `tsc -p tsconfig.build.json --outDir node_modules/.cache/kit-timing-dist` — тот же образец и каталог, что у `ac-2-10-shutdown-exit.spec.ts`; `dist/` не трогается. Каталог передаётся ребёнку аргументом. Маршрут `GET /slow` ждёт 1500 мс; `SHUTDOWN_DRAIN_MS=500`, `SHUTDOWN_TIMEOUT_MS=5000`; порты печатаются первой строкой stdout.
   - Перенос: O `ac-10-8-shutdown.http-spec.ts` (сценарий «долгий запрос до сигнала дорабатывает, `app.close()` в срок») и `or-106-health-stopping-first.http-spec.ts` (`/health` 503 раньше закрытия).
@@ -331,7 +331,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 7: Проект-потребитель и проверки пакета
 
-- [ ] **Task 20: Проект-потребитель на `bootstrapService` и снимок OpenAPI** — AC-9.1, AC-3.8, AC-1.1, AC-1.2 (depends on 9, 12, 13)
+- [x] **Task 20: Проект-потребитель на `bootstrapService` и снимок OpenAPI** — AC-9.1, AC-3.8, AC-1.1, AC-1.2 (depends on 9, 12, 13)
   - **Skill:** none — проект-потребитель вне `src/` (TypeScript сервиса); тест — `nestjs-code test unit package consumer (MODIFY)`
   - `test/consumer/minimal`:
     - `src/service/{instrument.ts, main.ts, app.module.ts, items.controller.ts}`. `AppModule` импортирует `KitConfigModule.forRoot({schema: envSchema})`; контроллер с `@Api` на `GET /items` (keyset `pageOf` по массиву в памяти).
@@ -349,7 +349,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
   - `src/testing-peer.spec.ts`: «AC-1.2: createTestApp без @nestjs/testing → «@verdeect/kit/testing требует @nestjs/testing — добавьте в зависимости сервиса»» (PRD v1.13 NFR-3; `/testing` импортируется — `testcontainers` есть, — падает вызов).
   - Логи: нет (код потребителя логирует через пакет).
 
-- [ ] **Task 21: R — архив, `bin`, точки входа документации** — AC-1.1, AC-9.3 (depends on 20)
+- [x] **Task 21: R — архив, `bin`, точки входа документации** — AC-1.1, AC-9.3 (depends on 20)
   - **Skill:** nestjs-code test unit package pack (MODIFY)
   - `test/package/ac-1-1-package.spec.ts`:
     - «AC-1.1: архив содержит `dist/http/index.js`, `dist/cli/main.js`»;
@@ -363,7 +363,7 @@ Rationale: план реализует ровно скоуп вехи E3 из `.
 
 ### Фаза 8: Документация
 
-- [ ] **Task 22: README, CHANGELOG `[Unreleased]`, docs/testing.md** — AC-9.3, «Library Package Scope» (7) (depends on 21)
+- [x] **Task 22: README, CHANGELOG `[Unreleased]`, docs/testing.md** — AC-9.3, «Library Package Scope» (7) (depends on 21)
   - **Skill:** none — документация (Markdown)
   - `README.md`:
     - раздел «HTTP» — `main.ts` с `bootstrapService` и `instrument.ts`, обязательный импорт `KitConfigModule`, опции по роли (BFF `trustTraceparent: false`, P/O `quietRoutes`, O `redaction`), словарь `defineErrors`/`DomainError`, таблица кодов `kitErrors`, пагинация, `@Api` и `verdeect-kit openapi --out … --module …`, `contracts/openapi.extra.json`, `security` — по `@UseGuards(VerdeectAuthGuard)` и `Require*`; `APP_GUARD` генерация не видит, поэтому `@UseGuards` ставится на контроллер, а маршрут без guard'а документируется без `security` (KT-15 п. 5); пример потока SSE, который закрывает участник шага 2 `KitLifecycle` (это «`onStopAccepting`» §3.2): участник вызывает `reply.raw.end()` (или `destroy()`), иначе остановка ждёт до срока; правило остановки для модулей: `beforeApplicationShutdown` = шаг 3, `onApplicationShutdown` = шаг 4, они вызываются внутри участника `nest` (KT-15 п. 1); 4xx домена — только `DomainError` (прочие `HttpException` без тела → 500);

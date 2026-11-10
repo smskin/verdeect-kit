@@ -9,5 +9,5 @@ async function probe(specifier, name) {
 }
 
 console.log(
-    `config:${await probe('@verdeect/kit/config', 'defineEnv')} observability:${await probe('@verdeect/kit/observability', 'createLoggerOptions')} testing:${await probe('@verdeect/kit/testing', 'startTestStack')}`,
+    `config:${await probe('@verdeect/kit/config', 'defineEnv')} http:${await probe('@verdeect/kit/http', 'createHttpApp')} observability:${await probe('@verdeect/kit/observability', 'createLoggerOptions')} testing:${await probe('@verdeect/kit/testing', 'startTestStack')}`,
 );

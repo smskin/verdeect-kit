@@ -25,6 +25,7 @@ const COMMON_PATTERNS = [
             'testcontainers/*',
             'vitest',
             'vitest/*',
+            '@nestjs/testing',
         ],
         allowTypeImports: true,
         message:
@@ -37,15 +38,21 @@ const COMMON_PATTERNS = [
     },
 ];
 
+// ajv — внутренняя деталь expectMatchesApi: запрещён во всём src/** кроме src/testing/** (NFR-3, KT-15).
+const AJV_PATTERN = {
+    group: ['ajv', 'ajv/*'],
+    message: 'ajv — только в src/testing (NFR-3, KT-15)',
+};
+
 /**
  * Одно правило no-restricted-imports на группу файлов: в flat config последний блок с тем же
  * правилом заменяет предыдущий, поэтому общие запреты и запреты подпути собираются вместе.
  */
-function restrictedImports(extra = []) {
+function restrictedImports(extra = [], { allowAjv = false } = {}) {
     return {
         '@typescript-eslint/no-restricted-imports': [
             'error',
-            { patterns: [...COMMON_PATTERNS, ...extra] },
+            { patterns: [...COMMON_PATTERNS, ...(allowAjv ? [] : [AJV_PATTERN]), ...extra] },
         ],
     };
 }
@@ -159,7 +166,7 @@ export default [
         files: ['src/internal/**/*.ts'],
         rules: restrictedImports([
             {
-                group: ['@nestjs/*', '../config/*', '../testing/*', 'shell-quote'],
+                group: ['@nestjs/*', '../config/*', '../testing/*', '../cli/*', 'shell-quote'],
                 message: 'internal зависит только от node:* и zod (ARCHITECTURE.md).',
             },
         ]),
@@ -168,7 +175,7 @@ export default [
         files: ['src/config/**/*.ts'],
         rules: restrictedImports([
             {
-                group: ['../testing/*', 'shell-quote'],
+                group: ['../testing/*', '../cli/*', 'shell-quote'],
                 message:
                     'Рабочий код не импортирует testing и его зависимость shell-quote (ARCHITECTURE.md).',
             },
@@ -186,11 +193,67 @@ export default [
                     '../messaging/*',
                     '../redis/*',
                     '../crypto/*',
+                    '../cli/*',
                     'shell-quote',
                 ],
                 message: 'observability импортирует только config и internal (ARCHITECTURE.md).',
             },
         ]),
+    },
+    {
+        // http/ и http/api/: оба уровня вложенности.
+        files: ['src/http/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '../testing/*',
+                    '../../testing/*',
+                    '../database/*',
+                    '../../database/*',
+                    '../idempotency/*',
+                    '../../idempotency/*',
+                    '../messaging/*',
+                    '../../messaging/*',
+                    '../redis/*',
+                    '../../redis/*',
+                    '../crypto/*',
+                    '../../crypto/*',
+                    '../cli/*',
+                    '../../cli/*',
+                    'shell-quote',
+                ],
+                message:
+                    'http импортирует только observability, config и internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
+        // CLI грузит подпути только динамическим import() (ARCHITECTURE.md «CLI»); import type разрешён.
+        files: ['src/cli/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '**/http/*',
+                    '**/config/*',
+                    '**/observability/*',
+                    '**/testing/*',
+                    '**/internal/*',
+                    '**/database/*',
+                    '**/idempotency/*',
+                    '**/messaging/*',
+                    '**/redis/*',
+                    '**/crypto/*',
+                ],
+                allowTypeImports: true,
+                message:
+                    'CLI загружает подпути только динамическим import() (ARCHITECTURE.md «CLI»).',
+            },
+        ]),
+    },
+    {
+        // testing — единственный подпуть, которому разрешён ajv (expectMatchesApi).
+        files: ['src/testing/**/*.ts'],
+        rules: restrictedImports([], { allowAjv: true }),
     },
     {
         files: ['*.js', '*.mjs', 'scripts/**/*.mjs'],

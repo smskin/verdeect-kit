@@ -1,6 +1,7 @@
-// AC-9.1 (UC-1, UC-16), AC-1.1 (условие development), AC-1.2 (уровень C): проекты-потребители на упакованном архиве
-// (prd.md §3.8, NFR-3, NFR-4). Нужны Docker (startTestStack) и сеть до реестра npm.
+// AC-9.1 (UC-1, UC-16), AC-1.1 (условие development), AC-1.2 (уровень C), AC-3.8 (снимок OpenAPI): проекты-потребители
+// на упакованном архиве (prd.md §3.5, §3.8, NFR-3, NFR-4). Нужны Docker (startTestStack) и сеть до реестра npm.
 import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -49,7 +50,7 @@ describe('UC-1: проекты-потребители', () => {
         const result = await runInConsumer(dir(minimal), 'node', ['import-check.mjs']);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
+            'config:ok http:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
         );
     });
 
@@ -60,7 +61,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok observability:ok testing:ok',
+            'config:ok http:ok observability:ok testing:ok',
         );
     });
 
@@ -75,7 +76,7 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.code, describeResult(result)).toBe(0);
     });
 
-    it('AC-1.2: без pg и testcontainers /config и /observability импортируются, /testing — «@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса»', async () => {
+    it('AC-1.2: без pg и testcontainers /config, /http и /observability импортируются, /testing — «@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса»', async () => {
         const project = dir(noTestcontainers);
         expect(existsSync(join(project, 'node_modules', 'pg'))).toBe(false);
         expect(existsSync(join(project, 'node_modules', 'testcontainers'))).toBe(false);
@@ -86,9 +87,37 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout, describeResult(result)).toContain('config:ok');
+        expect(result.stdout, describeResult(result)).toContain('http:ok');
         expect(result.stdout, describeResult(result)).toContain('observability:ok');
         expect(result.stdout, describeResult(result)).toContain(
             'testing:@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса',
         );
+    });
+
+    it('AC-3.8: изменение маршрута без pnpm openapi валит снимок', async () => {
+        const project = dir(minimal);
+        const controller = join(project, 'src', 'service', 'items.controller.ts');
+        const original = await readFile(controller, 'utf8');
+        await writeFile(
+            controller,
+            original.replace("@Controller('items')", "@Controller('goods')"),
+        );
+        try {
+            const build = await runInConsumer(project, 'pnpm', ['build']);
+            expect(build.code, describeResult(build)).toBe(0);
+
+            const result = await runInConsumer(project, 'pnpm', [
+                'exec',
+                'vitest',
+                'run',
+                'src/openapi.spec.ts',
+            ]);
+
+            expect(result.code, describeResult(result)).not.toBe(0);
+            expect(result.stdout + result.stderr).toContain('AC-3.8');
+        } finally {
+            await writeFile(controller, original);
+            await runInConsumer(project, 'pnpm', ['build']);
+        }
     });
 });
