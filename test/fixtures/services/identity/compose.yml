@@ -1,0 +1,66 @@
+# verdeect-identity — базовый compose (prd.md §19): сервисы, общие для всех контуров.
+#
+# Контуры:
+#   разработка  docker compose up -d                       (+ compose.override.yml автоматически)
+#   production  docker compose -f compose.yml -f compose.production.yml up -d
+#   e2e         compose.e2e.yml — стенд Playwright (make e2e-up), E5
+#
+# Сети общие для всех сервисов Вердикта (фиксированные имена):
+#   verdeect-edge      — Traefik находит Identity по labels, маршрут только по хосту (01 решение 18);
+#   verdeect-internal  — соседи вызывают Identity как http://identity (SERVICE_URLS).
+# Воркера (outbox, inbox, очистка) пока нет — появится с публикатором в E7.
+
+name: ${COMPOSE_PROJECT_NAME:-verdeect-identity}
+
+services:
+  identity:
+    build:
+      context: .
+      target: production
+    image: ${IDENTITY_IMAGE:-verdeect-identity}:${VERSION:-dev}
+    init: true
+    depends_on:
+      identity-migrate:
+        condition: service_completed_successfully
+    networks:
+      verdeect-edge: {}
+      verdeect-internal:
+        aliases: [identity]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: verdeect-edge
+      traefik.http.routers.verdeect-identity.rule: Host(`id.verdeect.ru`)
+      traefik.http.services.verdeect-identity.loadbalancer.server.port: '3000'
+    # /ok — без обращения к БД (AC-9.1); в alpine нет curl.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Миграции — отдельный одноразовый шаг с ролью владельца схемы; приложение ждёт его успеха.
+  identity-migrate:
+    # Тот же образ: сборка дублируется, чтобы compose не пытался скачать локальный тег (кэш BuildKit общий).
+    build:
+      context: .
+      target: production
+    image: ${IDENTITY_IMAGE:-verdeect-identity}:${VERSION:-dev}
+    command: ['node', 'dist/cli.js', 'migrate']
+    restart: 'no'
+    networks: [verdeect-internal]
+    labels:
+      traefik.enable: 'false'
+
+networks:
+  # Общие сети хоста (Platform, BFF, Traefik): создаёт make networks, make down их не удаляет.
+  verdeect-edge:
+    name: verdeect-edge
+    external: true
+  verdeect-internal:
+    name: verdeect-internal
+    external: true

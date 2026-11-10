@@ -1,0 +1,12 @@
+repository: /home/administrator/projects/verdeect2/verdeect-bff
+commit: 23e8f34
+files:
+  - .gitlab-ci.yml
+  - Dockerfile
+  - compose.e2e.orchestrator.yml
+  - compose.e2e.yml
+  - compose.override.yml
+  - compose.production.yml
+  - compose.yml
+  - package.json
+  - apps/bff/package.json

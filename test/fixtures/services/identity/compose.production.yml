@@ -1,0 +1,98 @@
+# Production: docker compose -f compose.yml -f compose.production.yml up -d
+#
+# Образ — из реестра (без сборки), портов на хосте нет: Traefik находит Identity по labels в сети
+# verdeect-edge. PostgreSQL, Redis, RabbitMQ и SMTP — внешние (prd.md §19).
+# Переменные приходят из CI/CD; обязательные — ${VAR:?причина}, секретов по умолчанию нет.
+# Список обязательных повторяет цель config-prod в Makefile — менять вместе.
+# Настраиваемые сроки и параметры (SESSION_*, *_TTL, SCRYPT_*, …) берутся из значений по умолчанию
+# схемы (prd.md §5): пустая строка не проходит проверку числа, поэтому сюда их добавлять только
+# с явным значением.
+# Сбор логов (Alloy → Loki) — с хоста по json-file; Traefik: forwardedHeaders.trustedIPs и
+# TRUSTED_PROXIES должны описывать один и тот же адрес прокси.
+
+name: ${COMPOSE_PROJECT_NAME:?задайте имя проекта compose для этого хоста}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '5'
+
+x-hardening: &hardening
+  image: ${IDENTITY_IMAGE:?адрес образа в реестре}:${VERSION:?версия образа}
+  build: !reset null
+  init: true
+  read_only: true
+  user: '1000:1000' # пользователь node образа
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  tmpfs:
+    - /tmp:noexec,nosuid,size=64m
+  logging: *logging
+
+services:
+  identity:
+    <<: *hardening
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      IDENTITY_ISSUER: ${IDENTITY_ISSUER:?издатель, например https://id.verdeect.ru}
+      IDENTITY_SECRETS: ${IDENTITY_SECRETS:?ключи подписи cookie, каждый ≥ 32 байт}
+      CLIENT_SECRET_KEY: ${CLIENT_SECRET_KEY:?32 байта base64 для secret_enc}
+      DATABASE_URL: ${DATABASE_URL:?учётная запись роли identity_app, не владелец схемы}
+      REDIS_URL: ${REDIS_URL:?адрес Redis}
+      RABBITMQ_URL: ${RABBITMQ_URL:?адрес RabbitMQ}
+      SMTP_URL: ${SMTP_URL:?адрес SMTP}
+      DEFAULT_RETURN_URL: ${DEFAULT_RETURN_URL:?возврат после сброса пароля}
+      INVITATION_CLIENT_ID: ${INVITATION_CLIENT_ID:?клиент ссылки приглашения}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:?адреса Traefik}
+      SERVICE_URLS: ${SERVICE_URLS:-}
+      # Закреплено строкой: тестовые маршруты в production запрещены (схема окружения, prd.md §19).
+      E2E_TESTING_ROUTES: 'false'
+      # scrypt идёт в пуле libuv: размер = числу ядер реплики, не меньше 4 (prd.md §17).
+      UV_THREADPOOL_SIZE: ${UV_THREADPOOL_SIZE:-4}
+      # GlitchTip (GT02, GT11): только production, без ПДн; трассировки выключены в коде.
+      SENTRY_DSN: ${SENTRY_DSN:?DSN проекта identity-backend}
+      SENTRY_FRONTEND_DSN: ${SENTRY_FRONTEND_DSN:?DSN проекта identity-frontend}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+      SENTRY_RELEASE: ${VERSION}
+    deploy:
+      # Без состояния, 2+ реплики (prd.md §17); соседи балансируются DNS-именем identity.
+      replicas: ${IDENTITY_REPLICAS:-2}
+      resources:
+        limits:
+          # scrypt N=65536, r=8 — 64 МБ на хэш; 4 потока пула ≈ 256 МБ сверх кучи.
+          cpus: '2'
+          memory: 1G
+          pids: 200
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    restart: unless-stopped
+
+  identity-migrate:
+    <<: *hardening
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Владелец схемы — только для миграций (DDL); у приложения такой роли нет.
+      DATABASE_URL: ${DATABASE_MIGRATION_URL:?учётная запись владельца схемы identity}
+      SENTRY_DSN: ${SENTRY_DSN:?DSN проекта identity-backend}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+      SENTRY_RELEASE: ${VERSION}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 50
+    restart: 'no'
+
+networks:
+  # Сети создаёт инфраструктура хоста (Traefik и соседи), стек к ним только подключается.
+  verdeect-edge:
+    name: verdeect-edge
+    external: true
+  verdeect-internal:
+    name: verdeect-internal
+    external: true

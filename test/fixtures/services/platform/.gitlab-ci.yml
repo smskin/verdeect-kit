@@ -1,0 +1,354 @@
+# verdeect-platform — GitLab CI.
+#
+# Стадии: prepare → install → lint → test → Build → Deploy. Запуск — вручную (Run pipeline).
+# Теги раннеров:
+#   CI       — docker/shell-сборщик: образы (build-ci-image, Build) и деплой;
+#   CI_NODE  — docker executor для проверок в CI-образе (стадия `ci` Dockerfile — те же Node и pnpm,
+#              что в production).
+# Решения:
+#   - integration- и http-тесты берут PostgreSQL 17 и RabbitMQ из service-контейнеров
+#     (TEST_DATABASE_ADMIN_URL, TEST_RABBITMQ_URL): Docker для Testcontainers в docker executor нет;
+#     роли создаёт setup тестов кодом db:prepare, миграции — под platform_owner, тесты — под platform_app;
+#   - дымовой старт образа (Build) повторяет порядок развёртывания: db:prepare → migrate → приложение
+#     под platform_app; брокера нет (соединение переподключается) → /health degraded;
+#   - тесты — три задания по уровням (docs/development.md): tests (unit), tests-integration (integration и
+#     http без тайминговых), tests-timing (верхние границы времени — на раннере TIMING_RUNNER_TAG без
+#     параллельных заданий, resource_group); нагрузка test-load — вручную, отчёт без порогов (LOAD_STRICT=0);
+#   - TEST_TIMEOUT_SCALE=1: тайм-ауты тестов без запаса на нагрузку; запас 2–3 — только локально;
+#   - шардирование tests-integration — когда задание длится > 15 мин: parallel: N (2–4) и
+#     --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL; у каждого шарда свои service-контейнеры;
+#   - P-тесты в CI не запускаются — локально на контуре e2e Identity перед merge в main (prd.md §16);
+#   - ни один job не отправляет события в GlitchTip (DSN в тестах пуст); source maps backend остаются
+#     в образе (--enable-source-maps), загрузки в GlitchTip нет.
+#
+# Переменные CI/CD:
+#   реестр (переменные уровня инстанса GitLab; ветки этапов не защищаются):
+#     CI_DOCKER_REGISTRY — адрес реестра, без Protected;
+#     DOCKER_AUTH_CONFIG — учётка Nexus ci-pull (только чтение docker-hosted), без Protected: runner тянет
+#       образ jobs ${CI_IMAGE} на docker executor на любой ветке; в репозитории не задаётся и здесь не
+#       объявляется; в shell-jobs с входом в реестр его снимает unset (якоря .docker-login, .docker-cleanup),
+#       иначе Docker CLI игнорирует docker login («DOCKER_AUTH_CONFIG is set and takes precedence»);
+#     CI_DOCKER_REGISTRY_USER / CI_DOCKER_REGISTRY_PASSWORD (masked) — учётка build-server с правом записи,
+#       Protected: доступна только на main, поэтому build-ci-image, публикация в Build и deploy-production —
+#       только с main;
+#   на остальных ветках jobs берут готовый ${CI_IMAGE} (:latest), Build собирает образ и делает смоук без
+#   docker login и push. Ветка, меняющая стадию `ci` Dockerfile, тестируется на прежнем :latest до слияния в main;
+#   PRODUCTION_RUNNER_TAG — тег раннера production-хоста;
+#   production (environment: production, protected) — список совпадает с ${VAR:?} в
+#   compose.production.yml и целью config-prod Makefile: COMPOSE_PROJECT_NAME, DATABASE_URL (роль
+#   platform_app), DATABASE_MIGRATOR_URL (роль platform_owner), RABBITMQ_URL, IDENTITY_ISSUER
+#   (AUTH_ISSUERS собирает compose.production.yml — только издатель Identity, prd.md §16),
+#   MODULES_READY, SENTRY_DSN, SENTRY_ENVIRONMENT; необязательные — LOG_LEVEL, PLATFORM_REPLICAS.
+#   db:prepare (суперпользователь, пароли ролей) — шаг оператора до первого деплоя
+#   (docs/deployment.md), его переменных в GitLab нет.
+#   Первая линия защиты: production-переменные — только в scope окружения `production`.
+
+stages:
+  - prepare
+  - install
+  - lint
+  - test
+  - Build
+  - Deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+default:
+  interruptible: true
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+variables:
+  CI_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}-ci:latest
+  PLATFORM_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}
+  DOCKER_BUILDKIT: '1'
+  # Стор pnpm внутри проекта — его кэширует GitLab.
+  PNPM_STORE_DIR: ${CI_PROJECT_DIR}/.pnpm-store
+  # Те же образы, что compose.override.yml и globalSetup тестов.
+  POSTGRES_IMAGE: postgres:17.11-alpine3.24
+  RABBITMQ_IMAGE: rabbitmq:4.3.6-management-alpine
+  # Совпадает с Makefile (make alerts-check).
+  PROMETHEUS_IMAGE: prom/prometheus:v3.15.1
+  # Тайм-ауты тестов без запаса на нагрузку (docs/development.md).
+  TEST_TIMEOUT_SCALE: '1'
+  # Раннер без параллельных заданий для tests-timing; переопределить в CI/CD variables.
+  TIMING_RUNNER_TAG: CI_NODE
+
+# DOCKER_AUTH_CONFIG (ci-pull) задан для всех jobs: Docker CLI с ним игнорирует docker login — снять до входа.
+.docker-login: &docker-login
+  - unset DOCKER_AUTH_CONFIG
+  - echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+
+.docker-cleanup:
+  after_script:
+    - unset DOCKER_AUTH_CONFIG
+    - docker logout "$CI_DOCKER_REGISTRY" || true
+    - docker image prune -f || true
+
+# Стор pnpm по pnpm-lock.yaml: install прогревает (pull-push), остальные задания только читают.
+# node_modules артефактом не передаётся — 30+ тыс. файлов, выгрузка падает с 413 Request Entity Too Large.
+.pnpm-cache: &pnpm-cache
+  key:
+    files: [pnpm-lock.yaml]
+  paths: [.pnpm-store/]
+  policy: pull
+
+.pnpm-install: &pnpm-install
+  - pnpm install --frozen-lockfile --prefer-offline --store-dir "$PNPM_STORE_DIR"
+
+# Проверки — в CI-образе; зависимости ставит каждое задание из кэша стора pnpm.
+.node-job:
+  image: ${CI_IMAGE}
+  tags: [CI_NODE]
+  needs: [install]
+  cache: *pnpm-cache
+  before_script:
+    - *pnpm-install
+
+# Тестовые job'ы не должны видеть реальную инфраструктуру: переменные проекта/группы перекрывают
+# окружение тестов (test/support/env.ts задаёт своё), а тесты очищают таблицы — реальная БД
+# была бы стёрта. Поэтому всё, что может указывать на неё, снимается до запуска.
+.prepare-env: &prepare-env
+  - unset DATABASE_URL DATABASE_MIGRATOR_URL DATABASE_ADMIN_URL RABBITMQ_URL MODULES_READY
+  - unset PLATFORM_OWNER_PASSWORD PLATFORM_APP_PASSWORD
+  - for name in $(env | grep -oE '^(SENTRY|AUTH|AWS|S3)_[A-Z0-9_]*' || true); do unset "$name"; done
+
+# Только main: учётка записи (Protected) на ветках недоступна; ветки берут готовый ${CI_IMAGE}.
+build-ci-image:
+  stage: prepare
+  tags: [CI]
+  extends: .docker-cleanup
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - *docker-login
+    - docker pull "$CI_IMAGE" || true
+    - docker build --target ci --cache-from "$CI_IMAGE" --build-arg BUILDKIT_INLINE_CACHE=1 -t "$CI_IMAGE" .
+    - docker push "$CI_IMAGE"
+
+install:
+  stage: install
+  image: ${CI_IMAGE}
+  tags: [CI_NODE]
+  # На ветках build-ci-image нет — install идёт на готовом ${CI_IMAGE}.
+  needs:
+    - job: build-ci-image
+      optional: true
+  # Прогрев стора и проверка lockfile; node_modules не передаётся.
+  script:
+    - *pnpm-install
+  cache:
+    <<: *pnpm-cache
+    policy: pull-push
+
+code-style:
+  stage: lint
+  extends: .node-job
+  script:
+    - pnpm lint
+    - pnpm format:check
+
+# Правила алертов §15: promtool в образе Prometheus, без зависимостей workspace.
+alerts:
+  stage: lint
+  image:
+    name: ${PROMETHEUS_IMAGE}
+    entrypoint: ['']
+  tags: [CI_NODE]
+  needs: []
+  script:
+    - cd docker/prometheus
+    - promtool check rules platform-alerts.yml
+    - promtool test rules platform-alerts.test.yml
+
+static-analysis:
+  stage: lint
+  extends: .node-job
+  script:
+    - pnpm typecheck
+
+tests:
+  stage: test
+  extends: .node-job
+  script:
+    - *prepare-env
+    - pnpm --filter platform exec vitest run --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/platform/report.xml
+
+# PostgreSQL 17 и RabbitMQ из service-контейнеров для integration, тайминговых и нагрузки.
+.with-services:
+  extends: .node-job
+  services:
+    - name: ${POSTGRES_IMAGE}
+      alias: postgres
+    - name: ${RABBITMQ_IMAGE}
+      alias: rabbitmq
+  variables:
+    POSTGRES_DB: platform
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+  before_script:
+    - *pnpm-install
+    - *prepare-env
+    # Суперпользователь service-контейнера: роли и схему создаёт setup тестов (код db:prepare).
+    - export TEST_DATABASE_ADMIN_URL=postgres://postgres:postgres@postgres:5432/platform
+    - for i in $(seq 1 60); do nc -z postgres 5432 && break; sleep 1; done
+    - nc -z postgres 5432
+    - export TEST_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+    - for i in $(seq 1 90); do nc -z rabbitmq 5672 && break; sleep 1; done
+    - nc -z rabbitmq 5672
+
+tests-integration:
+  stage: test
+  extends: .with-services
+  script:
+    - pnpm --filter platform exec vitest run -c vitest.integration.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/platform/report.xml
+
+# Верхние границы времени (AC-6.6, AC-7.5, FR-13, §9.1, AC-5.2, AC-5.3, §10): без соседних заданий на раннере.
+# timing-guard без docker CLI проверку контура e2e Identity пропускает.
+tests-timing:
+  stage: test
+  extends: .with-services
+  tags: [$TIMING_RUNNER_TAG]
+  # После integration: тяжёлый прогон на том же пуле раннеров ломает верхние границы времени.
+  needs: [install, tests-integration]
+  resource_group: tests-timing
+  script:
+    - pnpm --filter platform exec vitest run -c vitest.timing.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/platform/report.xml
+
+# Нагрузка §15 — вручную, отчёт без порогов (пороги — серверное железо, LOAD_STRICT=1 локально); Build не ждёт.
+test-load:
+  stage: test
+  extends: .with-services
+  when: manual
+  allow_failure: true
+  script:
+    - pnpm build
+    - LOAD_STRICT=0 pnpm --filter platform exec vitest run -c vitest.load.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/platform/report.xml
+
+Build:
+  stage: Build
+  tags: [CI]
+  extends: .docker-cleanup
+  needs: [code-style, static-analysis, alerts, tests, tests-integration, tests-timing]
+  variables:
+    IMAGE_TAG: ${PLATFORM_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    SMOKE_ADMIN_URL: postgres://postgres:postgres@postgres:5432/platform
+  script:
+    # Публикация только с main: учётка build-server (Protected) на ветках недоступна — без docker login и push.
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        unset DOCKER_AUTH_CONFIG
+        echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+      fi
+    - docker pull "$PLATFORM_IMAGE:latest" || true
+    - >-
+      docker build --target production
+      --cache-from "$PLATFORM_IMAGE:latest" --build-arg BUILDKIT_INLINE_CACHE=1
+      --build-arg VERSION="$CI_COMMIT_SHORT_SHA"
+      -t "$IMAGE_TAG" -t "$PLATFORM_IMAGE:latest" .
+    # Дымовой старт до push — порядок развёртывания (prd.md §16): db:prepare суперпользователем,
+    # migrate под platform_owner, plan:apply (два подключения §8.4), приложение под platform_app с ограничениями
+    # compose.production.yml.
+    - docker network create "platform-smoke-$CI_JOB_ID"
+    - >-
+      docker run -d --name "platform-smoke-db-$CI_JOB_ID" --network "platform-smoke-$CI_JOB_ID"
+      --network-alias postgres -e POSTGRES_DB=platform -e POSTGRES_USER=postgres
+      -e POSTGRES_PASSWORD=postgres "$POSTGRES_IMAGE"
+    # Пока образ PostgreSQL выполняет init, сервер слушает только сокет — готовность проверяется по TCP.
+    - for i in $(seq 1 60); do docker exec "platform-smoke-db-$CI_JOB_ID" pg_isready -q -h 127.0.0.1 -U postgres -d platform && break; sleep 1; done
+    - docker exec "platform-smoke-db-$CI_JOB_ID" pg_isready -h 127.0.0.1 -U postgres -d platform
+    - >-
+      docker run --rm --network "platform-smoke-$CI_JOB_ID" --read-only --user 1000:1000
+      -e DATABASE_ADMIN_URL="$SMOKE_ADMIN_URL"
+      -e PLATFORM_OWNER_PASSWORD=smoke-owner-password -e PLATFORM_APP_PASSWORD=smoke-app-password
+      "$IMAGE_TAG" node dist/cli.js db:prepare
+    - >-
+      docker run --rm --network "platform-smoke-$CI_JOB_ID" --read-only --user 1000:1000
+      -e DATABASE_MIGRATOR_URL=postgres://platform_owner:smoke-owner-password@postgres:5432/platform
+      "$IMAGE_TAG" node dist/cli.js migrate
+    # Тарифы до запуска приложения: plan под platform_owner, компании — под platform_app.
+    - >-
+      docker run --rm --network "platform-smoke-$CI_JOB_ID" --read-only --user 1000:1000
+      -e DATABASE_MIGRATOR_URL=postgres://platform_owner:smoke-owner-password@postgres:5432/platform
+      -e DATABASE_URL=postgres://platform_app:smoke-app-password@postgres:5432/platform
+      -e RABBITMQ_URL=amqp://127.0.0.1:1
+      -e AUTH_ISSUERS='[{"iss":"https://id.verdeect.test","jwksUri":"https://id.verdeect.test/oidc/jwks","kinds":["user","service"]}]'
+      "$IMAGE_TAG" node dist/cli.js plan:apply --file seed/plans.json
+    - >-
+      docker run -d --name "platform-smoke-$CI_JOB_ID" --network "platform-smoke-$CI_JOB_ID"
+      --read-only --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges:true
+      --tmpfs /tmp:noexec,nosuid,size=64m
+      -e DATABASE_URL=postgres://platform_app:smoke-app-password@postgres:5432/platform
+      -e RABBITMQ_URL=amqp://127.0.0.1:1
+      -e AUTH_ISSUERS='[{"iss":"https://id.verdeect.test","jwksUri":"https://id.verdeect.test/oidc/jwks","kinds":["user","service"]}]'
+      "$IMAGE_TAG"
+    # Первая проверка HEALTHCHECK — через interval (30 с) после старта.
+    - for i in $(seq 1 45); do [ "$(docker inspect -f '{{.State.Health.Status}}' "platform-smoke-$CI_JOB_ID")" = healthy ] && break; sleep 2; done
+    - docker inspect -f '{{.State.Health.Status}}' "platform-smoke-$CI_JOB_ID" | grep -qx healthy || { docker logs "platform-smoke-$CI_JOB_ID"; exit 1; }
+    - >-
+      docker exec "platform-smoke-$CI_JOB_ID" node -e
+      "fetch('http://127.0.0.1:9100/health').then(async (r) => { const body = await r.json(); console.log(r.status, JSON.stringify(body)); process.exit(r.status === 200 && body.status === 'degraded' && body.checks.database === 'up' ? 0 : 1); }, () => process.exit(1))"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker push "$IMAGE_TAG"
+        docker push "$PLATFORM_IMAGE:latest"
+      else
+        echo "Ветка $CI_COMMIT_BRANCH: образ собран, смоук пройден; публикация — только с $CI_DEFAULT_BRANCH"
+      fi
+  after_script:
+    - docker rm -f "platform-smoke-$CI_JOB_ID" "platform-smoke-db-$CI_JOB_ID" || true
+    - docker network rm "platform-smoke-$CI_JOB_ID" || true
+    - unset DOCKER_AUTH_CONFIG
+    - docker logout "$CI_DOCKER_REGISTRY" || true
+    - docker image prune -f || true
+
+# Одна установка на окружение (общий SaaS, без матрицы клиентов).
+deploy-production:
+  stage: Deploy
+  # Только main, вручную.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  tags: [$PRODUCTION_RUNNER_TAG]
+  needs: [Build]
+  dependencies: []
+  environment:
+    name: production
+    url: https://platform.api.verdeect.ru/ok
+  resource_group: production
+  interruptible: false
+  variables:
+    VERSION: ${CI_COMMIT_SHORT_SHA}
+  extends: .docker-cleanup
+  script:
+    - *docker-login
+    - export COMPOSE_FILE=compose.yml:compose.production.yml
+    - docker compose pull
+    # Миграции до новых реплик; up ещё раз запустит platform-migrate — повтор ничего не применит.
+    - docker compose run --rm platform-migrate
+    # Тарифы (prd.md §16: migrate → plan:apply → запуск); повтор того же файла ничего не меняет.
+    - docker compose run --rm platform-plan-apply
+    - docker compose up -d --wait --remove-orphans
+    - docker compose ps
+    - docker compose logs --tail=50 platform

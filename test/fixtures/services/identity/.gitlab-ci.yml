@@ -1,0 +1,390 @@
+# verdeect-identity — GitLab CI.
+#
+# Стадии: prepare → install → lint → test → Build → Deploy. Запуск — вручную (Run pipeline).
+# Теги раннеров:
+#   CI       — docker/shell-сборщик: образы (build-ci-image, Build) и деплой;
+#   CI_NODE  — docker executor для проверок в CI-образе (стадия `ci` Dockerfile — те же Node и pnpm,
+#              что в production).
+# Решения:
+#   - integration-тесты в CI берут PostgreSQL из service-контейнера (TEST_DATABASE_URL): Docker для
+#     Testcontainers в docker executor нет; миграции применяет setup тестов владельцем, тесты идут
+#     под ролью приложения identity_app_login; Redis — service-контейнер (TEST_REDIS_URL, E5);
+#     mailpit — service-контейнер (TEST_SMTP_URL, TEST_MAILPIT_URL, E6); RabbitMQ — service-контейнер
+#     (TEST_RABBITMQ_URL, E7); smoke образа (Build) — с PostgreSQL в своей сети (ключи подписи — из БД), без брокера —
+#     соединение ленивое;
+#   - e2e (Playwright, девять страниц) в CI не запускаются — локально на compose.e2e.yml (E10)
+#     перед merge в main;
+#   - ни один job не отправляет события в GlitchTip (DSN в тестах пуст). Скрытые source maps страниц
+#     загружает Build (@sentry/vite-plugin, GT13) при заданном SENTRY_AUTH_TOKEN — секретом BuildKit, не
+#     build-arg; без токена загрузка выключена, .map всё равно удаляются из образа.
+#
+# Переменные CI/CD:
+#   реестр (переменные уровня инстанса GitLab; ветки этапов не защищаются):
+#     CI_DOCKER_REGISTRY — адрес реестра, без Protected;
+#     DOCKER_AUTH_CONFIG — учётка Nexus ci-pull (только чтение docker-hosted), без Protected: runner тянет
+#       образ jobs ${CI_IMAGE} на docker executor на любой ветке; в репозитории не задаётся и здесь не
+#       объявляется; в shell-jobs с входом в реестр его снимает unset (якоря .docker-login, .docker-cleanup),
+#       иначе Docker CLI игнорирует docker login («DOCKER_AUTH_CONFIG is set and takes precedence»);
+#     CI_DOCKER_REGISTRY_USER / CI_DOCKER_REGISTRY_PASSWORD (masked) — учётка build-server с правом записи,
+#       Protected: доступна только на main, поэтому build-ci-image, публикация в Build и deploy-production —
+#       только с main;
+#   на остальных ветках jobs берут готовый ${CI_IMAGE} (:latest), Build собирает образ и делает смоук без
+#   docker login и push. Ветка, меняющая стадию `ci` Dockerfile, тестируется на прежнем :latest до слияния в main;
+#   PRODUCTION_RUNNER_TAG — тег раннера production-хоста;
+#   production (environment: production, protected) — список совпадает с ${VAR:?} в
+#   compose.production.yml и целью config-prod Makefile: COMPOSE_PROJECT_NAME, IDENTITY_ISSUER,
+#   IDENTITY_SECRETS, CLIENT_SECRET_KEY, DATABASE_URL (роль identity_app), DATABASE_MIGRATION_URL
+#   (владелец схемы), REDIS_URL, RABBITMQ_URL, SMTP_URL, DEFAULT_RETURN_URL, INVITATION_CLIENT_ID,
+#   TRUSTED_PROXIES, SENTRY_DSN, SENTRY_FRONTEND_DSN, SENTRY_ENVIRONMENT; необязательные — SERVICE_URLS,
+#   LOG_LEVEL, UV_THREADPOOL_SIZE (= ядрам реплики), IDENTITY_REPLICAS.
+#   SENTRY_AUTH_TOKEN (masked, protected; нужен только Build) и SENTRY_ORG — загрузка source maps
+#   страниц в GlitchTip (проект identity-frontend).
+#   Первая линия защиты: production-переменные — только в scope окружения `production`.
+
+stages:
+  - prepare
+  - install
+  - lint
+  - test
+  - Build
+  - Deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+default:
+  interruptible: true
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+variables:
+  CI_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}-ci:latest
+  IDENTITY_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}
+  DOCKER_BUILDKIT: '1'
+  # Стор pnpm внутри проекта — его кэширует GitLab.
+  PNPM_STORE_DIR: ${CI_PROJECT_DIR}/.pnpm-store
+  POSTGRES_IMAGE: postgres:16.15-alpine3.24
+  REDIS_IMAGE: redis:7.4.11-alpine
+  MAILPIT_IMAGE: axllent/mailpit:v1.31.6
+  RABBITMQ_IMAGE: rabbitmq:4.3.6-management-alpine
+  # ID-37: по digest манифеста (тег переиздают), то же значение — в Makefile и у BFF.
+  PLAYWRIGHT_IMAGE: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
+  # Тайм-ауты тестов без запаса на нагрузку (docs/development.md): в CI всегда 1.
+  TEST_TIMEOUT_SCALE: '1'
+
+# DOCKER_AUTH_CONFIG (ci-pull) задан для всех jobs: Docker CLI с ним игнорирует docker login — снять до входа.
+.docker-login: &docker-login
+  - unset DOCKER_AUTH_CONFIG
+  - echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+
+.docker-cleanup:
+  after_script:
+    - unset DOCKER_AUTH_CONFIG
+    - docker logout "$CI_DOCKER_REGISTRY" || true
+    - docker image prune -f || true
+
+# Стор pnpm по pnpm-lock.yaml: install прогревает (pull-push), остальные задания только читают.
+# node_modules артефактом не передаётся — сотни МБ, выгрузка падает с 413 Request Entity Too Large.
+.pnpm-cache: &pnpm-cache
+  key:
+    files: [pnpm-lock.yaml]
+  paths: [.pnpm-store/]
+  policy: pull
+
+.pnpm-install: &pnpm-install
+  - pnpm install --frozen-lockfile --prefer-offline --store-dir "$PNPM_STORE_DIR"
+
+# Проверки — в CI-образе; зависимости ставит каждое задание из кэша стора pnpm.
+.node-job:
+  image: ${CI_IMAGE}
+  tags: [CI_NODE]
+  needs: [install]
+  cache: *pnpm-cache
+  before_script:
+    - *pnpm-install
+
+# Тестовые job'ы не должны видеть реальную инфраструктуру: переменные проекта/группы перекрывают
+# окружение тестов (test/support/env.ts задаёт своё), а тесты очищают таблицы — реальная БД
+# была бы стёрта. Поэтому всё, что может указывать на неё, снимается до запуска.
+.prepare-env: &prepare-env
+  - unset DATABASE_URL DATABASE_MIGRATION_URL REDIS_URL RABBITMQ_URL SMTP_URL SERVICE_URLS
+  - unset IDENTITY_SECRETS CLIENT_SECRET_KEY IDENTITY_ISSUER DEFAULT_RETURN_URL TRUSTED_PROXIES
+  - for name in $(env | grep -oE '^(SENTRY|AUTH|AWS|S3)_[A-Z0-9_]*' || true); do unset "$name"; done
+
+# Только main: учётка записи (Protected) на ветках недоступна; ветки берут готовый ${CI_IMAGE}.
+build-ci-image:
+  stage: prepare
+  tags: [CI]
+  extends: .docker-cleanup
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - *docker-login
+    - docker pull "$CI_IMAGE" || true
+    - docker build --target ci --cache-from "$CI_IMAGE" --build-arg BUILDKIT_INLINE_CACHE=1 -t "$CI_IMAGE" .
+    - docker push "$CI_IMAGE"
+
+install:
+  stage: install
+  image: ${CI_IMAGE}
+  tags: [CI_NODE]
+  # На ветках build-ci-image нет — install идёт на готовом ${CI_IMAGE}.
+  needs:
+    - job: build-ci-image
+      optional: true
+  # Прогрев стора и проверка lockfile; node_modules не передаётся.
+  script:
+    - *pnpm-install
+  cache:
+    <<: *pnpm-cache
+    policy: pull-push
+
+code-style:
+  stage: lint
+  extends: .node-job
+  script:
+    - pnpm lint
+    - pnpm format:check
+
+static-analysis:
+  stage: lint
+  extends: .node-job
+  script:
+    - pnpm typecheck
+    # prd.md §17 «Совместимость»: нет undici ≥ 7 в production-зависимостях.
+    - pnpm check:undici
+
+tests:
+  stage: test
+  extends: .node-job
+  script:
+    - *prepare-env
+    - pnpm --filter identity exec vitest run --reporter=default --reporter=junit --outputFile=report.xml
+    - pnpm --filter identity-pages exec vitest run --passWithNoTests --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - apps/identity/report.xml
+        - apps/identity-pages/report.xml
+
+# Service-контейнеры наборов на Testcontainers (integration, timing, load): у каждого задания (и каждого
+# шарда) — свои.
+.test-services:
+  services:
+    - name: ${POSTGRES_IMAGE}
+      alias: postgres
+    - name: ${REDIS_IMAGE}
+      alias: redis
+    - name: ${MAILPIT_IMAGE}
+      alias: mailpit
+    - name: ${RABBITMQ_IMAGE}
+      alias: rabbitmq
+  variables:
+    POSTGRES_DB: identity
+    POSTGRES_USER: identity_owner
+    POSTGRES_PASSWORD: identity_owner
+
+# Адреса service-контейнеров для global-setup тестов и ожидание их портов. Владелец БД — суперпользователь
+# service-контейнера; роль приложения создаёт setup тестов.
+.wait-services: &wait-services
+  - export TEST_DATABASE_URL=postgres://identity_owner:identity_owner@postgres:5432/identity
+  - for i in $(seq 1 60); do nc -z postgres 5432 && break; sleep 1; done
+  - nc -z postgres 5432
+  - export TEST_REDIS_URL=redis://redis:6379
+  - for i in $(seq 1 60); do nc -z redis 6379 && break; sleep 1; done
+  - nc -z redis 6379
+  - export TEST_SMTP_URL=smtp://mailpit:1025
+  - export TEST_MAILPIT_URL=http://mailpit:8025
+  - for i in $(seq 1 60); do nc -z mailpit 1025 && nc -z mailpit 8025 && break; sleep 1; done
+  - nc -z mailpit 1025
+  - nc -z mailpit 8025
+  - export TEST_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+  - for i in $(seq 1 90); do nc -z rabbitmq 5672 && break; sleep 1; done
+  - nc -z rabbitmq 5672
+
+# make test-integration: два шарда (CI_NODE_INDEX 1..CI_NODE_TOTAL — нумерация --shard Vitest), junit по шарду.
+tests-integration:
+  stage: test
+  extends: [.node-job, .test-services]
+  parallel: 2
+  script:
+    - *prepare-env
+    - *wait-services
+    - pnpm --filter identity exec vitest run -c vitest.integration.config.ts --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/identity/report.xml
+
+# make test-timing (AC-1.3, AC-1.5, AC-4.1, AC-4.1a: разница медиан ≤ 50 мс) — тихий раннер: после шардов
+# integration, по одному на всю инсталляцию (resource_group), без docker CLI timing-guard проверку контура
+# e2e пропускает. В CI-образе нет make — команда цели напрямую.
+test-timing:
+  stage: test
+  extends: [.node-job, .test-services]
+  needs: [install, tests-integration]
+  resource_group: test-timing
+  script:
+    - *prepare-env
+    - *wait-services
+    - pnpm --filter identity exec vitest run -c vitest.timing.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: apps/identity/report.xml
+
+# make test-load (p95 §17) — только вручную; пороги — для серверного железа, падение не блокирует конвейер.
+test-load:
+  stage: test
+  extends: [.node-job, .test-services]
+  when: manual
+  allow_failure: true
+  script:
+    - *prepare-env
+    - *wait-services
+    - export UV_THREADPOOL_SIZE=$(nproc)
+    - pnpm --filter identity test:load
+
+frontend:
+  stage: test
+  extends: .node-job
+  script:
+    - pnpm --filter identity-pages build
+  artifacts:
+    # Собранные страницы — для test-visual.
+    paths: [apps/identity/public/]
+    expire_in: 1 hour
+
+# Страницы и письма против макетов Claude Design (prd.md §12–13, playwright.visual.config.ts): образ
+# Playwright той же версии, что @playwright/test, — шрифты и рендер те же, что у make test-visual.
+test-visual:
+  stage: test
+  image: ${PLAYWRIGHT_IMAGE}
+  tags: [CI_NODE]
+  needs: [install, frontend]
+  cache: *pnpm-cache
+  # pnpm в образе Playwright нет (corepack — не во всех сборках) — npm ставит версию packageManager (без хеша после «+»).
+  script:
+    - npm install -g "pnpm@$(node -p "require('./package.json').packageManager.split('@')[1].split('+')[0]")"
+    - *pnpm-install
+    - *prepare-env
+    - node_modules/.bin/playwright test -c playwright.visual.config.ts
+  artifacts:
+    when: on_failure
+    # diff-картинки и отчёт; данных пользователей нет — заглушки с иллюстрацией макетов.
+    paths: [test-results/visual/]
+    reports:
+      junit: test-results/visual/junit.xml
+    expire_in: 1 week
+
+Build:
+  stage: Build
+  tags: [CI]
+  extends: .docker-cleanup
+  needs: [code-style, static-analysis, tests, tests-integration, frontend, test-visual]
+  variables:
+    IMAGE_TAG: ${IDENTITY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  script:
+    # Публикация только с main: учётка build-server (Protected) на ветках недоступна — без docker login и push.
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        unset DOCKER_AUTH_CONFIG
+        echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+      fi
+    - docker pull "$IDENTITY_IMAGE:latest" || true
+    - >-
+      docker build --target production
+      --cache-from "$IDENTITY_IMAGE:latest" --build-arg BUILDKIT_INLINE_CACHE=1
+      --build-arg VERSION="$CI_COMMIT_SHORT_SHA" --build-arg SENTRY_RELEASE="$CI_COMMIT_SHORT_SHA"
+      --build-arg SENTRY_ORG="${SENTRY_ORG:-}"
+      ${SENTRY_AUTH_TOKEN:+--secret id=sentry_auth_token,env=SENTRY_AUTH_TOKEN}
+      -t "$IMAGE_TAG" -t "$IDENTITY_IMAGE:latest" .
+    # AC-4 (E11): тестовый подписчик и исходники библиотеки не попадают в образ — сервис для этого не нужен.
+    - >-
+      docker run --rm --network none --entrypoint node "$IMAGE_TAG" -e
+      "import('@verdeect/auth/testing').then(() => process.exit(1), (e) => process.exit(e.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED' ? 0 : 1))"
+    - >-
+      docker run --rm --network none --entrypoint sh "$IMAGE_TAG" -c
+      'test -f node_modules/@verdeect/auth/package.json && test ! -e node_modules/@verdeect/auth/src'
+    # Дымовой старт до push. БД при старте нужна: ключи подписи загружаются из неё (E3; на пустой таблице
+    # создаётся первый, FR-20). PostgreSQL — образ тестов в своей сети задания; миграции — CLI образа, как
+    # identity-migrate; приложение — под identity_app_login; брокера нет (соединение ленивое) → /health degraded.
+    - docker network create "identity-smoke-$CI_JOB_ID"
+    - >-
+      docker run -d --name "identity-smoke-db-$CI_JOB_ID" --network "identity-smoke-$CI_JOB_ID"
+      --network-alias postgres -e POSTGRES_DB=identity -e POSTGRES_USER=identity_owner
+      -e POSTGRES_PASSWORD=identity_owner "$POSTGRES_IMAGE"
+    # Пока образ PostgreSQL выполняет init, сервер слушает только сокет — готовность проверяется по TCP.
+    - for i in $(seq 1 60); do docker exec "identity-smoke-db-$CI_JOB_ID" pg_isready -q -h 127.0.0.1 -U identity_owner -d identity && break; sleep 1; done
+    - docker exec "identity-smoke-db-$CI_JOB_ID" pg_isready -h 127.0.0.1 -U identity_owner -d identity
+    - >-
+      docker run --rm --network "identity-smoke-$CI_JOB_ID" --read-only --user 1000:1000
+      -e DATABASE_URL=postgres://identity_owner:identity_owner@postgres:5432/identity
+      "$IMAGE_TAG" node dist/cli.js migrate
+    # Учётная запись входа роли приложения (как docker/postgres/init): приложение — не владелец таблиц.
+    - >-
+      docker exec "identity-smoke-db-$CI_JOB_ID" psql -v ON_ERROR_STOP=1 -U identity_owner -d identity
+      -c "CREATE ROLE identity_app_login LOGIN PASSWORD 'identity_app' IN ROLE identity_app"
+    - >-
+      docker run -d --name "identity-smoke-$CI_JOB_ID" --network "identity-smoke-$CI_JOB_ID" --read-only --user 1000:1000
+      --tmpfs /tmp:noexec,nosuid,size=64m
+      -e IDENTITY_ISSUER=https://id.verdeect.test -e IDENTITY_SECRETS=ssssssssssssssssssssssssssssssss
+      -e CLIENT_SECRET_KEY=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+      -e DATABASE_URL=postgres://identity_app_login:identity_app@postgres:5432/identity
+      -e REDIS_URL=redis://127.0.0.1:1 -e RABBITMQ_URL=amqp://127.0.0.1:1 -e SMTP_URL=smtp://127.0.0.1:1
+      -e DEFAULT_RETURN_URL=https://app.verdeect.test/ -e INVITATION_CLIENT_ID=smoke
+      "$IMAGE_TAG"
+    - for i in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' "identity-smoke-$CI_JOB_ID")" = healthy ] && break; sleep 2; done
+    - docker inspect -f '{{.State.Health.Status}}' "identity-smoke-$CI_JOB_ID" | grep -qx healthy || { docker logs "identity-smoke-$CI_JOB_ID"; exit 1; }
+    - >-
+      docker exec "identity-smoke-$CI_JOB_ID" node -e
+      "fetch('http://127.0.0.1:3000/ok').then((r) => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"
+    - >-
+      docker exec "identity-smoke-$CI_JOB_ID" node -e
+      "fetch('http://127.0.0.1:9100/health').then(async (r) => { const body = await r.json(); console.log(r.status, JSON.stringify(body)); process.exit(r.status === 200 && body.status === 'degraded' ? 0 : 1); }, () => process.exit(1))"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker push "$IMAGE_TAG"
+        docker push "$IDENTITY_IMAGE:latest"
+      else
+        echo "Ветка $CI_COMMIT_BRANCH: образ собран, смоук пройден; публикация — только с $CI_DEFAULT_BRANCH"
+      fi
+  after_script:
+    - docker rm -f "identity-smoke-$CI_JOB_ID" "identity-smoke-db-$CI_JOB_ID" || true
+    - docker network rm "identity-smoke-$CI_JOB_ID" || true
+    - unset DOCKER_AUTH_CONFIG
+    - docker logout "$CI_DOCKER_REGISTRY" || true
+    - docker image prune -f || true
+
+# Одна установка на окружение (общий SaaS, без матрицы клиентов).
+deploy-production:
+  stage: Deploy
+  # Только main, вручную.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  tags: [$PRODUCTION_RUNNER_TAG]
+  needs: [Build]
+  dependencies: []
+  environment:
+    name: production
+    url: https://id.verdeect.ru
+  resource_group: production
+  interruptible: false
+  variables:
+    VERSION: ${CI_COMMIT_SHORT_SHA}
+  extends: .docker-cleanup
+  script:
+    - *docker-login
+    - export COMPOSE_FILE=compose.yml:compose.production.yml
+    - docker compose pull
+    # Миграции до новых реплик; up ещё раз запустит identity-migrate — повтор ничего не применит.
+    - docker compose run --rm identity-migrate
+    - docker compose up -d --wait --remove-orphans
+    - docker compose ps
+    - docker compose logs --tail=50 identity

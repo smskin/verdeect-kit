@@ -1,0 +1,77 @@
+# verdeect-orchestrator — базовый compose (prd.md §19): сервисы, общие для всех контуров.
+#
+# Контуры:
+#   разработка  docker compose up -d                       (+ compose.override.yml автоматически)
+#   production  docker compose -f compose.yml -f compose.production.yml up -d
+# Контура e2e нет: у сервиса нет браузерного интерфейса, интеграция проверяется Testcontainers (Vitest).
+#
+# Сети общие для всех сервисов Вердикта (фиксированные имена):
+#   verdeect-edge      — Traefik находит Orchestrator по labels, маршрут только по хосту;
+#   verdeect-internal  — BFF и сервисы вызывают Orchestrator как http://orchestrator:3000, Prometheus — :9100.
+# Отдельного воркера нет: relay outbox, подписчик RabbitMQ и очистка работают в HTTP-процессе (как Platform).
+# Роли БД создаёт `db:prepare` под суперпользователем до миграций (prd.md §11.4, §19) — в production это шаг
+# оператора, в разработке — сервис orchestrator-db-prepare.
+# Нода агентов — отдельный файл compose.node.yml (не хост Orchestrator, §19 r12); в разработке — профиль
+# agents в compose.override.yml. Образ рантайма DSH — сборка этапа E4.
+
+name: ${COMPOSE_PROJECT_NAME:-verdeect-orchestrator}
+
+services:
+    orchestrator:
+        build:
+            context: .
+            target: production
+        image: ${ORCHESTRATOR_IMAGE:-verdeect-orchestrator}:${VERSION:-dev}
+        init: true
+        # Остановка по SIGTERM укладывается в 10 с (AC-10.8); 15 с — запас до SIGKILL.
+        stop_grace_period: 15s
+        depends_on:
+            orchestrator-migrate:
+                condition: service_completed_successfully
+        networks:
+            verdeect-edge: {}
+            verdeect-internal:
+                aliases: [orchestrator]
+        labels:
+            traefik.enable: 'true'
+            traefik.docker.network: verdeect-edge
+            traefik.http.routers.verdeect-orchestrator.rule: Host(`orchestrator.api.verdeect.ru`)
+            # Только PORT: /health и /metrics (METRICS_PORT 9100) наружу не публикуются.
+            traefik.http.services.verdeect-orchestrator.loadbalancer.server.port: '3000'
+        # /ok — без обращения к БД, брокеру, Redis и S3; в alpine нет curl.
+        healthcheck:
+            test:
+                - CMD
+                - node
+                - -e
+                - fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+            interval: 30s
+            timeout: 5s
+            retries: 3
+            start_period: 20s
+
+    # Миграции — отдельный одноразовый шаг с ролью orchestrator_owner; приложение ждёт его успеха.
+    orchestrator-migrate:
+        # Тот же образ: сборка дублируется, чтобы compose не пытался скачать локальный тег (кэш BuildKit общий).
+        build:
+            context: .
+            target: production
+        image: ${ORCHESTRATOR_IMAGE:-verdeect-orchestrator}:${VERSION:-dev}
+        command: ['node', 'dist/cli.js', 'migrate']
+        restart: 'no'
+        networks: [verdeect-internal]
+        labels:
+            traefik.enable: 'false'
+        # Одноразовый шаг: процесс завершается, проверять нечего.
+        healthcheck:
+            disable: true
+
+networks:
+    # Общие сети хоста: Orchestrator ими не владеет (make down их не удаляет). Создаются один раз на хост —
+    # инфраструктурой в production, `docker network create` (или `make networks`) в разработке.
+    verdeect-edge:
+        name: verdeect-edge
+        external: true
+    verdeect-internal:
+        name: verdeect-internal
+        external: true

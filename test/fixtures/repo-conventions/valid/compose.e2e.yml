@@ -1,0 +1,8 @@
+services:
+  fakes:
+    build: .
+    environment:
+      NODE_ENV: test
+    command: ["node", "--import", "./test/fakes/register.mjs", "test/fakes/fake-services.main.ts"]
+  broker:
+    image: rabbitmq:4.3.6-management-alpine

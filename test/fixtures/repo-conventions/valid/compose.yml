@@ -1,0 +1,22 @@
+# Эталонный репозиторий сервиса для assertRepoConventions (prd.md §3.8, AC-1.8). Формы — как у O.
+services:
+  app:
+    build: .
+    environment:
+      NODE_ENV: production
+      METRICS_PORT: "9100"
+      SHUTDOWN_TIMEOUT_MS: "10000"
+      DATABASE_URL: "postgres://app:secret@db:5432/app"
+    stop_grace_period: 15s
+    command: ["node", "--enable-source-maps", "--import", "./dist/instrument.js", "dist/main.js"]
+  worker:
+    build: .
+    env_file: ./app.env
+    stop_grace_period: 15s
+    command: node --import ./dist/instrument.js dist/main.js
+  db:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_PASSWORD: secret
+  mail:
+    image: axllent/mailpit:v1.31.6

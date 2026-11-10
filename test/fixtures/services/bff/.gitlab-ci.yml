@@ -1,0 +1,324 @@
+# verdeect-bff — GitLab CI (prd.md §14: U, I, H — в CI; стадии как у Identity).
+#
+# Стадии: prepare → install → lint → test → Build → Deploy. Запуск — вручную (Run pipeline).
+# Теги раннеров:
+#   CI       — docker/shell-сборщик: образы (build-ci-image, Build) и деплой;
+#   CI_NODE  — docker executor для проверок в CI-образе (стадия `ci` Dockerfile — те же Node и pnpm,
+#              что в production).
+# Решения:
+#   - integration и http-тесты в CI берут Redis и RabbitMQ из service-контейнеров (TEST_REDIS_URL,
+#     TEST_RABBITMQ_URL): Docker для
+#     Testcontainers в docker executor нет; заглушки Identity и сервиса echo поднимаются в процессе теста;
+#   - P и E (контур e2e Identity, Playwright) в CI не запускаются — контура e2e Identity в CI нет; локально
+#     перед merge в main (make test-protocol, make test-browser): тестовые аккаунты и секреты клиента e2e в
+#     GitLab не хранятся;
+#   - уровни тестов (Makefile «Test Levels»): tests (unit), tests-integration (без тайминговых), tests-timing
+#     (реальное время и окна, отдельный job, не параллельно с собой — resource_group), tests-load (вручную,
+#     allow_failure); TEST_TIMEOUT_SCALE в CI не задаётся (снимается в prepare-env) — множитель всегда 1;
+#   - шардирование integration (parallel + vitest --shard) — когда job дольше ~15 мин; сейчас не нужно;
+#   - ни один job не отправляет события в GlitchTip (DSN в тестах пуст); фронтенда нет — source maps
+#     остаются в образе (--enable-source-maps);
+#   - смоук образа (Build) — без Redis и брокера: /ok не обращается к Redis (§13).
+#
+# Переменные CI/CD:
+#   реестр (переменные уровня инстанса GitLab; ветки этапов feature/* не защищаются):
+#     CI_DOCKER_REGISTRY — адрес реестра, без Protected;
+#     DOCKER_AUTH_CONFIG — учётка Nexus ci-pull (только чтение docker-hosted), без Protected: runner тянет
+#       образ jobs ${CI_IMAGE} на docker executor на любой ветке;
+#     DOCKER_AUTH_CONFIG (ci-pull) задан для всех jobs; в shell-jobs с входом в реестр его снимает unset, иначе
+#       Docker CLI игнорирует docker login и публикует под ci-pull;
+#     CI_DOCKER_REGISTRY_USER / CI_DOCKER_REGISTRY_PASSWORD (masked) — учётка build-server с правом записи,
+#       Protected: доступна только на main, поэтому build-ci-image и публикация в Build — только с main;
+#   на остальных ветках jobs берут готовый ${CI_IMAGE} (:latest), Build собирает образ и делает смоук без
+#   docker login и push. Ветка, меняющая стадию `ci` Dockerfile, тестируется на прежнем :latest до слияния в main;
+#   если очистка Nexus удалила :latest, все ветки падают на pull с manifest unknown — восстановление: один запуск
+#   pipeline на main (build-ci-image);
+#   PRODUCTION_RUNNER_TAG — тег раннера production-хоста;
+#   production (environment: production, protected, masked для секретов) — список совпадает с
+#   ${VAR:?} в compose.production.yml и целью config-prod Makefile: COMPOSE_PROJECT_NAME,
+#   IDENTITY_ISSUER, SERVICE_URLS, RABBITMQ_URL, TRUSTED_PROXIES, SENTRY_DSN, SENTRY_ENVIRONMENT,
+#   BFF_APP_CLIENT_SECRET, BFF_APP_REDIS_URL, BFF_APP_SESSION_ENC_KEYS,
+#   BFF_ADMIN_CLIENT_SECRET, BFF_ADMIN_REDIS_URL, BFF_ADMIN_SESSION_ENC_KEYS;
+#   необязательные — IDENTITY_INTERNAL_URL (адрес BFF тогда входит в TRUSTED_PROXIES Identity),
+#   LOG_LEVEL, BFF_REPLICAS.
+#   Первая линия защиты: production-переменные — только в scope окружения `production`.
+# Порядок первого развёртывания и чек-лист окружения — docs/deployment.md (prd.md §15).
+
+stages:
+  - prepare
+  - install
+  - lint
+  - test
+  - Build
+  - Deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+default:
+  interruptible: true
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+variables:
+  CI_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}-ci:latest
+  BFF_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}
+  DOCKER_BUILDKIT: '1'
+  # Стор pnpm внутри проекта — его кэширует GitLab.
+  PNPM_STORE_DIR: ${CI_PROJECT_DIR}/.pnpm-store
+  REDIS_IMAGE: redis:7.4.11-alpine
+  RABBITMQ_IMAGE: rabbitmq:4.3.6-management-alpine
+  # promtool — тот же образ, что PROMETHEUS_IMAGE в Makefile (make alerts-check)
+  PROMETHEUS_IMAGE: prom/prometheus:v3.15.1
+
+# DOCKER_AUTH_CONFIG (ci-pull) задан для всех jobs: Docker CLI с ним игнорирует docker login — снять до входа.
+.docker-login: &docker-login
+  - unset DOCKER_AUTH_CONFIG
+  - echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+
+.docker-cleanup:
+  after_script:
+    - unset DOCKER_AUTH_CONFIG
+    - docker logout "$CI_DOCKER_REGISTRY" || true
+    - docker image prune -f || true
+
+# Стор pnpm по pnpm-lock.yaml: install прогревает (pull-push), остальные задания только читают.
+# node_modules артефактом не передаётся — сотни МБ и десятки тысяч файлов, выгрузка упирается в лимит размера
+# artifact (413 Request Entity Too Large).
+.pnpm-cache: &pnpm-cache
+  key:
+    files: [pnpm-lock.yaml]
+  paths: [.pnpm-store/]
+  policy: pull
+
+.pnpm-install: &pnpm-install
+  - pnpm install --frozen-lockfile --prefer-offline --store-dir "$PNPM_STORE_DIR"
+
+# Проверки — в CI-образе; зависимости ставит каждое задание из кэша стора pnpm.
+.node-job:
+  image: ${CI_IMAGE}
+  tags: [CI_NODE]
+  needs: [install]
+  cache: *pnpm-cache
+  before_script:
+    - *pnpm-install
+
+# Тестовые job'ы не должны видеть реальную инфраструктуру: переменные проекта/группы попадают в
+# окружение процесса тестов, а тесты пишут и чистят ключи Redis — реальные сессии были бы стёрты,
+# секреты клиента и ключи шифрования — доступны тестам. Поэтому всё, что может указывать на них,
+# снимается до запуска.
+.prepare-env: &prepare-env
+  - unset REDIS_URL RABBITMQ_URL SERVICE_URLS TRUSTED_PROXIES SESSION_ENC_KEYS PUBLIC_ORIGIN LOGIN_TENANT TEST_TIMEOUT_SCALE
+  - for name in $(env | grep -oE '^(OIDC|IDENTITY|BFF_APP|BFF_ADMIN|SENTRY|AUTH|AWS|S3)_[A-Z0-9_]*' || true); do unset "$name"; done
+
+# Только main: учётка записи (Protected) на ветках недоступна; ветки берут готовый ${CI_IMAGE}.
+build-ci-image:
+  stage: prepare
+  tags: [CI]
+  extends: .docker-cleanup
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - *docker-login
+    - docker pull "$CI_IMAGE" || true
+    - docker build --target ci --cache-from "$CI_IMAGE" --build-arg BUILDKIT_INLINE_CACHE=1 -t "$CI_IMAGE" .
+    - docker push "$CI_IMAGE"
+
+install:
+  stage: install
+  image: ${CI_IMAGE}
+  tags: [CI_NODE]
+  # На ветках build-ci-image нет — install идёт на готовом ${CI_IMAGE}.
+  needs:
+    - job: build-ci-image
+      optional: true
+  # Прогрев стора и проверка lockfile; node_modules не передаётся.
+  script:
+    - pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
+  cache:
+    <<: *pnpm-cache
+    policy: pull-push
+
+code-style:
+  stage: lint
+  extends: .node-job
+  script:
+    - pnpm lint
+    - pnpm format:check
+
+# Правила алертов §13 (docker/prometheus): синтаксис и unit-тесты promtool; зависимостей Node не нужно.
+alert-rules:
+  stage: lint
+  image:
+    name: ${PROMETHEUS_IMAGE}
+    entrypoint: ['']
+  tags: [CI_NODE]
+  needs: []
+  script:
+    - cd docker/prometheus
+    - promtool check rules bff-alerts.yml
+    - promtool test rules bff-alerts.test.yml
+
+static-analysis:
+  stage: lint
+  extends: .node-job
+  script:
+    - pnpm typecheck
+    - pnpm check:undici
+
+tests:
+  stage: test
+  extends: .node-job
+  script:
+    - *prepare-env
+    - pnpm --filter bff exec vitest run --reporter=default --reporter=junit --outputFile=report.xml
+    - pnpm --filter @verdeect/identity-client exec vitest run --passWithNoTests --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - apps/bff/report.xml
+        - packages/identity-client/report.xml
+
+# Redis и RabbitMQ (management API — rabbitmq:15672: vhost воркеров, права §9) для integration, timing и load.
+# before_script заменяет before_script .node-job — установка зависимостей повторена здесь.
+.broker-services:
+  services:
+    - name: ${REDIS_IMAGE}
+      alias: redis
+    - name: ${RABBITMQ_IMAGE}
+      alias: rabbitmq
+  before_script:
+    - *pnpm-install
+    - *prepare-env
+    - export TEST_REDIS_URL=redis://redis:6379
+    - export TEST_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+    - for i in $(seq 1 60); do nc -z redis 6379 && break; sleep 1; done
+    - nc -z redis 6379
+    - for i in $(seq 1 120); do nc -z rabbitmq 5672 && break; sleep 1; done
+    - nc -z rabbitmq 5672
+    # management (vhost воркеров, права §9) стартует позже AMQP; адрес — http://rabbitmq:15672 из TEST_RABBITMQ_URL
+    - for i in $(seq 1 120); do nc -z rabbitmq 15672 && break; sleep 1; done
+    - nc -z rabbitmq 15672
+
+# Файлы идут параллельно (maxWorkers 3): у воркера своя БД Redis и свой vhost RabbitMQ.
+tests-integration:
+  stage: test
+  extends: [.node-job, .broker-services]
+  script:
+    - pnpm --filter bff exec vitest run -c vitest.integration.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+    - pnpm --filter @verdeect/identity-client exec vitest run -c vitest.integration.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - apps/bff/report.xml
+        - packages/identity-client/report.xml
+
+# Тайминговые тесты (реальное время, окна, SIGTERM дочернего BFF): один воркер. На раннере не должно быть
+# параллельных job — при появлении выделенного тега раннера указать его здесь.
+tests-timing:
+  stage: test
+  extends: [.node-job, .broker-services]
+  resource_group: tests-timing
+  script:
+    - pnpm --filter bff exec vitest run -c vitest.timing.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+    - pnpm --filter @verdeect/identity-client exec vitest run -c vitest.timing.config.ts --reporter=default --reporter=junit --outputFile=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - apps/bff/report.xml
+        - packages/identity-client/report.xml
+
+# Нагрузка §13 (make test-load) — вручную; LOAD_STRICT по умолчанию 1 (серверный раннер). BFF — из dist.
+tests-load:
+  stage: test
+  extends: [.node-job, .broker-services]
+  when: manual
+  allow_failure: true
+  script:
+    - pnpm --filter @verdeect/identity-client build
+    - pnpm --filter bff build
+    - pnpm --filter bff test:load
+
+Build:
+  stage: Build
+  tags: [CI]
+  extends: .docker-cleanup
+  needs: [code-style, static-analysis, tests, tests-integration, tests-timing]
+  variables:
+    IMAGE_TAG: ${BFF_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  script:
+    # Публикация только с main: учётка build-server (Protected) на ветках недоступна — без docker login и push.
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        unset DOCKER_AUTH_CONFIG
+        echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+      fi
+    - docker pull "$BFF_IMAGE:latest" || true
+    - >-
+      docker build --target production
+      --cache-from "$BFF_IMAGE:latest" --build-arg BUILDKIT_INLINE_CACHE=1
+      --build-arg VERSION="$CI_COMMIT_SHORT_SHA"
+      -t "$IMAGE_TAG" -t "$BFF_IMAGE:latest" .
+    # §13, AC-6.12: зависимости тестов (Testcontainers ставит undici другого мажора) в образ не попадают.
+    - >-
+      docker run --rm --network none --entrypoint sh "$IMAGE_TAG" -c
+      'test ! -e node_modules/testcontainers && test ! -e apps/bff/node_modules/testcontainers'
+    # Дымовой старт до push в режиме production (read-only, без capabilities): Redis и брокер
+    # недоступны — /ok их не трогает, healthcheck образа должен стать healthy.
+    - >-
+      docker run -d --name "bff-smoke-$CI_JOB_ID" --read-only --cap-drop ALL --user 1000:1000
+      --tmpfs /tmp:noexec,nosuid,size=64m
+      -e BFF_INSTANCE=app -e PUBLIC_ORIGIN=https://app.verdeect.test -e IDENTITY_ISSUER=https://id.verdeect.test
+      -e OIDC_CLIENT_ID=smoke -e OIDC_CLIENT_SECRET=smoke
+      -e 'SERVICE_URLS={"identity":"http://127.0.0.1:1","web":"http://127.0.0.1:1"}'
+      -e REDIS_URL=redis://127.0.0.1:1 -e RABBITMQ_URL=amqp://127.0.0.1:1
+      -e SESSION_ENC_KEYS=v1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+      "$IMAGE_TAG"
+    - for i in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Health.Status}}' "bff-smoke-$CI_JOB_ID")" = healthy ] && break; sleep 2; done
+    - docker inspect -f '{{.State.Health.Status}}' "bff-smoke-$CI_JOB_ID" | grep -qx healthy || { docker logs "bff-smoke-$CI_JOB_ID"; exit 1; }
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker push "$IMAGE_TAG"
+        docker push "$BFF_IMAGE:latest"
+      else
+        echo "Ветка $CI_COMMIT_BRANCH: образ собран, смоук пройден; публикация — только с $CI_DEFAULT_BRANCH"
+      fi
+  after_script:
+    - docker rm -f "bff-smoke-$CI_JOB_ID" || true
+    - unset DOCKER_AUTH_CONFIG
+    - docker logout "$CI_DOCKER_REGISTRY" || true
+    - docker image prune -f || true
+
+# Одна установка на окружение (общий SaaS, без матрицы клиентов): bff-app и bff-admin вместе.
+# Миграций нет — БД у BFF нет; очереди bff-<instance> объявляет сам BFF при старте (E5, prd.md §15).
+deploy-production:
+  stage: Deploy
+  # Только main, вручную.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  tags: [$PRODUCTION_RUNNER_TAG]
+  needs: [Build]
+  dependencies: []
+  environment:
+    name: production
+    url: https://app.verdeect.ru
+  resource_group: production
+  interruptible: false
+  variables:
+    VERSION: ${CI_COMMIT_SHORT_SHA}
+  extends: .docker-cleanup
+  script:
+    - *docker-login
+    - export COMPOSE_FILE=compose.yml:compose.production.yml
+    - docker compose pull
+    - docker compose up -d --wait --remove-orphans
+    - docker compose ps
+    - docker compose logs --tail=50 bff-app bff-admin

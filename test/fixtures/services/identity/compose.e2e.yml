@@ -1,0 +1,88 @@
+# Контур браузерных тестов (prd.md §19): make e2e-up / e2e-reset / test-browser / e2e-down.
+# Оверлей на compose.yml + compose.override.yml. Свой проект, свои сети и тома: работает
+# одновременно с разработкой, БД разработки не трогает. Нужен Docker Compose ≥ 2.24 (!reset, !override).
+name: verdeect-identity-e2e
+
+services:
+  identity:
+    # Без tsc --watch (команда dev-образа): его стартовая перекомпиляция переписывает dist, пока
+    # e2e:seed импортирует модули, — гонка «does not provide an export». Контур e2e пересоздаётся
+    # на каждый прогон (make e2e-reset), отслеживание изменений не нужно.
+    command: ['sh', '-c', 'pnpm build && exec node --enable-source-maps dist/main.js']
+    # e2e не зависит от apps/identity/.env разработчика: обязательные адреса закреплены в
+    # compose.override.yml, остальное — здесь.
+    env_file: !reset []
+    environment:
+      NODE_ENV: development
+      IDENTITY_ISSUER: https://localhost:44431
+      IDENTITY_SECRETS: e2e-cookie-secret-not-for-production-0001
+      CLIENT_SECRET_KEY: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+      DEFAULT_RETURN_URL: https://rp.e2e.test/
+      INVITATION_CLIENT_ID: e2e-rp
+      LOG_LEVEL: info
+      # Все сценарии идут с адреса шлюза docker; лимит по IP проверяют H-тесты (AC-1.4, FR-12).
+      LOGIN_IP_LIMIT_PER_MIN: '100000'
+      # Лимит сброса пароля по IP проверяют H-тесты (§17).
+      RESET_IP_LIMIT_PER_HOUR: '100000'
+      # Лимиты подняты: сценарии идут с одного адреса, лимиты /token и просмотра приглашения проверяют H-тесты (§17 v2.19).
+      CLIENT_CREDENTIALS_LIMIT_PER_MIN: '100000'
+      INVITATION_IP_LIMIT_PER_MIN: '100000'
+      # scrypt дешевле D10 (65536): только тестовый контур — вход сценариев не упирается в процессор.
+      # В production SCRYPT_N не задаётся (docs/deployment.md).
+      SCRYPT_N: ${SCRYPT_N:-1024}
+      E2E_TESTING_ROUTES: 'true'
+      E2E_ACCOUNT_PASSWORD: ${E2E_ACCOUNT_PASSWORD:?пароль аккаунтов e2e из .env.e2e}
+      E2E_PLATFORM_CLIENT_SECRET: ${E2E_PLATFORM_CLIENT_SECRET:?секрет e2e-platform из .env.e2e}
+      E2E_SERVICE_CLIENT_SECRET: ${E2E_SERVICE_CLIENT_SECRET:?секрет e2e-service из .env.e2e}
+      E2E_ORCHESTRATOR_CLIENT_SECRET: ${E2E_ORCHESTRATOR_CLIENT_SECRET:?секрет e2e-orchestrator из .env.e2e}
+      # Ошибки отправляет только production (GT02).
+      SENTRY_DSN: ''
+      SENTRY_FRONTEND_DSN: ''
+    ports: !override []
+    volumes:
+      # e2e отдаёт страницы, собранные на хосте целью build (make test-browser); identity-pages выключен.
+      - ./apps/identity/public:/app/apps/identity/public:ro
+
+  identity-migrate:
+    ports: !override []
+
+  identity-edge:
+    ports: !override
+      - 127.0.0.1:44431:443
+
+  identity-pages:
+    # e2e работает на собранных страницах (make test-browser собирает их на хосте).
+    profiles: [disabled]
+
+  postgres:
+    # Одноразовая БД: durability выключена — коммиты на виртуальном диске Docker/WSL медленные.
+    command:
+      ['postgres', '-c', 'fsync=off', '-c', 'synchronous_commit=off', '-c', 'full_page_writes=off']
+    volumes: !override
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports: !override []
+
+  redis:
+    ports: !override []
+
+  rabbitmq:
+    # AMQP для P-тестов соседей, запущенных на хосте (guest/guest, vhost /; prd.md §19).
+    ports: !override
+      - 127.0.0.1:45672:5672
+
+  mailpit:
+    # API mailpit для Playwright (письма приглашений); SMTP-порт наружу не публикуется.
+    ports: !override
+      - 127.0.0.1:48025:8025
+
+networks:
+  # Имена сетей базового compose фиксированы — без переопределения e2e-край попал бы в dev-identity
+  # по алиасу identity. external: false — иначе унаследуется external базы и контур сетей не создаст.
+  verdeect-edge:
+    name: verdeect-identity-e2e-edge
+    external: false
+  verdeect-internal:
+    name: verdeect-identity-e2e-internal
+    external: false

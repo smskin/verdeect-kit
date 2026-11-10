@@ -1,0 +1,301 @@
+# Разработка: подхватывается автоматически `docker compose up -d`.
+#
+# Перед первым запуском — общие сети хоста (один раз): docker network create verdeect-edge;
+# docker network create verdeect-internal.
+#
+# Адреса инфраструктуры и пароли ролей закреплены здесь в environment: контур работает без .env, а
+# устаревший apps/orchestrator/.env разработчика (необязательный) не ломает подключения.
+# Порты хоста сдвинуты от Identity (3100…), BFF (3101…) и Platform (3102…); меняются через корневой .env.
+# API — http://localhost:3103/ok, /health и /metrics — http://127.0.0.1:9203, UI RabbitMQ —
+# http://localhost:15774 (guest/guest), БД — 127.0.0.1:5435 (postgres/postgres), Redis — 127.0.0.1:6382,
+# консоль MinIO — http://localhost:9011 (orchestrator/orchestrator-dev-secret).
+#
+# Инфраструктура называется orchestrator-* и живёт только в сети проекта: в verdeect-internal уже есть
+# postgres, rabbitmq и redis соседей, одинаковые имена в общей сети дали бы случайное разрешение DNS.
+#
+# После изменения pnpm-lock.yaml: docker compose build, затем удалить тома *-node-modules
+# (docker volume rm …) — иначе в контейнере останутся старые зависимости.
+
+x-dev-source: &dev-source
+    build:
+        context: .
+        target: development
+    image: verdeect-orchestrator:development
+    volumes:
+        - .:/app
+        # node_modules — из образа (бинарники хоста и Alpine различаются).
+        - root-node-modules:/app/node_modules
+        - orchestrator-node-modules:/app/apps/orchestrator/node_modules
+        # dist — общий том orchestrator, orchestrator-db-prepare и orchestrator-migrate; на хост не пишется.
+        - orchestrator-dist:/app/apps/orchestrator/dist
+
+# Значения разработки для всех обязательных ключей §4.4 (apps/orchestrator/.env.example). Внешние сервисы
+# (Identity, Platform, Files, web, node-agent, поставщики моделей) — адреса соседей по verdeect-internal;
+# без них Orchestrator стартует: клиенты ленивые, /health их не проверяет.
+x-dev-env: &dev-env
+    NODE_ENV: development
+    DATABASE_URL: postgres://orchestrator_app:orchestrator-app-dev-pw@orchestrator-postgres:5432/orchestrator
+    RABBITMQ_URL: amqp://guest:guest@orchestrator-rabbitmq:5672
+    REDIS_URL: redis://orchestrator-redis:6379
+    # S3 только внутри стека: журналы DSH браузеру не отдаются, поэтому публичного адреса хранилища нет.
+    S3_ENDPOINT: http://orchestrator-minio:9000
+    S3_BUCKET: orchestrator
+    S3_ACCESS_KEY: orchestrator
+    S3_SECRET_KEY: orchestrator-dev-secret
+    # Identity контура разработки (verdeect-identity): издатель — его TLS-край, JWKS — по внутренней сети.
+    # Без запущенного Identity токены просто не проверяются.
+    AUTH_ISSUERS: '[{"iss":"https://localhost:4443","jwksUri":"http://identity:3000/oidc/jwks","kinds":["user","service"]}]'
+    IDENTITY_TOKEN_URL: http://identity:3000/oidc/token
+    ORCHESTRATOR_CLIENT_SECRET: orchestrator-dev-client-secret
+    SERVICE_URLS: '{"platform":"http://platform:3000","files":"http://files:3000","media":"http://media:3000","web":"http://web:3000","identity":"http://identity:3000"}'
+    # Не секрет: ключ шифрования только для контура разработки.
+    SIGNING_KEY_ENCRYPTION_KEYS: '[{"version":"dev1","secret":"orchestrator-dev-signing-key-encryption-secret"}]'
+    # node-agent — профиль agents ниже (make up включает его через COMPOSE_PROFILES).
+    NODES: '[{"id":"node-1","url":"http://node-agent:3000","capacity":4,"labels":[]}]'
+    # Образ рантайма DSH собирается `make runtime-image` (runtime/Dockerfile); контейнеры запускает node-agent.
+    RUNTIME_IMAGE: '{"stable":"verdeect-agent-runtime:dev"}'
+    # Адрес для контейнеров агентов (п. 8 ревью E3): шлюз сети агентов и порт Orchestrator, проброшенный на
+    # хост; контейнер ходит туда только через прокси выхода (EGRESS_ALLOW ниже — та же пара).
+    RUNTIME_ORCHESTRATOR_URL: http://${AGENT_GATEWAY:-10.240.0.1}:${ORCHESTRATOR_HTTP_PORT:-3103}
+    # Заглушка поставщика: ретранслятор моделей — этап E6, тогда сюда придёт настоящий адрес и ключ (из .env).
+    # id — как provider в config/models.yaml (проверяется при старте).
+    MODEL_PROVIDERS: '[{"id":"litellm","baseUrl":"http://llm.invalid/v1","apiKey":"dev-key","api":"openai-responses"}]'
+    MODEL_CATALOG_FILE: config/models.yaml
+    # GlitchTip — только production.
+    SENTRY_DSN: ''
+
+services:
+    orchestrator:
+        <<: *dev-source
+        env_file:
+            - path: apps/orchestrator/.env
+              required: false
+        environment: *dev-env
+        ports:
+            - ${ORCHESTRATOR_HTTP_PORT:-3103}:3000
+            # Отладчик Node (--inspect) — только разработка.
+            - 127.0.0.1:${ORCHESTRATOR_DEBUG_PORT:-9333}:9229
+            # /health и /metrics (METRICS_PORT) — отдельный сервер, на основном порту их нет.
+            - 127.0.0.1:${ORCHESTRATOR_METRICS_PORT:-9203}:9100
+        networks:
+            default: {}
+        labels:
+            traefik.http.routers.verdeect-orchestrator.rule: Host(`orchestrator.api.verdeect.localhost`)
+        depends_on:
+            orchestrator-migrate:
+                condition: service_completed_successfully
+            orchestrator-rabbitmq-init:
+                condition: service_completed_successfully
+            orchestrator-redis:
+                condition: service_healthy
+            orchestrator-minio-init:
+                condition: service_completed_successfully
+        # Первая сборка tsc в контейнере идёт дольше, чем в production.
+        healthcheck:
+            start_period: 90s
+
+    # Роли orchestrator_owner, orchestrator_app, orchestrator_directory и схема — тот же код, что у оператора
+    # в production (prd.md §11.4); повторный запуск ничего не меняет. Сборка dist — здесь, первым шагом.
+    orchestrator-db-prepare:
+        <<: *dev-source
+        command: ['sh', '-c', 'pnpm build && node dist/cli.js db:prepare']
+        restart: 'no'
+        environment:
+            DATABASE_ADMIN_URL: postgres://postgres:postgres@orchestrator-postgres:5432/orchestrator
+            ORCHESTRATOR_OWNER_PASSWORD: orchestrator-owner-dev-pw
+            ORCHESTRATOR_APP_PASSWORD: orchestrator-app-dev-pw
+            SENTRY_DSN: ''
+        depends_on:
+            orchestrator-postgres:
+                condition: service_healthy
+        healthcheck:
+            disable: true
+
+    orchestrator-migrate:
+        <<: *dev-source
+        # dist уже собран orchestrator-db-prepare в общем томе.
+        environment:
+            DATABASE_MIGRATOR_URL: postgres://orchestrator_owner:orchestrator-owner-dev-pw@orchestrator-postgres:5432/orchestrator
+            SENTRY_DSN: ''
+        networks: [default]
+        depends_on:
+            orchestrator-db-prepare:
+                condition: service_completed_successfully
+
+    # В production БД внешняя. PostgreSQL 17 — как в Testcontainers (prd.md §19).
+    orchestrator-postgres:
+        image: postgres:17.11-alpine3.24
+        environment:
+            POSTGRES_DB: orchestrator
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
+        ports:
+            - 127.0.0.1:${ORCHESTRATOR_DB_PORT:-5435}:5432
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d orchestrator']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    # Брокер событий (prd.md §13). В production RabbitMQ общий для Вердикта и внешний.
+    orchestrator-rabbitmq:
+        image: rabbitmq:4.3.6-management-alpine
+        ports:
+            - 127.0.0.1:${ORCHESTRATOR_RABBITMQ_UI_PORT:-15774}:15672
+        # Через HTTP API, а не rabbitmq-diagnostics: тот запускается от root и создаёт .erlang.cookie
+        # раньше брокера — брокер падает с eacces. Заодно API готов к orchestrator-rabbitmq-init.
+        # 127.0.0.1: localhost в контейнере — ::1, а API слушает только IPv4.
+        healthcheck:
+            test:
+                - CMD
+                - wget
+                - -q
+                - -O
+                - /dev/null
+                - http://guest:guest@127.0.0.1:15672/api/health/checks/local-alarms
+            interval: 5s
+            timeout: 5s
+            retries: 12
+            # Холодный старт брокера в WSL — до минуты.
+            start_period: 90s
+
+    # Exchange verdeect.events объявляет его владелец — Identity; Orchestrator его только проверяет
+    # (checkExchange). Здесь Identity нет, поэтому exchange создаётся через HTTP API управления
+    # с теми же параметрами, что у Identity (topic, durable). Повторный PUT ничего не меняет.
+    orchestrator-rabbitmq-init:
+        image: node:24.22-alpine3.24
+        command:
+            - node
+            - -e
+            - >-
+                fetch('http://orchestrator-rabbitmq:15672/api/exchanges/%2F/verdeect.events', {method: 'PUT',
+                headers: {authorization: 'Basic ' + btoa('guest:guest'), 'content-type': 'application/json'},
+                body: JSON.stringify({type: 'topic', durable: true})})
+                .then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))
+        restart: 'no'
+        depends_on:
+            orchestrator-rabbitmq:
+                condition: service_healthy
+        healthcheck:
+            disable: true
+
+    # Шина реплик, черновики и лимиты частоты (prd.md §12.4). В production Redis внешний.
+    # Без сохранения на диск: состояние восстанавливается из agent_event (NFR «потеря Redis»).
+    orchestrator-redis:
+        image: redis:7.4.11-alpine
+        command:
+            ['redis-server', '--save', '', '--appendonly', 'no', '--maxmemory-policy', 'noeviction']
+        ports:
+            - 127.0.0.1:${ORCHESTRATOR_REDIS_PORT:-6382}:6379
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+
+    # Журналы сессий DSH (prd.md §11.2). В production — внешнее S3-совместимое хранилище с приватным бакетом.
+    # Зеркало pgsty: официальные minio/minio и minio/mc закрыты авторизацией (pull отвечает 403). Тег
+    # закреплён тем же, что в Testcontainers (test/support/global-setup.ts).
+    orchestrator-minio:
+        image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+        command: ['server', '/data', '--console-address', ':9001']
+        environment:
+            MINIO_ROOT_USER: orchestrator
+            MINIO_ROOT_PASSWORD: orchestrator-dev-secret
+            # SSE-S3 (AES256) журналов §11.2 требует KMS; ключ только для контура разработки.
+            MINIO_KMS_SECRET_KEY: orchestrator-dev:bZ1zSKub3hV/LShoQcuO2j6E3DKxO6crquQYlwpgFwQ=
+        volumes:
+            - minio-data:/data
+        ports:
+            - 127.0.0.1:${ORCHESTRATOR_MINIO_PORT:-9010}:9000
+            - 127.0.0.1:${ORCHESTRATOR_MINIO_CONSOLE_PORT:-9011}:9001
+        healthcheck:
+            test: ['CMD', 'mc', 'ready', 'local']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+
+    # Бакет — одним запуском, отдельной службой: у приложения нет права создавать бакеты и в production,
+    # где их заводит администратор. Бакет приватный, политика не меняется.
+    orchestrator-minio-init:
+        image: pgsty/mc:RELEASE.2026-10-25T00-00-00Z
+        entrypoint:
+            - sh
+            - -c
+            - >
+                mc alias set local http://orchestrator-minio:9000 orchestrator orchestrator-dev-secret &&
+                mc mb --ignore-existing local/orchestrator
+        restart: 'no'
+        depends_on:
+            orchestrator-minio:
+                condition: service_healthy
+        healthcheck:
+            disable: true
+
+    # Нода агентов разработки (§19 r12): те же сервисы, что в compose.node.yml, профилем agents на одном хосте.
+    node-agent:
+        profiles: ['agents']
+        build:
+            context: .
+            dockerfile: apps/node-agent/Dockerfile
+            target: production
+        image: verdeect-node-agent:dev
+        init: true
+        restart: unless-stopped
+        group_add: ['${DOCKER_GID:-0}']
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+        networks:
+            default: {}
+            verdeect-internal:
+                aliases: [node-agent]
+            verdeect-agents: {}
+        environment:
+            NODE_ENV: development
+            NODE_ID: node-1
+            AGENT_NETWORK: verdeect-agents
+            EGRESS_PROXY_URL: http://${AGENT_GATEWAY:-10.240.0.1}:3128
+            ALLOWED_IMAGES: verdeect-agent-runtime
+            GVISOR: 'false'
+            AUTH_ISSUERS: '[{"iss":"https://localhost:4443","jwksUri":"http://identity:3000/oidc/jwks","kinds":["service"]}]'
+            RUNTIME_LIMITS: '{"memoryMb":512,"cpu":1.0,"pids":256,"tmpMb":1024}'
+            # Как NODES[].capacity Orchestrator разработки.
+            CAPACITY: 4
+            SENTRY_DSN: ''
+
+    egress-proxy:
+        profiles: ['agents']
+        build:
+            context: docker/egress-proxy
+        image: verdeect-egress-proxy:dev
+        network_mode: host
+        depends_on: [node-agent]
+        restart: unless-stopped
+        environment:
+            LISTEN_HOST: ${AGENT_GATEWAY:-10.240.0.1}
+            LISTEN_PORT: 3128
+            # Orchestrator разработки — шлюз сети агентов и опубликованный порт хоста (localhost контейнера —
+            # сам контейнер). Подделок Files, Media, web в compose нет — добавить их пары, когда появятся.
+            EGRESS_ALLOW: ${EGRESS_ALLOW:-${AGENT_GATEWAY:-10.240.0.1}:${ORCHESTRATOR_HTTP_PORT:-3103}}
+
+volumes:
+    postgres-data:
+    minio-data:
+    root-node-modules:
+    orchestrator-node-modules:
+    orchestrator-dist:
+
+networks:
+    # Сеть агентов разработки (профиль agents): то же имя и опции, что в compose.node.yml.
+    verdeect-agents:
+        name: verdeect-agents
+        internal: true
+        driver_opts:
+            com.docker.network.bridge.enable_icc: 'false'
+        ipam:
+            config:
+                - subnet: ${AGENT_SUBNET:-10.240.0.0/24}
+                  gateway: ${AGENT_GATEWAY:-10.240.0.1}

@@ -1,0 +1,11 @@
+# Настройки pnpm для репозитория из одного пакета (списка packages нет).
+# minimumReleaseAge — явно не задан, действует значение pnpm по умолчанию (сутки) — .ai-factory/rules/base.md.
+# Исключения minimumReleaseAgeExclude — только с обоснованием и условием снятия.
+# Сборка нативных пакетов: @swc/core — для unplugin-swc (метаданные декораторов Nest в Vitest), esbuild — для Vitest.
+# cpu-features, protobufjs, ssh2 тянет testcontainers; нативные сборки не нужны (как verdeect-platform-client).
+allowBuilds:
+  '@swc/core': true
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  ssh2: false

@@ -1,0 +1,6 @@
+# Настройки pnpm шаблона: vitest → vite → esbuild требует build-скрипт; cpu-features, protobufjs, ssh2 тянет testcontainers.
+allowBuilds:
+  esbuild: true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

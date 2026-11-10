@@ -1,0 +1,92 @@
+# Нода агентов «Вердикт 2.0» (prd.md §19 r12, §4.1 r12, §6.6): выкатывается на КАЖДУЮ ноду агентов, не на хост
+# Orchestrator. Запуск: COMPOSE_PROJECT_NAME=verdeect-node-<NODE_ID> docker compose -f compose.node.yml up -d
+# (COMPOSE_PROJECT_NAME обязателен, умолчания нет).
+#
+#   node-agent    — держатель сокета Docker; API для Orchestrator по сети NODE_API_NETWORK (по умолчанию
+#                   verdeect-internal — один хост; нода на другом хосте — сеть Traefik хоста, docs/deployment.md)
+#                   (http://node-agent-<NODE_ID>:3000 — E3 №7: общий алиас на общей сети раздавался бы по кругу и
+#                   запрос ноды уходил бы на другую ноду; адрес совпадает с NODES[].url);
+#   verdeect-agents — сеть контейнеров агентов: internal (нет выхода наружу), icc выключен (контейнеры друг
+#                   друга не видят), фиксированная подсеть AGENT_SUBNET со шлюзом AGENT_GATEWAY;
+#   egress-proxy  — прокси выхода с белым списком на адресе шлюза сети агентов (host network): при выключенном
+#                   icc контейнер прокси в той же сети агентам был бы недоступен; в контейнер агента идёт
+#                   HTTPS_PROXY=http://AGENT_GATEWAY:3128 (node-agent, EGRESS_PROXY_URL).
+# Контейнеры агентов создаёт node-agent через API Docker; compose создаёт только сети подключённых сервисов,
+# поэтому node-agent подключён к verdeect-agents — только ради создания моста (при выключенном icc агенты его
+# не достают).
+
+name: ${COMPOSE_PROJECT_NAME:?имя проекта compose для этой ноды}
+
+services:
+    node-agent:
+        build:
+            context: .
+            dockerfile: apps/node-agent/Dockerfile
+            target: production
+        image: ${NODE_AGENT_IMAGE:-verdeect-node-agent}:${VERSION:-dev}
+        init: true
+        restart: unless-stopped
+        stop_grace_period: 15s
+        # Группа владельца сокета Docker: процесс не root.
+        group_add: ['${DOCKER_GID:?GID владельца /var/run/docker.sock}']
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+            # §4.4 r50: учётка реестра только на чтение (файл секрета на хосте, необязательно).
+            - ${REGISTRY_AUTH_FILE:-/dev/null}:/run/secrets/registry-auth.json:ro
+        networks:
+            node-api:
+                aliases: ['node-agent-${NODE_ID:?id ноды из NODES Orchestrator}']
+            verdeect-agents: {}
+        environment:
+            NODE_ENV: production
+            LOG_LEVEL: ${LOG_LEVEL:-info}
+            PORT: 3000
+            METRICS_PORT: 9100
+            SENTRY_DSN: ${SENTRY_DSN:?DSN GlitchTip}
+            SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+            SENTRY_RELEASE: ${VERSION:-dev}
+            NODE_ID: ${NODE_ID:?id ноды из NODES Orchestrator}
+            AGENT_NETWORK: ${AGENT_NETWORK_NAME:-verdeect-agents}
+            EGRESS_PROXY_URL: http://${AGENT_GATEWAY:?шлюз сети агентов}:3128
+            ALLOWED_IMAGES: ${ALLOWED_IMAGES:?префикс реестра образов рантайма}
+            REGISTRY_AUTH_FILE: ${REGISTRY_AUTH_FILE:+/run/secrets/registry-auth.json}
+            GVISOR: ${GVISOR:-false}
+            AUTH_ISSUERS: ${AUTH_ISSUERS:?JSON издателей с kinds service}
+            AUTH_RESOURCE: ${AUTH_RESOURCE:-https://api.verdeect.ru}
+            REQUIRED_SCOPE: orchestrator:runtime
+            RUNTIME_LIMITS: ${RUNTIME_LIMITS:?JSON memoryMb, cpu, pids, tmpMb}
+            CAPACITY: ${CAPACITY:?ёмкость ноды}
+
+    egress-proxy:
+        build:
+            context: docker/egress-proxy
+        image: ${EGRESS_PROXY_IMAGE:-verdeect-egress-proxy}:${VERSION:-dev}
+        network_mode: host
+        # Адрес AGENT_GATEWAY появляется на хосте после создания моста verdeect-agents: до этого привязка
+        # падает и прокси перезапускается.
+        depends_on: [node-agent]
+        restart: unless-stopped
+        environment:
+            LISTEN_HOST: ${AGENT_GATEWAY:?шлюз сети агентов}
+            LISTEN_PORT: 3128
+            # Orchestrator, Files, Media, verdeect-web — только host:port через запятую (запись без порта — отказ
+            # запуска прокси, §19 r15).
+            EGRESS_ALLOW: ${EGRESS_ALLOW:?белый список выхода}
+
+networks:
+    node-api:
+        name: ${NODE_API_NETWORK:-verdeect-internal}
+        external: true
+    verdeect-agents:
+        # Без префикса проекта: имя совпадает с AGENT_NETWORK. Другое имя и мост — несколько нод на одном хосте.
+        name: ${AGENT_NETWORK_NAME:-verdeect-agents}
+        internal: true
+        driver_opts:
+            com.docker.network.bridge.enable_icc: 'false'
+            # Стабильное имя моста — для правила хоста (§19 r15, docs/deployment.md «Нода агентов»): входящий с
+            # моста — только порт прокси 3128; проверка — make node-check.
+            com.docker.network.bridge.name: ${AGENT_BRIDGE:-br-vd-agents}
+        ipam:
+            config:
+                - subnet: ${AGENT_SUBNET:?подсеть сети агентов}
+                  gateway: ${AGENT_GATEWAY:?шлюз сети агентов}

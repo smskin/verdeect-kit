@@ -1,0 +1,13 @@
+repository: /home/administrator/projects/verdeect2/verdeect-orchestrator
+commit: 0c51f66
+files:
+  - .gitlab-ci.yml
+  - Dockerfile
+  - compose.e2e.yml
+  - compose.node.yml
+  - compose.override.yml
+  - compose.production.yml
+  - compose.yml
+  - package.json
+  - apps/node-agent/package.json
+  - apps/orchestrator/package.json

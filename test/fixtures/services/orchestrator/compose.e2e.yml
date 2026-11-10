@@ -1,0 +1,444 @@
+# P-контур Orchestrator (prd.md §19): самостоятельный проект, а не оверлей: базовый compose.yml сидит в сетях разработки
+# (отступление от правила «бэкенду без UI e2e-контур не нужен» — по §19). Поднимает и сбрасывает его make e2e-up и
+# make e2e-reset; соседей (Identity e2e, BFF e2e) поднимают их владельцы, сюда их сервисы не входят.
+#
+# Порядок (OR-113, OR-114): Identity e2e → этот контур (создаёт сеть verdeect-orchestrator-e2e) → BFF с наложением
+# compose.e2e.orchestrator.yml. Platform здесь — свой экземпляр из образа verdeect-platform:e2e-orchestrator на брокере
+# и издателе Identity: db:prepare → migrate → plan:apply → сервис; компании заводятся в Identity только после него.
+#
+# Адреса для контейнеров агентов: прокси выхода живёт в сети хоста и имён compose не резолвит, поэтому Orchestrator и
+# подделки опубликованы на шлюзе первой сети агентов 10.241.1.1; эти host:port — в EGRESS_ALLOW обоих прокси.
+# Значения ниже — только для контура: секретов продукта здесь нет. Метка verdeect.e2e=orchestrator — на всех сервисах.
+
+name: verdeect-orchestrator-e2e
+
+x-e2e-labels: &e2e-labels
+    verdeect.e2e: orchestrator
+
+x-issuers: &issuers '[{"iss":"https://localhost:44431","jwksUri":"http://identity:3000/oidc/jwks","kinds":["user","service"]}]'
+
+x-orchestrator-image: &orchestrator-image
+    image: ${ORCHESTRATOR_IMAGE:-verdeect-orchestrator}:${VERSION:-dev}
+    labels: *e2e-labels
+
+x-platform: &platform-base
+    image: ${PLATFORM_IMAGE:-verdeect-platform:e2e-orchestrator}
+    labels: *e2e-labels
+    networks:
+        default: {}
+        identity-e2e: {}
+
+x-platform-env: &platform-env
+    NODE_ENV: production
+    DATABASE_URL: postgres://platform_app:platform-app-e2e-password@platform-e2e-postgres:5432/platform
+    DATABASE_MIGRATOR_URL: postgres://platform_owner:platform-owner-e2e-password@platform-e2e-postgres:5432/platform
+    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    RABBITMQ_RETRY_SECONDS: '1'
+    AUTH_ISSUERS: *issuers
+    MODULES_READY: files,web,office,images
+    REPLICA_ID: platform-e2e
+    SENTRY_DSN: ''
+
+x-fake: &fake
+    build:
+        context: .
+        dockerfile: apps/orchestrator/test/p/fakes/Dockerfile
+    image: verdeect-orchestrator-e2e/fakes:dev
+    labels: *e2e-labels
+    init: true
+    restart: unless-stopped
+    healthcheck:
+        test:
+            [
+                'CMD',
+                'node',
+                '-e',
+                "fetch('http://127.0.0.1:3000/__testing__/requests').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+            ]
+        interval: 2s
+        timeout: 3s
+        retries: 30
+
+x-node-agent: &node-agent
+    build:
+        context: .
+        dockerfile: apps/node-agent/Dockerfile
+        target: production
+    image: ${NODE_AGENT_IMAGE:-verdeect-node-agent}:${VERSION:-dev}
+    labels: *e2e-labels
+    init: true
+    restart: unless-stopped
+    group_add: ['${DOCKER_GID:?GID владельца /var/run/docker.sock}']
+    volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+
+x-node-env: &node-env
+    NODE_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    PORT: 3000
+    METRICS_PORT: 9100
+    SENTRY_DSN: ''
+    ALLOWED_IMAGES: ${RUNTIME_IMAGE_NAME:-verdeect-agent-runtime}
+    AUTH_ISSUERS: '[{"iss":"https://localhost:44431","jwksUri":"http://identity:3000/oidc/jwks","kinds":["service"]}]'
+    REQUIRED_SCOPE: orchestrator:runtime
+    RUNTIME_LIMITS: '{"memoryMb":512,"cpu":1,"pids":256,"tmpMb":1024}'
+    CAPACITY: 4
+
+x-egress-allow: &egress-allow 10.241.1.1:43103,10.241.1.1:43201,10.241.1.1:43202,10.241.1.1:43204
+
+services:
+    orchestrator-e2e-postgres:
+        image: postgres:17.11-alpine3.24
+        labels: *e2e-labels
+        # Данные одноразовые (tmpfs), fsync только замедлил бы контур.
+        command: ['postgres', '-c', 'fsync=off']
+        tmpfs: [/var/lib/postgresql/data]
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: orchestrator
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d orchestrator']
+            interval: 2s
+            timeout: 3s
+            retries: 30
+
+    orchestrator-e2e-redis:
+        image: redis:7.4.11-alpine
+        labels: *e2e-labels
+        command: ['redis-server', '--save', '', '--appendonly', 'no']
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 2s
+            timeout: 3s
+            retries: 30
+
+    # Зеркало pgsty: официальные minio/minio и minio/mc закрыты авторизацией.
+    orchestrator-e2e-minio:
+        image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+        labels: *e2e-labels
+        command: ['server', '/data']
+        ports:
+            - 127.0.0.1:49100:9000
+        tmpfs: [/data]
+        environment:
+            MINIO_ROOT_USER: orchestrator
+            MINIO_ROOT_PASSWORD: orchestrator-e2e-secret
+            # SSE-S3 (AES256) журналов §11.2 требует KMS; ключ только для P-контура (живой прогон E7: без него NotImplemented).
+            MINIO_KMS_SECRET_KEY: orchestrator-e2e:bZ1zSKub3hV/LShoQcuO2j6E3DKxO6crquQYlwpgFwQ=
+        healthcheck:
+            test: ['CMD', 'mc', 'ready', 'local']
+            interval: 2s
+            timeout: 3s
+            retries: 30
+
+    orchestrator-e2e-minio-init:
+        image: pgsty/mc:RELEASE.2026-10-25T00-00-00Z
+        labels: *e2e-labels
+        entrypoint:
+            - sh
+            - -c
+            - >
+                mc alias set local http://orchestrator-e2e-minio:9000 orchestrator orchestrator-e2e-secret &&
+                mc mb --ignore-existing local/orchestrator
+        restart: 'no'
+        depends_on:
+            orchestrator-e2e-minio:
+                condition: service_healthy
+
+    orchestrator-e2e-db-prepare:
+        <<: *orchestrator-image
+        command: ['node', 'dist/cli.js', 'db:prepare']
+        restart: 'no'
+        environment:
+            DATABASE_ADMIN_URL: postgres://postgres:postgres@orchestrator-e2e-postgres:5432/orchestrator
+            ORCHESTRATOR_OWNER_PASSWORD: orchestrator-owner-e2e-password
+            ORCHESTRATOR_APP_PASSWORD: orchestrator-app-e2e-password
+            SENTRY_DSN: ''
+        depends_on:
+            orchestrator-e2e-postgres:
+                condition: service_healthy
+
+    orchestrator-e2e-migrate:
+        <<: *orchestrator-image
+        command: ['node', 'dist/cli.js', 'migrate']
+        restart: 'no'
+        environment:
+            DATABASE_MIGRATOR_URL: postgres://orchestrator_owner:orchestrator-owner-e2e-password@orchestrator-e2e-postgres:5432/orchestrator
+            SENTRY_DSN: ''
+        depends_on:
+            orchestrator-e2e-db-prepare:
+                condition: service_completed_successfully
+
+    orchestrator-e2e:
+        <<: *orchestrator-image
+        init: true
+        stop_grace_period: 15s
+        restart: unless-stopped
+        ports:
+            - 127.0.0.1:43103:3000
+            - 127.0.0.1:49303:9100
+            # Адрес контейнеров агентов (RUNTIME_ORCHESTRATOR_URL): шлюз первой сети агентов.
+            - 10.241.1.1:43103:3000
+        networks:
+            default:
+                # orchestrator — адрес BFF по умолчанию (http://orchestrator:3000, OR-113).
+                aliases: [orchestrator-e2e, orchestrator]
+            identity-e2e: {}
+        volumes:
+            - ./apps/orchestrator/test/p/fixtures/models.p.yaml:/app/apps/orchestrator/config/models.yaml:ro
+            - ./apps/orchestrator/test/p/.ca/identity.crt:/etc/verdeect/identity-ca.crt:ro
+        environment:
+            NODE_ENV: production
+            NODE_EXTRA_CA_CERTS: /etc/verdeect/identity-ca.crt
+            LOG_LEVEL: ${LOG_LEVEL:-info}
+            SENTRY_DSN: ''
+            REPLICA_ID: orchestrator-e2e
+            DATABASE_URL: postgres://orchestrator_app:orchestrator-app-e2e-password@orchestrator-e2e-postgres:5432/orchestrator
+            RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+            REDIS_URL: redis://orchestrator-e2e-redis:6379
+            S3_ENDPOINT: http://orchestrator-e2e-minio:9000
+            S3_BUCKET: orchestrator
+            S3_ACCESS_KEY: orchestrator
+            S3_SECRET_KEY: orchestrator-e2e-secret
+            AUTH_ISSUERS: *issuers
+            IDENTITY_TOKEN_URL: http://identity:3000/oidc/token
+            ORCHESTRATOR_CLIENT_ID: e2e-orchestrator
+            ORCHESTRATOR_CLIENT_SECRET: ${E2E_ORCHESTRATOR_CLIENT_SECRET:?секрет клиента e2e-orchestrator, как в .env.e2e Identity}
+            # files и media — адрес для контейнеров (assign.services), он же доступен Orchestrator через хост.
+            SERVICE_URLS: '{"platform":"http://platform-e2e:3000","files":"http://10.241.1.1:43201","media":"http://10.241.1.1:43202","web":"http://10.241.1.1:43204","identity":"http://identity:3000"}'
+            MODEL_PROVIDERS: '[{"id":"resp","baseUrl":"http://fake-provider:3000","apiKey":"e2e-provider-key","api":"openai-responses"},{"id":"comp","baseUrl":"http://fake-provider:3000","apiKey":"e2e-provider-key","api":"openai-completions"},{"id":"voice","baseUrl":"http://fake-provider:3000","apiKey":"e2e-provider-key","api":"openai-responses"}]'
+            SIGNING_KEY_ENCRYPTION_KEYS: '[{"version":"e2e1","secret":"orchestrator-e2e-signing-key-encryption-secret"}]'
+            NODES: '[{"id":"e2e-1","url":"http://node-agent-e2e-1:3000","capacity":4,"labels":[]},{"id":"e2e-2","url":"http://node-agent-e2e-2:3000","capacity":4,"labels":[]}]'
+            RUNTIME_IMAGE: '{"stable":"${RUNTIME_IMAGE_NAME:-verdeect-agent-runtime}:${RUNTIME_TAG:-dev}"}'
+            RUNTIME_ORCHESTRATOR_URL: http://10.241.1.1:43103
+            # Сон в масштабе контура (§18 «Сон»): AC-10.5 ждёт погашения без присутствия не дольше 2 мин.
+            RUNTIME_IDLE_MINUTES: 1
+            RUNTIME_POOL_PER_NODE: 1
+        depends_on:
+            orchestrator-e2e-migrate:
+                condition: service_completed_successfully
+            orchestrator-e2e-redis:
+                condition: service_healthy
+            orchestrator-e2e-minio-init:
+                condition: service_completed_successfully
+            node-agent-e2e-1:
+                condition: service_healthy
+            node-agent-e2e-2:
+                condition: service_healthy
+
+    platform-e2e-postgres:
+        image: postgres:17.11-alpine3.24
+        labels: *e2e-labels
+        command: ['postgres', '-c', 'fsync=off']
+        tmpfs: [/var/lib/postgresql/data]
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: platform
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d platform']
+            interval: 2s
+            timeout: 3s
+            retries: 30
+
+    # Порядок OR-114 п. 2: db:prepare → migrate → plan:apply → сервис. Entrypoint образа ничего из этого не делает.
+    platform-e2e-db-prepare:
+        <<: *platform-base
+        command: ['node', 'dist/cli.js', 'db:prepare']
+        restart: 'no'
+        environment:
+            DATABASE_ADMIN_URL: postgres://postgres:postgres@platform-e2e-postgres:5432/platform
+            PLATFORM_OWNER_PASSWORD: platform-owner-e2e-password
+            PLATFORM_APP_PASSWORD: platform-app-e2e-password
+            SENTRY_DSN: ''
+        depends_on:
+            platform-e2e-postgres:
+                condition: service_healthy
+
+    platform-e2e-migrate:
+        <<: *platform-base
+        command: ['node', 'dist/cli.js', 'migrate']
+        restart: 'no'
+        environment:
+            DATABASE_MIGRATOR_URL: postgres://platform_owner:platform-owner-e2e-password@platform-e2e-postgres:5432/platform
+            SENTRY_DSN: ''
+        depends_on:
+            platform-e2e-db-prepare:
+                condition: service_completed_successfully
+
+    platform-e2e-plan-apply:
+        <<: *platform-base
+        command: ['node', 'dist/cli.js', 'plan:apply', '--file', '/etc/verdeect/plans.json']
+        restart: 'no'
+        volumes:
+            # Тарифы образа и второй, без web: сужение набора AC-10.5 UC-5 (OR-114 п. 4).
+            - ./apps/orchestrator/test/p/fixtures/plans.json:/etc/verdeect/plans.json:ro
+        environment: *platform-env
+        depends_on:
+            platform-e2e-migrate:
+                condition: service_completed_successfully
+
+    platform-e2e:
+        <<: *platform-base
+        init: true
+        restart: unless-stopped
+        networks:
+            default:
+                # platform — адрес, который BFF получит правкой В10.
+                aliases: [platform-e2e, platform]
+            identity-e2e: {}
+        volumes:
+            - ./apps/orchestrator/test/p/fixtures/plans.json:/etc/verdeect/plans.json:ro
+        environment: *platform-env
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+                ]
+            interval: 2s
+            timeout: 3s
+            retries: 60
+        depends_on:
+            platform-e2e-plan-apply:
+                condition: service_completed_successfully
+
+    node-agent-e2e-1:
+        <<: *node-agent
+        networks:
+            default:
+                aliases: [node-agent-e2e-1]
+            identity-e2e: {}
+            agents-1: {}
+        environment:
+            <<: *node-env
+            NODE_ID: e2e-1
+            AGENT_NETWORK: verdeect-orchestrator-e2e-agents-1
+            EGRESS_PROXY_URL: http://10.241.1.1:3128
+
+    node-agent-e2e-2:
+        <<: *node-agent
+        networks:
+            default:
+                aliases: [node-agent-e2e-2]
+            identity-e2e: {}
+            agents-2: {}
+        environment:
+            <<: *node-env
+            NODE_ID: e2e-2
+            AGENT_NETWORK: verdeect-orchestrator-e2e-agents-2
+            EGRESS_PROXY_URL: http://10.241.2.1:3128
+
+    egress-proxy-e2e-1:
+        build:
+            context: docker/egress-proxy
+        image: verdeect-egress-proxy:e2e
+        labels: *e2e-labels
+        network_mode: host
+        depends_on: [node-agent-e2e-1]
+        restart: unless-stopped
+        environment:
+            LISTEN_HOST: 10.241.1.1
+            LISTEN_PORT: 3128
+            EGRESS_ALLOW: *egress-allow
+
+    egress-proxy-e2e-2:
+        build:
+            context: docker/egress-proxy
+        image: verdeect-egress-proxy:e2e
+        labels: *e2e-labels
+        network_mode: host
+        depends_on: [node-agent-e2e-2]
+        restart: unless-stopped
+        environment:
+            LISTEN_HOST: 10.241.2.1
+            LISTEN_PORT: 3128
+            EGRESS_ALLOW: *egress-allow
+
+    fake-provider:
+        <<: *fake
+        command:
+            [
+                'node',
+                '--import',
+                './test/p/fakes/register.mjs',
+                'test/p/fakes/fake-provider.main.ts',
+            ]
+        ports:
+            - 127.0.0.1:43203:3000
+
+    fake-files:
+        <<: *fake
+        command:
+            [
+                'node',
+                '--import',
+                './test/p/fakes/register.mjs',
+                'test/p/fakes/fake-services.main.ts',
+            ]
+        environment:
+            FAKE_SERVICE: files
+        ports:
+            - 127.0.0.1:43201:3000
+            - 10.241.1.1:43201:3000
+
+    fake-media:
+        <<: *fake
+        command:
+            [
+                'node',
+                '--import',
+                './test/p/fakes/register.mjs',
+                'test/p/fakes/fake-services.main.ts',
+            ]
+        environment:
+            FAKE_SERVICE: media
+        ports:
+            - 127.0.0.1:43202:3000
+            - 10.241.1.1:43202:3000
+
+    fake-web:
+        <<: *fake
+        command:
+            [
+                'node',
+                '--import',
+                './test/p/fakes/register.mjs',
+                'test/p/fakes/fake-services.main.ts',
+            ]
+        environment:
+            FAKE_SERVICE: web
+        ports:
+            - 127.0.0.1:43204:3000
+            - 10.241.1.1:43204:3000
+
+networks:
+    default:
+        # Имя без суффикса _default: его ждёт наложение BFF compose.e2e.orchestrator.yml (OR-113).
+        name: verdeect-orchestrator-e2e
+    identity-e2e:
+        name: verdeect-identity-e2e-internal
+        external: true
+    agents-1:
+        name: verdeect-orchestrator-e2e-agents-1
+        internal: true
+        driver_opts:
+            com.docker.network.bridge.enable_icc: 'false'
+            com.docker.network.bridge.name: br-vd-e2e-1
+        ipam:
+            config:
+                - subnet: 10.241.1.0/24
+                  gateway: 10.241.1.1
+    agents-2:
+        name: verdeect-orchestrator-e2e-agents-2
+        internal: true
+        driver_opts:
+            com.docker.network.bridge.enable_icc: 'false'
+            com.docker.network.bridge.name: br-vd-e2e-2
+        ipam:
+            config:
+                - subnet: 10.241.2.0/24
+                  gateway: 10.241.2.1

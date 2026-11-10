@@ -1,0 +1,12 @@
+# verdeect-bff — наложение на compose.e2e.yml (OR-112): bff-e2e в сети контура e2e Orchestrator.
+# Запуск: make e2e-up E2E_ORCHESTRATOR=1. Контур Orchestrator поднимает его репозиторий, не BFF.
+
+services:
+  bff-e2e:
+    networks:
+      orchestrator-e2e: {}
+
+networks:
+  orchestrator-e2e:
+    external: true
+    name: verdeect-orchestrator-e2e

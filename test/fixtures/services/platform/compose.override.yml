@@ -1,0 +1,165 @@
+# Разработка: подхватывается автоматически `docker compose up -d`.
+#
+# Адреса инфраструктуры и пароли ролей закреплены здесь в environment: контур работает без .env, а
+# устаревший apps/platform/.env разработчика (необязательный) не ломает подключения.
+# Порты хоста сдвинуты от Identity (3100…) и BFF (3101…); меняются через корневой .env.
+# API — http://localhost:3102/ok, /health и /metrics — http://127.0.0.1:9202, UI RabbitMQ —
+# http://localhost:15773 (guest/guest), БД — 127.0.0.1:5434 (postgres/postgres).
+#
+# PostgreSQL и RabbitMQ называются platform-* и живут только в сети проекта: в verdeect-internal уже
+# есть postgres и rabbitmq Identity, одинаковые имена в общей сети дали бы случайное разрешение DNS.
+#
+# После изменения pnpm-lock.yaml: docker compose build, затем удалить тома *-node-modules
+# (docker volume rm …) — иначе в контейнере останутся старые зависимости.
+
+x-dev-source: &dev-source
+  build:
+    context: .
+    target: development
+  image: verdeect-platform:development
+  volumes:
+    - .:/app
+    # node_modules — из образа (бинарники хоста и Alpine различаются).
+    - root-node-modules:/app/node_modules
+    - platform-node-modules:/app/apps/platform/node_modules
+    # dist — общий том platform, platform-db-prepare и platform-migrate; на хост не пишется (файлы root).
+    - platform-dist:/app/apps/platform/dist
+
+services:
+  platform:
+    <<: *dev-source
+    env_file:
+      - path: apps/platform/.env
+        required: false
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://platform_app:platform-app-dev-pw@platform-postgres:5432/platform
+      RABBITMQ_URL: amqp://guest:guest@platform-rabbitmq:5672
+      # Identity контура разработки (verdeect-identity, compose.override.yml): издатель — его TLS-край,
+      # JWKS — по внутренней сети. Без запущенного Identity токены просто не проверяются.
+      AUTH_ISSUERS: '[{"iss":"https://localhost:4443","jwksUri":"http://identity:3000/oidc/jwks","kinds":["user","service"]}]'
+      # GlitchTip — только production.
+      SENTRY_DSN: ''
+    ports:
+      - ${PLATFORM_HTTP_PORT:-3102}:3000
+      # Отладчик Node (--inspect) — только разработка.
+      - 127.0.0.1:${PLATFORM_DEBUG_PORT:-9332}:9229
+      # /health и /metrics (METRICS_PORT) — отдельный сервер, на основном порту их нет.
+      - 127.0.0.1:${PLATFORM_METRICS_PORT:-9202}:9100
+    networks:
+      default: {}
+    labels:
+      traefik.http.routers.verdeect-platform.rule: Host(`platform.api.verdeect.localhost`)
+    depends_on:
+      platform-plan-apply:
+        condition: service_completed_successfully
+      platform-rabbitmq-init:
+        condition: service_completed_successfully
+    # Первая сборка tsc в контейнере идёт дольше, чем в production.
+    healthcheck:
+      start_period: 90s
+
+  # Роли platform_owner, platform_app, platform_directory и схема — тот же код, что у оператора в
+  # production (prd.md §8.4); повторный запуск ничего не меняет. Сборка dist — здесь, первым шагом.
+  platform-db-prepare:
+    <<: *dev-source
+    command: ['sh', '-c', 'pnpm build && node dist/cli.js db:prepare']
+    restart: 'no'
+    environment:
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@platform-postgres:5432/platform
+      PLATFORM_OWNER_PASSWORD: platform-owner-dev-pw
+      PLATFORM_APP_PASSWORD: platform-app-dev-pw
+    depends_on:
+      platform-postgres:
+        condition: service_healthy
+
+  platform-migrate:
+    <<: *dev-source
+    # dist уже собран platform-db-prepare в общем томе.
+    environment:
+      DATABASE_MIGRATOR_URL: postgres://platform_owner:platform-owner-dev-pw@platform-postgres:5432/platform
+    networks: [default]
+    depends_on:
+      platform-db-prepare:
+        condition: service_completed_successfully
+
+  # Тарифы из seed/plans.json (prd.md §16: migrate → plan:apply → запуск). Два подключения (§8.4):
+  # plan — владельцем схемы, эпоха и outbox компаний — ролью приложения.
+  platform-plan-apply:
+    <<: *dev-source
+    command: ['node', 'dist/cli.js', 'plan:apply', '--file', '../../seed/plans.json']
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgres://platform_app:platform-app-dev-pw@platform-postgres:5432/platform
+      DATABASE_MIGRATOR_URL: postgres://platform_owner:platform-owner-dev-pw@platform-postgres:5432/platform
+      RABBITMQ_URL: amqp://guest:guest@platform-rabbitmq:5672
+      AUTH_ISSUERS: '[{"iss":"https://localhost:4443","jwksUri":"http://identity:3000/oidc/jwks","kinds":["user","service"]}]'
+      SENTRY_DSN: ''
+    networks: [default]
+    depends_on:
+      platform-migrate:
+        condition: service_completed_successfully
+
+  # В production БД внешняя. PostgreSQL 17 — как в Testcontainers (prd.md §16).
+  platform-postgres:
+    image: postgres:17.11-alpine3.24
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - 127.0.0.1:${PLATFORM_DB_PORT:-5434}:5432
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d platform']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Брокер событий (prd.md §9). В production RabbitMQ общий для Вердикта и внешний.
+  platform-rabbitmq:
+    image: rabbitmq:4.3.6-management-alpine
+    ports:
+      - 127.0.0.1:${PLATFORM_RABBITMQ_UI_PORT:-15773}:15672
+    # Через HTTP API, а не rabbitmq-diagnostics: тот запускается от root и создаёт .erlang.cookie
+    # раньше брокера — брокер падает с eacces. Заодно API готов к platform-rabbitmq-init.
+    # 127.0.0.1: localhost в контейнере — ::1, а API слушает только IPv4.
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://guest:guest@127.0.0.1:15672/api/health/checks/local-alarms
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      # Холодный старт брокера в WSL — до минуты.
+      start_period: 90s
+
+  # Exchange verdeect.events объявляет его владелец — Identity; Platform его только проверяет
+  # (checkExchange). Здесь Identity нет, поэтому exchange создаётся через HTTP API управления
+  # с теми же параметрами, что у Identity (topic, durable). Повторный PUT ничего не меняет.
+  platform-rabbitmq-init:
+    image: node:24.22-alpine3.24
+    command:
+      - node
+      - -e
+      - >-
+        fetch('http://platform-rabbitmq:15672/api/exchanges/%2F/verdeect.events', {method: 'PUT',
+        headers: {authorization: 'Basic ' + btoa('guest:guest'), 'content-type': 'application/json'},
+        body: JSON.stringify({type: 'topic', durable: true})})
+        .then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))
+    restart: 'no'
+    depends_on:
+      platform-rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  root-node-modules:
+  platform-node-modules:
+  platform-dist:

@@ -1,0 +1,42 @@
+{
+    "name": "node-agent",
+    "private": true,
+    "type": "module",
+    "engines": {
+        "node": ">=24"
+    },
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "start": "node --enable-source-maps dist/main.js",
+        "test": "vitest run",
+        "test:integration": "vitest run -c vitest.integration.config.ts",
+        "test:docker": "vitest run -c vitest.docker.config.ts"
+    },
+    "dependencies": {
+        "@nestjs/common": "12.1.3",
+        "@nestjs/config": "12.0.1",
+        "@nestjs/core": "12.1.3",
+        "@nestjs/platform-fastify": "12.1.3",
+        "@prometheus-io/client": "0.16.1",
+        "@sentry/nestjs": "11.7.0",
+        "@verdeect/auth": "1.0.1",
+        "dockerode": "5.0.1",
+        "fastify": "5.12.5",
+        "nestjs-pino": "5.3.1",
+        "pino": "10.4.0",
+        "pino-http": "11.0.0",
+        "reflect-metadata": "0.2.2",
+        "rxjs": "7.8.2",
+        "zod": "4.6.7"
+    },
+    "devDependencies": {
+        "@nestjs/testing": "12.1.3",
+        "@swc/core": "1.16.18",
+        "@types/dockerode": "4.0.2",
+        "@types/node": "24.19.2",
+        "typescript": "5.9.3",
+        "unplugin-swc": "2.0.0",
+        "vitest": "5.0.4"
+    }
+}
