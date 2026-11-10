@@ -20,6 +20,7 @@ import { createLoggerOptions } from '../observability/logger-options.js';
 import { MetricsServer } from '../observability/metrics-server.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { redactPaths, type KitRedaction } from '../observability/redaction.js';
+import { isValidDsn } from '../observability/sentry.js';
 import { buildHttpApp } from './create-http-app.js';
 import type { KitHttpLoggerOptions } from './kit-http-core.module.js';
 
@@ -42,7 +43,7 @@ export interface KitBootstrapOptions<S extends ServiceEnvSchema = ServiceEnvSche
     readonly redaction?: KitRedaction;
 }
 
-/** Sentry не подключён через `--import instrument`, а должен был (§3.5, AC-3.11). */
+/** Sentry не подключён через `--import instrument`, хотя конфигурация верна и он должен был включиться (§3.5, AC-3.11). */
 function sentryNotPreloaded(): boolean {
     // Окружение Sentry — как в initSentry: схема сервиса может не содержать envSentry.
     const parsed = z.object(envSentry).safeParse(process.env);
@@ -50,6 +51,8 @@ function sentryNotPreloaded(): boolean {
     return (
         parsed.success &&
         parsed.data.SENTRY_DSN !== null &&
+        // Неверный DSN initSentry выключает намеренно (AC-2.4): предупреждать не о чем.
+        isValidDsn(parsed.data.SENTRY_DSN) &&
         parsed.data.NODE_ENV === 'production' &&
         Sentry.getClient() === undefined
     );
