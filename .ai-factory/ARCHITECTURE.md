@@ -117,7 +117,7 @@ verdeect-kit/
 ├── alerts/verdeect-kit.rules.yml      # шаблон vmalert (E2), входит в архив
 ├── docs/                              # releasing.md, testing.md, deployment.md
 ├── scripts/publish.mjs                # тег = version, версии нет в npm (AC-1.10)
-├── .github/workflows/ci.yml           # lint → test (Node 22, 24; U + I) → timing → build + pack:check → publish (тег v*)
+├── .github/workflows/ci.yml           # lint ∥ test → timing ∥ package → publish (тег v*)
 ├── package.json                       # exports подпутей, bin, files: dist, alerts, README, CHANGELOG
 ├── tsconfig.json / tsconfig.build.json
 ├── vitest.config.ts / vitest.integration.config.ts / vitest.timing.config.ts / vitest.package.config.ts
