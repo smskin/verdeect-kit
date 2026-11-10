@@ -2,7 +2,7 @@
 // запуск продолжается (prd.md §3.5). Схема сервиса — без envSentry: DSN берётся из process.env. Состояние Sentry —
 // процесс-глобальное: случай без init идёт первым.
 import * as Sentry from '@sentry/nestjs';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { bootstrapService } from '../../../src/http/index.js';
 import { FAKE_DSN, initFakeSentry } from '../../support/fake-sentry.js';
 import { useBootstrapStand } from './bootstrap-support.js';
@@ -26,6 +26,16 @@ describe('UC-3: Sentry до загрузки приложения', () => {
 
         expect(preloadWarnings()).toHaveLength(1);
         expect(preloadWarnings()[0]?.level).toBe(40);
+        expect(app.getHttpServer().listening).toBe(true);
+    });
+
+    it('AC-3.11: неверный SENTRY_DSN в production без instrument — warn SENTRY_NOT_PRELOADED нет (initSentry выключил Sentry намеренно, AC-2.4; KT-17)', async () => {
+        vi.stubEnv('SENTRY_DSN', 'not-a-dsn');
+        const app = stand.track(
+            await bootstrapService({ module: ProbeModule, service: 'probe', env: probeEnv }),
+        );
+
+        expect(preloadWarnings()).toEqual([]);
         expect(app.getHttpServer().listening).toBe(true);
     });
 

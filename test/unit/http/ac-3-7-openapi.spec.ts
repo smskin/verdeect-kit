@@ -1,14 +1,20 @@
 // AC-3.7 (UC-14): OpenAPI 3.1 по метаданным без запуска приложения и expectMatchesApi (prd.md §3.5, §3.8). Перенос I
 // test/http/api/openapi.http-spec.ts: документ проходит валидатор, схемы компилируются, безопасность по маршрутам,
 // ответы соответствуют схеме.
+import { HttpException, Logger, type ExecutionContext } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { Validator } from '@seriousme/openapi-schema-validator';
-import { describe, expect, it } from 'vitest';
+import { VerdeectAuthGuard } from '@verdeect/auth/nest';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import { describe, expect, it, vi } from 'vitest';
 import { buildOpenApiDocument } from '../../../src/http/api/openapi-document.js';
 import { expectMatchesApi } from '../../../src/testing/index.js';
 import {
     ApiAppModule,
+    CatalogController,
     ItemsController,
     PublicController,
+    TenantController,
 } from '../../fixtures/http/api-app.module.js';
 
 const INFO = { title: 'api-app', version: '1.0.0' };
@@ -42,7 +48,14 @@ describe('UC-14: OpenAPI из кода', () => {
 
         expect(result.errors).toBeUndefined();
         expect(result.valid).toBe(true);
-        expect(Object.keys(document.paths)).toEqual(['/items', '/items/{id}', '/public/info']);
+        expect(Object.keys(document.paths)).toEqual([
+            '/catalog/count',
+            '/catalog/list',
+            '/items',
+            '/items/{id}',
+            '/public/info',
+            '/tenant/settings',
+        ]);
     });
 
     it('AC-3.7: схемы тела, query и ответа ({items, nextCursor})', async () => {
@@ -127,5 +140,72 @@ describe('UC-14: OpenAPI из кода', () => {
         expect(() => expectMatchesApi(response(200, {}), [PublicController, 'hidden'])).toThrow(
             /нет @Api/,
         );
+    });
+
+    it('AC-3.7: маршрут с @RequireTenant() — ответ 409 TENANT_REQUIRED в responses (KT-17)', async () => {
+        const { op } = await operations();
+        const settings = op('/tenant/settings', 'get');
+
+        expect(settings.responses['409']?.description).toBe('TENANT_REQUIRED');
+        expect(settings.responses['409']?.content?.['application/json']?.schema).toEqual({
+            $ref: '#/components/schemas/ErrorResponse',
+        });
+        expect(op('/items', 'get').responses['409']).toBeUndefined();
+    });
+
+    it('AC-3.7: expectMatchesApi принимает настоящий ответ guard’а @verdeect/auth 409 TENANT_REQUIRED (KT-17)', async () => {
+        const verifier = {
+            verify: () => Promise.resolve({ kind: 'service', sub: 's', clientId: 's', scopes: [] }),
+        };
+        vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+        const guard = new VerdeectAuthGuard(verifier as never, new Reflector());
+        const context = {
+            getHandler: () => TenantController.prototype.settings,
+            getClass: () => TenantController,
+            switchToHttp: () => ({
+                getRequest: () => ({ headers: { authorization: 'Bearer t' } }),
+            }),
+        } as unknown as ExecutionContext;
+        const denied: unknown = await guard.canActivate(context).catch((error: unknown) => error);
+        if (!(denied instanceof HttpException)) {
+            throw new Error('guard не отказал');
+        }
+
+        expect(denied.getStatus()).toBe(409);
+        expect(denied.getResponse()).toEqual({
+            error: { code: 'TENANT_REQUIRED', message: 'Не выбрана компания', details: {} },
+        });
+        expectMatchesApi(response(denied.getStatus(), denied.getResponse()), [
+            TenantController,
+            'settings',
+        ]);
+        expect(() =>
+            expectMatchesApi(response(409, { error: 'x' }), [TenantController, 'settings']),
+        ).toThrow(/ответ вне схемы @Api/);
+        expect(() =>
+            expectMatchesApi(response(500, denied.getResponse()), [TenantController, 'settings']),
+        ).toThrow(/статус 500 не описан/);
+    });
+
+    it('AC-3.7: expectMatchesApi — схема Ajv компилируется один раз на маршрут и статус (KT-17)', () => {
+        const compile = vi.spyOn(Ajv2020.prototype, 'compile');
+        const ok = response(200, { tenant: 'acme' });
+
+        expectMatchesApi(ok, [TenantController, 'settings']);
+        expectMatchesApi(ok, [TenantController, 'settings']);
+
+        expect(compile).toHaveBeenCalledTimes(1);
+    });
+
+    it('AC-3.7: @Api базового абстрактного контроллера — маршрут с путём наследника; переопределённый метод — один маршрут (KT-17)', async () => {
+        const { document, op } = await operations();
+        const operations_ = Object.values(document.paths).flatMap((item) => Object.values(item));
+
+        expect(op('/catalog/list', 'get')).toMatchObject({ summary: 'Каталог: список' });
+        expect(op('/catalog/count', 'get')).toMatchObject({ summary: 'Каталог: число записей' });
+        expect(
+            operations_.filter((item) => String(item.summary).startsWith('Каталог: число')),
+        ).toHaveLength(1);
+        expectMatchesApi(response(200, { items: [] }), [CatalogController, 'list']);
     });
 });

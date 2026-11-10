@@ -200,8 +200,11 @@ export function scrubEvent<T extends Event>(
     }
 }
 
-/** DSN в форме, которую принимает SDK: иначе он сам печатает значение в console.error (NFR-4). */
-function isValidDsn(dsn: string): boolean {
+/**
+ * DSN в форме, которую принимает SDK: иначе он сам печатает значение в console.error (NFR-4). Внутренняя функция: её же
+ * использует bootstrapService для SENTRY_NOT_PRELOADED.
+ */
+export function isValidDsn(dsn: string): boolean {
     const match = DSN_REGEX.exec(dsn);
     if (!match) {
         return false;

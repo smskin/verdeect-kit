@@ -55,7 +55,7 @@ describe('UC-14: CLI openapi', () => {
         });
 
         expect(code).toBe(0);
-        expect(output).toEqual({ written: 'contracts/openapi.json', operations: 4 });
+        expect(output).toEqual({ written: 'contracts/openapi.json', operations: 7 });
         expect(written).toBe(`${JSON.stringify(expected, null, 2)}\n`);
     });
 
@@ -77,9 +77,12 @@ describe('UC-14: CLI openapi', () => {
         };
 
         expect(Object.keys(written.paths)).toEqual([
+            '/catalog/count',
+            '/catalog/list',
             '/items',
             '/items/{id}',
             '/public/info',
+            '/tenant/settings',
             '/events',
         ]);
     });

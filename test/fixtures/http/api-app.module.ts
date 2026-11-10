@@ -1,9 +1,10 @@
 // Фикстура AC-3.7 (prd.md §3.5): модуль сервиса с @Api — список с keyset (envelope page, query PageQuerySchema),
 // создание (тело, errors VERSION_CONFLICT), карточка по :id; класс под @UseGuards(VerdeectAuthGuard) +
-// @RequireScope('items:read'); незащищённый маршрут; маршрут без @Api. Приложение не создаётся.
+// @RequireScope('items:read'); незащищённый маршрут; маршрут без @Api; @RequireTenant() (409 TENANT_REQUIRED, KT-17);
+// наследование @Api от абстрактного базового контроллера и переопределение метода (KT-17). Приложение не создаётся.
 import 'reflect-metadata';
 import { Body, Controller, Get, Module, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { RequireScope, VerdeectAuthGuard } from '@verdeect/auth/nest';
+import { RequireScope, RequireTenant, VerdeectAuthGuard } from '@verdeect/auth/nest';
 import { z } from 'zod';
 import { defineEnv, envBase, KitConfigModule } from '../../../src/config/index.js';
 import {
@@ -64,8 +65,43 @@ export class PublicController {
     }
 }
 
+@Controller('tenant')
+@UseGuards(VerdeectAuthGuard)
+export class TenantController {
+    @Get('settings')
+    @RequireTenant()
+    @Api({ summary: 'Настройки компании', response: z.object({ tenant: z.string() }) })
+    settings(): { tenant: string } {
+        return { tenant: 'acme' };
+    }
+}
+
+/** Базовый контроллер без @Controller: маршруты получают путь наследника (как у Nest). */
+export abstract class BaseCatalogController {
+    @Get('list')
+    @Api({ summary: 'Каталог: список', response: Item, envelope: 'items' })
+    list(): { items: ItemDto[] } {
+        return { items: ITEMS };
+    }
+
+    @Get('count')
+    @Api({ summary: 'Каталог: число записей (базовый)', response: z.object({ count: z.number() }) })
+    count(): { count: number } {
+        return { count: ITEMS.length };
+    }
+}
+
+@Controller('catalog')
+export class CatalogController extends BaseCatalogController {
+    @Get('count')
+    @Api({ summary: 'Каталог: число записей', response: z.object({ count: z.number() }) })
+    override count(): { count: number } {
+        return { count: ITEMS.length };
+    }
+}
+
 @Module({
     imports: [KitConfigModule.forRoot({ schema: defineEnv({ ...envBase }) })],
-    controllers: [ItemsController, PublicController],
+    controllers: [ItemsController, PublicController, TenantController, CatalogController],
 })
 export class ApiAppModule {}

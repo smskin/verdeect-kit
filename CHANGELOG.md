@@ -54,3 +54,10 @@
 - `KitConfigModule.forRoot({schema})` разбирает окружение при сборке контекста, а не при импорте `AppModule`: неверное окружение отклоняет сборку контекста, сам `forRoot` не отклоняется. Умолчания в `process.env` не дописываются, `ConfigService` читает только разобранные значения. При запуске через `bootstrapService` окружение не разбирается повторно.
 
 - Обязательный peer `prom-client` заменён на `@prometheus-io/client` `^0.16.1` (`prom-client` помечен deprecated, преемник — тот же API; PRD v1.12, NFR-3): `kitMetrics` и `MetricsServer` работают на `Registry`, `Counter`, `Gauge` из `@prometheus-io/client`. Сервис ставит `@prometheus-io/client` вместо `prom-client`.
+
+### Fixed
+
+- `/http`: OpenAPI — у маршрутов с `@RequireTenant()` ответ 409 `TENANT_REQUIRED` (тело guard'а `@verdeect/auth`); `expectMatchesApi` проверяет описанные статусы ошибок по схеме `ErrorResponse` и падает на неописанном статусе.
+- `/http`: `bootstrapService` — `SENTRY_NOT_PRELOADED` только при верной конфигурации Sentry (верный `SENTRY_DSN`, `NODE_ENV = production`); при неверном `SENTRY_*` предупреждения нет — `initSentry` выключил Sentry намеренно.
+- `/testing`: `expectMatchesApi` — скомпилированная схема Ajv кэшируется по маршруту и статусу.
+- `/http`: OpenAPI — маршруты с `@Api`, унаследованные от базового контроллера, попадают в документ с путём наследника; переопределённый метод — один маршрут.

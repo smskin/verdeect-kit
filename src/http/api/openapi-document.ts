@@ -83,6 +83,8 @@ interface RouteArgument {
 interface RouteSecurity {
     readonly schemes: readonly ('serviceToken' | 'userToken')[];
     readonly scopes: readonly string[];
+    /** `@RequireTenant()`: guard отвечает 409 `TENANT_REQUIRED` токену без компании (@verdeect/auth 1.0.1). */
+    readonly tenant: boolean;
 }
 
 /** Маршрут с `@Api`. */
@@ -218,6 +220,7 @@ function securityOf(controller: Type, handler: object): RouteSecurity | null {
 
     return {
         schemes,
+        tenant,
         scopes: Array.isArray(scopes)
             ? scopes.filter((s): s is string => typeof s === 'string')
             : [],
@@ -259,6 +262,10 @@ function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, 
             403,
             security.scopes.length > 0 ? ['FORBIDDEN', 'SCOPE_REQUIRED'] : ['FORBIDDEN'],
         );
+        if (security.tenant) {
+            // Тело — {error: {code: 'TENANT_REQUIRED', message: 'Не выбрана компания', details: {}}} guard'а.
+            errors.set(409, ['TENANT_REQUIRED']);
+        }
     }
     for (const code of route.api.errors ?? []) {
         const status = errorStatus(code);
@@ -392,18 +399,46 @@ function apiRouteOf(controller: Type, handlerName: string): ApiRoute | null {
     return { controller, handlerName, handler, api, method, paths, status };
 }
 
-/** Схема успешного ответа и статус маршрута для `expectMatchesApi`. Внутренняя функция. */
+/** Схема успешного ответа, статус и описанные статусы ошибок маршрута для `expectMatchesApi`. Внутренняя функция. */
 export function routeResponseSchema(route: readonly [Type, string]): {
     readonly status: number;
     readonly schema: JsonObject | null;
+    readonly errorStatuses: readonly number[];
+    readonly errorSchema: JsonObject;
 } {
     const [controller, handlerName] = route;
     const api = apiRouteOf(controller, handlerName);
     if (api === null) {
         throw new Error(`expectMatchesApi: у ${controller.name}.${handlerName} нет @Api`);
     }
+    const errors = errorsOf(api, securityOf(api.controller, api.handler));
 
-    return { status: api.status, schema: responseSchemaOf(api.api) };
+    return {
+        status: api.status,
+        schema: responseSchemaOf(api.api),
+        errorStatuses: [...errors.keys()].sort((a, b) => a - b),
+        errorSchema: ERROR_RESPONSE,
+    };
+}
+
+/**
+ * Имена методов класса и его предков до `Object.prototype`, как у `MetadataScanner` Nest: метод наследника с тем же
+ * именем заменяет метод предка (берётся `prototype[name]` наследника).
+ */
+function handlerNamesOf(controller: Type): string[] {
+    const names = new Set<string>();
+    let prototype: unknown = controller.prototype;
+    while (typeof prototype === 'object' && prototype !== null && prototype !== Object.prototype) {
+        for (const name of Object.getOwnPropertyNames(prototype)) {
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+            if (name !== 'constructor' && typeof descriptor?.value === 'function') {
+                names.add(name);
+            }
+        }
+        prototype = Object.getPrototypeOf(prototype);
+    }
+
+    return [...names].sort();
 }
 
 async function resolveEntry(
@@ -500,10 +535,7 @@ export async function buildOpenApiDocument(
 ): Promise<OpenApiDocument> {
     const built: BuiltOperation[] = [];
     for (const controller of await collectControllers(module)) {
-        for (const handlerName of Object.getOwnPropertyNames(controller.prototype).sort()) {
-            if (handlerName === 'constructor') {
-                continue;
-            }
+        for (const handlerName of handlerNamesOf(controller)) {
             const route = apiRouteOf(controller, handlerName);
             for (const path of route?.paths ?? []) {
                 built.push(buildOperation(route as ApiRoute, path));
