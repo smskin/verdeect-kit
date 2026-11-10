@@ -52,7 +52,7 @@ Depends on: Phase 1 (Task 1 — `drizzle-kit`, lint; Task 2 — `ids`)
 2. Создать `src/database/pg.ts` (`Skill: nestjs-code generic src/database/pg.ts (CREATE)`). Шапка: «pg и драйвер Drizzle для /database (prd.md §3.3, AC-1.2, NFR-3): requirePeer('pg', 'database') синхронно при импорте; pg, drizzle-orm/node-postgres и его migrator — ленивый import() (драйвер импортирует pg статически). Top-level await нет: drizzle-kit загружает схему сервиса через require».
 3. Верхний уровень модуля: `requirePeer('pg', 'database')` (синхронно, без `await`).
 4. Экспортировать (внутри пакета, не из `index.ts`):
-   - `loadPg()` — мемоизированный промис модуля `pg` (значение по умолчанию: `Pool`, `Client`, `escapeIdentifier`, `escapeLiteral`);
+   - `loadPg()` — мемоизированный промис модуля `pg` (значение по умолчанию: `Pool`, `Client`, `escapeLiteral` — только для паролей в `prepareDatabase`; идентификаторы — `quoteIdentifier`, задача 3);
    - `loadDrizzle()` — мемоизированный промис `{drizzle, migrate}` из `drizzle-orm/node-postgres` и `drizzle-orm/node-postgres/migrator`;
    - типы `Pool`, `PoolClient`, `PoolConfig` (`import type` из `pg`), `NodePgDatabase` (`import type` из драйвера);
    - константу `CONNECTION_TIMEOUT_MS` = 5000 (срок соединения CLI, миграций и `prepareDatabase`, эталон O `pool-options.ts`).

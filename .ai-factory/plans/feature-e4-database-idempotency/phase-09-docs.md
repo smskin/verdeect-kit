@@ -34,7 +34,7 @@ AC-9.3 и правило «Library Package Scope» (7): изменение пу�
    - «API» — подразделы `@verdeect/kit/database`, `@verdeect/kit/idempotency`; `@verdeect/kit/testing` — новые экспорты.
 2. `CHANGELOG.md` `[Unreleased]`: первая строка — «… `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14)»; `### Added` — по строке на каждый экспорт `/database`, `/idempotency`, новые экспорты `/testing`, CLI `db`, метрики `verdeect_cleanup_*`, ключи `inject`; `### Changed` — `startTestStack` готовит БД при `postgres: true` (опция `migrations`); фильтр `/http` больше не считает срок пула (`pool: 'unknown'` удалён, метрику пишет пул `/database` с меткой `main`/`read`).
 3. `AGENTS.md` (стр. 21): «Состояние после E3 …» → «Состояние после E4 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/testing` и CLI `verdeect-kit openapi`, `db`. Следующие подпути появляются по этапам E5–E8».
-4. `docs/testing.md` «Проекты интеграционного конфига»: два файла `isolated` E4 с причинами (задача 34); фикстура `test/fixtures/database` и `pnpm db:fixtures`.
+4. `docs/testing.md` «Проекты интеграционного конфига»: три файла `isolated` E4 с причинами (задачи 24, 34: `ac-4-5-pool-timeout.spec.ts`, `ac-4-14-idempotency.spec.ts`, `ac-4-14-missing-purge-function.spec.ts`); фикстура `test/fixtures/database` и `pnpm db:fixtures`.
 5. `test/package/ac-9-3-docs.spec.ts` (MODIFY): в `ENTRY_POINTS` (стр. 10–15) добавить `src/database/index.ts` и `src/idempotency/index.ts` — проверки «API каждого выпущенного подпути» и «каждый экспорт в CHANGELOG» охватят новые экспорты; формула `2 × DB_POOL_MAX × реплики` и реестр префиксов (`PREFIXES`) уже проверяются, не меняются.
 
 ### Критерии приёмки

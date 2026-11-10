@@ -96,7 +96,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 ## Architecture and Decisions
 - Слои (ARCHITECTURE «Правила зависимостей»): `database` → `observability`, `config`, `internal`; `idempotency` → `database`, `http`, `observability`, `config`, `internal`; `http` читает метаданные `@Idempotent` из `internal/metadata.ts`, не импортируя `idempotency`; `testing` импортирует `database` только динамически.
 - Файлы подпути `database`: `pg.ts`, `tenant.ts`, `prepare-database.ts`, `migrations.ts`, `db.ts`, `kit-database.module.ts`, `batches.ts`, `run-exclusive.ts`, `if-newer.ts`, `index.ts`; `idempotency`: `table.ts`, `idempotent.decorator.ts`, `idempotency.interceptor.ts`, `kit-idempotency.module.ts`, `peer.ts`, `index.ts`; `internal`: `ids.ts`, `metadata.ts`; `testing`: `scratch-database.ts`, `worker-scope.ts`, `tenant-isolation.ts`, `count-queries.ts`; `cli/commands/db.ts`.
-- `Db` — класс без декораторов Nest, собирается фабрикой модуля: тесты I строят его на пулах напрямую (`test/support/database.ts`), HTTP-тесты передают окружение внутренним `setPreparsedEnv(schema, parseEnv(schema, env))` перед `createTestApp` (механизм `bootstrapService`) — без `vi.stubEnv`, проект `shared`. В `isolated` — только два файла с процесс-глобальным состоянием (Sentry, `process.exit`).
+- `Db` — класс без декораторов Nest, собирается фабрикой модуля: тесты I строят его на пулах напрямую (`test/support/database.ts`), HTTP-тесты передают окружение внутренним `setPreparsedEnv(schema, parseEnv(schema, env))` перед `createTestApp` (механизм `bootstrapService`) — без `vi.stubEnv`, проект `shared`. В `isolated` — только три файла с процесс-глобальным состоянием: `ac-4-5-pool-timeout.spec.ts` и `ac-4-14-idempotency.spec.ts` (Sentry), `ac-4-14-missing-purge-function.spec.ts` (`vi.stubEnv`, `process.exit`).
 - Фикстура БД пакета `test/fixtures/database` (схема `kit`, сгенерирована `drizzle-kit` 0.31.11 из `devDependencies`) — миграции `globalSetup` уровня I.
 
 ## Phase Index
@@ -140,8 +140,8 @@ Authority (запрос пользователя, skill-context «Requirements P
 - [ ] Task 11: I AC-4.17 ([details](phase-03-cli-db.md#task-11-тест-ac-417)) (depends on 8, 9, 10)
 
 ### Фаза 4: Тестовый контур БД
-- [ ] Task 12: `startTestStack` — подготовка, `migrations`, шаблон, ключи `provide` ([details](phase-04-test-stack.md#task-12-подготовка-бд-в-startteststack)) (depends on 4, 6, 7)
-- [ ] Task 13: `createScratchDatabase` ([details](phase-04-test-stack.md#task-13-createscratchdatabase)) (depends on 6, 12)
+- [ ] Task 12: `startTestStack` — подготовка, `migrations`, шаблон, ключи `provide` ([details](phase-04-test-stack.md#task-12-подготовка-бд-в-startteststack)) (depends on 3, 4, 6, 7)
+- [ ] Task 13: `createScratchDatabase` ([details](phase-04-test-stack.md#task-13-createscratchdatabase)) (depends on 3, 6, 12)
 - [ ] Task 14: `workerScope` (`tenant` — слаг) ([details](phase-04-test-stack.md#task-14-workerscope))
 - [ ] Task 15: `assertAppRoleIsNotOwner` в `src/testing/tenant-isolation.ts` ([details](phase-04-test-stack.md#task-15-assertapproleisnotowner))
 - [ ] Task 16: экспорты `/testing`, `globalSetup` с миграциями, тесты AC-4.18, AC-1.13, AC-4.6, AC-4.7, `workerScope` ([details](phase-04-test-stack.md#task-16-экспорты-globalsetup-пакета-и-тесты-фазы)) (depends on 8, 9, 12, 13, 14, 15)
@@ -161,7 +161,7 @@ Authority (запрос пользователя, skill-context «Requirements P
 - [ ] Task 26: `createIdempotencyTable`, `idempotencyPurgeSql` ([details](phase-06-idempotency.md#task-26-createidempotencytable-и-idempotencypurgesql)) (depends on 3, 5)
 - [ ] Task 27: `@Idempotent` ([details](phase-06-idempotency.md#task-27-idempotent)) (depends on 3)
 - [ ] Task 28: интерсептор и хранилище ([details](phase-06-idempotency.md#task-28-интерсептор-и-хранилище)) (depends on 3, 17, 22, 26, 27)
-- [ ] Task 29: `KitIdempotencyModule` — проверка функции, очистка ([details](phase-06-idempotency.md#task-29-kitidempotencymodule)) (depends on 17, 18, 19, 20, 22, 25, 26, 28)
+- [ ] Task 29: `KitIdempotencyModule` — проверка функции, очистка ([details](phase-06-idempotency.md#task-29-kitidempotencymodule)) (depends on 3, 17, 18, 19, 20, 22, 25, 26, 28)
 - [ ] Task 30: `peer.ts`, `src/idempotency/index.ts`, `exports["./idempotency"]` ([details](phase-06-idempotency.md#task-30-peerts-публичный-idempotency-exports)) (depends on 26, 27, 29)
 - [ ] Task 31: заголовки идемпотентности в OpenAPI ([details](phase-06-idempotency.md#task-31-заголовки-идемпотентности-в-openapi)) (depends on 3)
 - [ ] Task 32: фикстура — таблица идемпотентности и функция очистки ([details](phase-06-idempotency.md#task-32-фикстура-бд--таблица-идемпотентности-и-функция)) (depends on 8, 26)
