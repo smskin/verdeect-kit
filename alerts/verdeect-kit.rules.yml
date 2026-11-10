@@ -1,0 +1,113 @@
+# Шаблон правил vmalert для метрик @verdeect/kit — prd.md §3.2 (alertRulesTemplate), AC-2.11, UC-13.
+# Формат правил Prometheus (совместим с vmalert). Путь к файлу в установленном пакете — экспорт alertRulesTemplate
+# из @verdeect/kit/observability.
+#
+# Порог: у каждого правила есть порог по умолчанию и переопределение по метке service. Чтобы задать свой порог,
+# добавьте в файл правил сервиса recording-правило verdeect_kit_threshold:<метрика> с меткой service, например:
+#
+#   - record: verdeect_kit_threshold:outbox_lag_seconds
+#     expr: vector(30)
+#     labels:
+#       service: platform
+#
+# Имена порогов: verdeect_kit_threshold:outbox_pending, :outbox_lag_seconds, :events_consumed (result="dlq"),
+# :db_pool_wait_timeouts, :rate_limit_unavailable. Правая часть каждого правила агрегирована max by (service),
+# чтобы сравнение on (service) group_left () не давало many-to-many.
+groups:
+  - name: verdeect-kit
+    rules:
+      - alert: VerdeectOutboxLag
+        # Порог по умолчанию — 5 с за 1 минуту.
+        expr: |
+          max by (service) (verdeect_outbox_lag_seconds)
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:outbox_lag_seconds)
+              or on (service) (max by (service) (verdeect_outbox_lag_seconds) * 0 + 5)
+          )
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Задержка outbox {{ $labels.service }} выше порога'
+          description: >-
+            Самая старая неотправленная строка outbox сервиса {{ $labels.service }} ждёт дольше порога
+            (verdeect_outbox_lag_seconds, по умолчанию 5 с) в течение минуты. Проверьте relay в журнале
+            сервиса и доступность брокера.
+
+      - alert: VerdeectOutboxPending
+        # Порог по умолчанию — 1000 строк за 5 минут.
+        expr: |
+          max by (service) (verdeect_outbox_pending)
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:outbox_pending)
+              or on (service) (max by (service) (verdeect_outbox_pending) * 0 + 1000)
+          )
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Очередь outbox {{ $labels.service }} выше порога'
+          description: >-
+            Неотправленных строк outbox сервиса {{ $labels.service }} больше порога (verdeect_outbox_pending,
+            по умолчанию 1000) в течение 5 минут. Проверьте relay и брокер.
+
+      - alert: VerdeectEventsDlq
+        # Порог по умолчанию — 0: любое событие в DLQ за 15 минут.
+        expr: |
+          sum by (service, type) (increase(verdeect_events_consumed_total{result="dlq"}[15m]))
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:events_consumed)
+              or on (service)
+            (
+              max by (service) (
+                sum by (service, type) (increase(verdeect_events_consumed_total{result="dlq"}[15m]))
+              ) * 0
+            )
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'События {{ $labels.type }} сервиса {{ $labels.service }} уходят в DLQ'
+          description: >-
+            За 15 минут события {{ $labels.type }} сервиса {{ $labels.service }} попали в DLQ
+            (verdeect_events_consumed_total, result="dlq"). Разберите сообщения очереди DLQ по журналу
+            подписчика.
+
+      - alert: VerdeectDbPoolWaitTimeouts
+        # Порог по умолчанию — 0: любой срок ожидания пула за 5 минут.
+        expr: |
+          sum by (service) (increase(verdeect_db_pool_wait_timeouts_total[5m]))
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:db_pool_wait_timeouts)
+              or on (service)
+            (max by (service) (sum by (service) (increase(verdeect_db_pool_wait_timeouts_total[5m]))) * 0)
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Пул БД {{ $labels.service }} исчерпан'
+          description: >-
+            За 5 минут запросы сервиса {{ $labels.service }} не дождались клиента пула БД
+            (verdeect_db_pool_wait_timeouts_total). Проверьте DB_POOL_MAX, долгие запросы и нагрузку.
+
+      - alert: VerdeectRateLimitUnavailable
+        # Порог по умолчанию — 0: любая проверка лимита без Redis за 5 минут.
+        expr: |
+          sum by (service) (increase(verdeect_rate_limit_unavailable_total[5m]))
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:rate_limit_unavailable)
+              or on (service)
+            (max by (service) (sum by (service) (increase(verdeect_rate_limit_unavailable_total[5m]))) * 0)
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Лимитер {{ $labels.service }} работает без Redis'
+          description: >-
+            За 5 минут сервис {{ $labels.service }} пропускал запросы без проверки лимита: Redis недоступен
+            (verdeect_rate_limit_unavailable_total). Проверьте доступность Redis.

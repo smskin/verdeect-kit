@@ -36,7 +36,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | ---------------- | ---- | ----------------------- |
 | `/config`        | E1   | готов, в `[Unreleased]` |
 | `/testing`       | E1   | готов, в `[Unreleased]` |
-| `/observability` | E2   | в своём этапе           |
+| `/observability` | E2   | готов, в `[Unreleased]` |
 | `/http`          | E3   | в своём этапе           |
 | `/database`      | E4   | в своём этапе           |
 | `/idempotency`   | E4   | в своём этапе           |
@@ -105,6 +105,68 @@ export class AppModule {}
 - ключ пакета, переопределённый несовместимым типом, — ошибка компиляции (AC-1.6);
 - `KitConfigModule` (через `@nestjs/config`) дописывает в `process.env` умолчания разобранных ключей. В тестах с несколькими контекстами Nest окружение сохраняется и восстанавливается целиком, а не через `vi.unstubAllEnvs()`.
 
+## Наблюдаемость
+
+`@verdeect/kit/observability` (prd.md §3.2) — логи, GlitchTip, `/health` и `/metrics`, остановка. Nest-модуля нет: классы собирает сервис (в E3 — `bootstrapService`).
+
+**Ранний `instrument.ts`.** Интеграции `@sentry/nestjs` требуют инициализации до загрузки приложения, поэтому `initSentry` вызывается в отдельном файле, который подключается через `node --import`:
+
+```ts
+// src/instrument.ts
+import { initSentry } from '@verdeect/kit/observability';
+import { redaction } from './redaction.js';
+
+initSentry({ service: 'files', redaction });
+```
+
+```sh
+node --import ./dist/instrument.js dist/main.js
+```
+
+GlitchTip включается только при непустом верном `SENTRY_DSN` и `NODE_ENV = production`; неверное значение `SENTRY_*` выключает его без исключения.
+
+**Общий `KitRedaction`.** Один объект на сервис — `src/redaction.ts`, только с импортом типов из `@verdeect/kit/observability` (правило `redaction-imports`). Тот же объект передаётся и в `createLoggerOptions`, и в `initSentry`: имена и маска пути в логах и GlitchTip совпадают.
+
+```ts
+// src/redaction.ts
+import type { KitRedaction } from '@verdeect/kit/observability';
+
+export const redaction: KitRedaction = {
+    sensitiveKeys: ['inn'],
+    maskPath: (path) => path.replace(/^\/share\/[^/]+/, '/share/***'),
+};
+```
+
+**Логгер.** `createLoggerOptions` возвращает `Params` `nestjs-pino` с кортежем `[options, stream]`. Логгер вне Nest — `pino(...params.pinoHttp)`. На Fastify генератор trace-id передаётся и адаптеру: `new FastifyAdapter({genReqId: params.pinoHttp[0].genReqId})` (в E3 — `createHttpApp`).
+
+**`/health` и `/metrics`.** `MetricsServer` слушает `METRICS_PORT` (`node:http`, вне Nest; `0` — порт выбирает ОС). Пробы регистрируют владельцы зависимостей: `health.register(name, probe, {critical})`. Ошибка прослушивания (`EADDRINUSE`) — отказ `listen()`, её передают в `failStartup`.
+
+**Остановка `KitLifecycle`.** Участники регистрируются на шаг: `lifecycle.register(participant, {step})`.
+
+| Шаг | Что                                                                       |
+| --- | ------------------------------------------------------------------------- |
+| 1   | `/health` → 503, пауза `SHUTDOWN_DRAIN_MS` (выполняет сам `KitLifecycle`) |
+| 2   | HTTP не принимает новые соединения, начатые дорабатывают                  |
+| 3   | подписчики, relay, очистка                                                |
+| 4   | пулы БД, RabbitMQ, Redis                                                  |
+| 5   | сервер метрик                                                             |
+
+Участники шага работают параллельно, следующий шаг начинается после предыдущего. Два режима:
+
+- **сигнал ОС** (`lifecycle.listen()`, `SIGTERM`, `SIGINT`) — сторож срока `SHUTDOWN_TIMEOUT_MS` от сигнала (пауза входит). Срок вышел — `error`-лог `SHUTDOWN_TIMEOUT`, событие GlitchTip, `exit(1)`. Шаги в срок — `exit` не вызывается, процесс без открытых дескрипторов выходит сам с кодом 0; если не вышел к сроку (утёк таймер или сокет) — `SHUTDOWN_NOT_EXITED` и `exit(1)`;
+- **программный `close()`** (тесты сервиса, CLI) — те же шаги 1–5 без сторожа и без `exit`; ошибка участника — отказ `close()` после всех шагов (несколько — `AggregateError`). Безопасен в тестах сервиса.
+
+**Алерты.** `alertRulesTemplate` — путь к `alerts/verdeect-kit.rules.yml` в установленном пакете: правила vmalert для метрик пакета с порогом по умолчанию. Свой порог — recording-правило `verdeect_kit_threshold:<метрика>` с меткой `service` в файле правил сервиса:
+
+```yaml
+- record: verdeect_kit_threshold:outbox_lag_seconds
+  expr: vector(30)
+  labels:
+    service: platform
+```
+
+Пороги: `outbox_lag_seconds` (5 с за 1m), `outbox_pending` (1000 за 5m), `events_consumed` (DLQ за 15m > 0), `db_pool_wait_timeouts` (за 5m > 0), `rate_limit_unavailable` (за 5m > 0).
+
 ## Тесты сервиса
 
 Подпуть `/testing` разрешается только с условием `development` (NFR-4): в production-сборке сервиса его нет. Vitest включает это условие сам; для `node` — `node --conditions=development`.
@@ -157,6 +219,8 @@ export default startTestStack({ service: 'files', postgres: true, mailpit: true 
 ## Развёртывание
 
 - Порт метрик `METRICS_PORT` не публикуется наружу: его читает только сборщик метрик внутри сети.
+- Балансировщик проверяет готовность по `/health` на `METRICS_PORT`: с начала остановки — 503, реплика выводится из балансировки за паузу `SHUTDOWN_DRAIN_MS`.
+- Правила алертов: подключите файл `alertRulesTemplate` (`node_modules/@verdeect/kit/alerts/verdeect-kit.rules.yml`) в vmalert рядом с правилами сервиса; свои пороги — `verdeect_kit_threshold:<метрика>`.
 - `REPLICA_ID` не задавать ни в compose, ни в `env_file`: умолчание — `hostname()` контейнера.
 - `stop_grace_period: 15s` при `SHUTDOWN_TIMEOUT_MS` 10000: срок Docker должен быть больше срока остановки сервиса.
 - Пул соединений PostgreSQL: сервис открывает до `2 × DB_POOL_MAX × реплики` соединений (основной пул и пул чтения) — `max_connections` считается по этой формуле.
@@ -208,6 +272,32 @@ export default startTestStack({ service: 'files', postgres: true, mailpit: true 
 - `KitMessagingEnv` — тип разобранных `envMessaging`.
 - `KitRedisEnv` — тип разобранных `envRedis`.
 - `KitCryptoEnv` — тип разобранных `envCrypto`.
+
+### @verdeect/kit/observability
+
+- `SENSITIVE_KEYS` — базовый список чувствительных имён (§3.2); каждое скрывается на уровнях 0–2, `err.code` виден.
+- `KitRedaction` — `{sensitiveKeys?, maskPath?}`: имена добавляются к `SENSITIVE_KEYS`, `maskPath` — маска пути в логе доступа и GlitchTip.
+- `createLoggerOptions` — `createLoggerOptions({service, entry, env, trustTraceparent?, quietRoutes?, extraBase?, redaction?})`: опции `nestjs-pino` (HTTP — stdout, CLI — stderr).
+- `KitLoggerOptions` — тип опций `createLoggerOptions`.
+- `KitLoggerParams` — тип результата: `Params` с кортежем `pinoHttp: [options, stream]`.
+- `sanitizeError` — ошибка без SQL, параметров и значений: ветки pg/Drizzle, ioredis и зарегистрированные; цепочка `cause` до 10.
+- `registerErrorSanitizer` — `registerErrorSanitizer(match, sanitize)`: своя ветка сервиса, глобально на процесс.
+- `initSentry` — `initSentry({service, redaction?})` в `instrument.ts`; возвращает, включён ли GlitchTip.
+- `KitSentryOptions` — тип опций `initSentry`.
+- `captureError` — `captureError(err, {tags?, extra?})`: ровно одно событие на ошибку.
+- `captureThrottled` — `captureThrottled(key, err, {windowMs = 60_000})`: одно событие за окно на ключ; возвращает, отправлено ли.
+- `HealthRegistry` — пробы `/health`: `register(name, probe, {critical})`, `markStopping()`, `evaluate()`; срок пробы 2 с.
+- `HealthProbe` — тип пробы `() => Promise<boolean>`.
+- `HealthReport` — `{status: 'ok' | 'degraded' | 'unavailable', checks}`.
+- `MetricsServer` — `/health` и `/metrics` на `METRICS_PORT`: `listen()`, `address()`, `close()`.
+- `kitMetrics` — `kitMetrics({service})`: свой реестр экземпляра с меткой `service`, метрики процесса Node и `verdeect_*`.
+- `KitMetrics` — тип реестра и метрик пакета.
+- `alertRulesTemplate` — абсолютный путь к `alerts/verdeect-kit.rules.yml`.
+- `failStartup` — `failStartup(raw, logger)`: `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`.
+- `StartupFailure` — интерфейс ошибки запуска сервиса `{startupCode, startupDetails()}`.
+- `KitLifecycle` — остановка по шагам 1–5: `register`, `listen()` (сигнал ОС, сторож срока), `close()` (без сторожа).
+- `KitShutdownParticipant` — участник `{name, stop()}`.
+- `KitShutdownStep` — шаг участника `2 | 3 | 4 | 5`.
 
 ### @verdeect/kit/testing
 

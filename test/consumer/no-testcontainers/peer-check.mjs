@@ -1,10 +1,12 @@
-// AC-1.2 (C): без опциональных peer /config импортируется, /testing падает с текстом AC-1.2.
+// AC-1.2 (C): без опциональных peer /config и /observability импортируются, /testing падает с текстом AC-1.2.
 const results = [];
-try {
-    await import('@verdeect/kit/config');
-    results.push('config:ok');
-} catch (error) {
-    results.push(`config:${error?.code ?? error}`);
+for (const subpath of ['config', 'observability']) {
+    try {
+        await import(`@verdeect/kit/${subpath}`);
+        results.push(`${subpath}:ok`);
+    } catch (error) {
+        results.push(`${subpath}:${error?.code ?? error}`);
+    }
 }
 try {
     await import('@verdeect/kit/testing');

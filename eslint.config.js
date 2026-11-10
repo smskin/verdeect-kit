@@ -175,6 +175,24 @@ export default [
         ]),
     },
     {
+        files: ['src/observability/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '../testing/*',
+                    '../http/*',
+                    '../database/*',
+                    '../idempotency/*',
+                    '../messaging/*',
+                    '../redis/*',
+                    '../crypto/*',
+                    'shell-quote',
+                ],
+                message: 'observability импортирует только config и internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
         files: ['*.js', '*.mjs', 'scripts/**/*.mjs'],
         languageOptions: { globals: globals.node },
     },
