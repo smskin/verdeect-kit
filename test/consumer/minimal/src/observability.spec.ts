@@ -1,6 +1,7 @@
-// AC-9.1 (C, часть E2; UC-3, UC-8, UC-13; NFR-4, NFR-8): процесс сервиса-потребителя по форме production
-// (node --import ./service/instrument.mjs service/main.mjs) на упакованном архиве — /health, /metrics, остановка по
-// SIGTERM с выходом 0, отказ запуска при неверном окружении (prd.md §3.2).
+// AC-9.1 (C; UC-3, UC-8, UC-13; NFR-4, NFR-8): процесс сервиса-потребителя по форме production
+// (node --import ./dist/service/instrument.js dist/service/main.js) на упакованном архиве через bootstrapService — /ok,
+// /health, /metrics, остановка по SIGTERM с выходом 0, отказ запуска при неверном окружении (prd.md §3.2, §3.5).
+// Логи bootstrapService (entry http) — JSON в stdout; порты — из строки «сервис слушает». Сборка dist — globalSetup.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, inject, it } from 'vitest';
@@ -9,11 +10,16 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DRAIN_MS = 1500;
 const TIMEOUT_MS = 5000;
 
+interface Ports {
+    readonly port: number;
+    readonly metricsPort: number;
+}
+
 interface Service {
     readonly child: ChildProcess;
-    readonly port: Promise<number>;
+    readonly ports: Promise<Ports>;
     readonly exited: Promise<number | null>;
-    stderr(): string;
+    output(): string;
 }
 
 const running: ChildProcess[] = [];
@@ -30,7 +36,7 @@ function startService(overrides: Record<string, string> = {}): Service {
     const postgresUrl = inject('kitPostgresUrl');
     const child = spawn(
         process.execPath,
-        ['--import', './service/instrument.mjs', 'service/main.mjs'],
+        ['--import', './dist/service/instrument.js', 'dist/service/main.js'],
         {
             cwd: ROOT,
             env: {
@@ -52,23 +58,25 @@ function startService(overrides: Record<string, string> = {}): Service {
     child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
         stderr += chunk;
     });
-    const port = new Promise<number>((resolve, reject) => {
+    const ports = new Promise<Ports>((resolve, reject) => {
         child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
             stdout += chunk;
-            const line = stdout.split('\n')[0];
-            if (stdout.includes('\n') && line !== undefined) {
-                resolve((JSON.parse(line) as { metricsPort: number }).metricsPort);
+            const listening = logLines(stdout).find((line) => line.msg === 'сервис слушает');
+            if (listening !== undefined) {
+                resolve(listening as unknown as Ports);
             }
         });
-        child.once('exit', () => reject(new Error(`процесс вышел до старта:\n${stderr}`)));
+        child.once('exit', () =>
+            reject(new Error(`процесс вышел до старта:\n${stdout}\n${stderr}`)),
+        );
     });
-    port.catch(() => undefined);
+    ports.catch(() => undefined);
     const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
 
-    return { child, port, exited, stderr: () => stderr };
+    return { child, ports, exited, output: () => `${stdout}${stderr}` };
 }
 
-function stderrLines(text: string): Record<string, unknown>[] {
+function logLines(text: string): Record<string, unknown>[] {
     return text
         .split('\n')
         .filter((line) => line.startsWith('{'))
@@ -76,9 +84,19 @@ function stderrLines(text: string): Record<string, unknown>[] {
 }
 
 describe('UC-13: процесс сервиса-потребителя', () => {
+    it('AC-9.1: /ok на PORT → 200', async () => {
+        const service = startService();
+        const { port } = await service.ports;
+
+        const response = await fetch(`http://127.0.0.1:${port}/ok`);
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ status: 'ok' });
+    });
+
     it('AC-9.1: /health → 200 ok, проба database up', async () => {
         const service = startService();
-        const port = await service.port;
+        const { metricsPort: port } = await service.ports;
 
         const response = await fetch(`http://127.0.0.1:${port}/health`);
 
@@ -88,7 +106,7 @@ describe('UC-13: процесс сервиса-потребителя', () => {
 
     it('AC-9.1: /metrics — метрики процесса и verdeect_outbox_pending{service="consumer"}', async () => {
         const service = startService();
-        const port = await service.port;
+        const { metricsPort: port } = await service.ports;
 
         const body = await (await fetch(`http://127.0.0.1:${port}/metrics`)).text();
 
@@ -98,7 +116,7 @@ describe('UC-13: процесс сервиса-потребителя', () => {
 
     it('AC-9.1: SIGTERM — /health 503 во время паузы, выход 0 в пределах SHUTDOWN_TIMEOUT_MS', async () => {
         const service = startService();
-        const port = await service.port;
+        const { metricsPort: port } = await service.ports;
         const statuses: number[] = [];
         let polling = true;
         let firstOk: () => void = () => undefined;
@@ -129,20 +147,20 @@ describe('UC-13: процесс сервиса-потребителя', () => {
         polling = false;
         await poll;
 
-        expect(code, service.stderr()).toBe(0);
+        expect(code, service.output()).toBe(0);
         expect(elapsed).toBeLessThan(TIMEOUT_MS);
         expect(statuses).toContain(200);
         expect(statuses).toContain(503);
     });
 
-    it('AC-9.1: строки остановки в stderr содержат service и replica', async () => {
+    it('AC-9.1: строки остановки содержат service и replica', async () => {
         const service = startService({ SHUTDOWN_DRAIN_MS: '0' });
-        await service.port;
+        await service.ports;
 
         service.child.kill('SIGTERM');
         expect(await service.exited).toBe(0);
 
-        const lines = stderrLines(service.stderr()).filter((line) =>
+        const lines = logLines(service.output()).filter((line) =>
             String(line.msg).startsWith('остановка'),
         );
         expect(lines.map((line) => line.msg)).toEqual(
@@ -157,12 +175,25 @@ describe('UC-13: процесс сервиса-потребителя', () => {
         const service = startService({ METRICS_PORT: 'MARK_BAD_PORT' });
 
         expect(await service.exited).toBe(1);
-        const [fatal] = stderrLines(service.stderr());
+        const fatal = logLines(service.output()).find((line) => line.level === 60);
         expect(fatal).toMatchObject({
             level: 60,
             code: 'INVALID_ENVIRONMENT',
             keys: ['METRICS_PORT'],
         });
-        expect(service.stderr()).not.toContain('MARK_BAD_PORT');
+        expect(service.output()).not.toContain('MARK_BAD_PORT');
+    });
+
+    it('AC-9.1: неверное окружение → fatal без значения, выход 1, порт не открыт', async () => {
+        const service = startService({ PORT: 'MARK_BAD_PORT' });
+
+        expect(await service.exited).toBe(1);
+        const lines = logLines(service.output());
+        expect(lines.find((line) => line.level === 60)).toMatchObject({
+            code: 'INVALID_ENVIRONMENT',
+            keys: ['PORT'],
+        });
+        expect(lines.some((line) => line.msg === 'сервис слушает')).toBe(false);
+        expect(service.output()).not.toContain('MARK_BAD_PORT');
     });
 });

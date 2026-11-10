@@ -1,6 +1,7 @@
-// AC-1.1, AC-1.6: типы пакета (.d.ts архива) проверяются tsc потребителя; /observability — §3.2.
+// AC-1.1, AC-1.6: типы пакета (.d.ts архива) проверяются tsc потребителя; /observability — §3.2; /http — §3.5.
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { defineEnv, envBase, parseEnv } from '@verdeect/kit/config';
+import { DomainError, type KitBootstrapOptions, type Page } from '@verdeect/kit/http';
 import {
     createLoggerOptions,
     HealthRegistry,
@@ -38,3 +39,15 @@ lifecycle.register({ name: 'y', stop() {} }, { step: 1 });
 export const adapter = new FastifyAdapter({
     genReqId: createLoggerOptions({ service: 'consumer', entry: 'http', env }).pinoHttp[0].genReqId,
 });
+
+// /http (§3.5): типы опций, страницы и ошибки домена.
+export const bootstrapOptions: KitBootstrapOptions<typeof schema> = {
+    module: class AppModule {},
+    service: 'consumer',
+    env: schema,
+    logger: { trustTraceparent: false, quietRoutes: ['/internal'] },
+    http: { bodyLimit: 1024 },
+    redaction,
+};
+export const page: Page<{ id: string }> = { items: [{ id: 'a' }], nextCursor: null };
+export const status: number = new DomainError('FORBIDDEN').status;

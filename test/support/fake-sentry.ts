@@ -1,7 +1,8 @@
 // Настоящий Sentry.init с поддельным транспортом (prd.md AC-2.9, AC-2.10): конверты записываются, отправка — с
 // задержкой delayMs или без ответа (GlitchTip недоступен). beforeSend — скраббер пакета, как у initSentry.
 import * as Sentry from '@sentry/nestjs';
-import { scrubEvent } from '../../src/observability/sentry.js';
+import type { KitRedaction } from '../../src/observability/redaction.js';
+import { scrubBreadcrumb, scrubEvent } from '../../src/observability/sentry.js';
 
 /** DSN поддельного GlitchTip: сеть не используется, транспорт подменён. */
 export const FAKE_DSN = 'https://public@example.invalid/1';
@@ -18,8 +19,14 @@ export interface DeliveredEvent {
     readonly at: number;
 }
 
-/** Инициализирует SDK с поддельным транспортом; возвращает режим (меняется в тестах) и доставленные события. */
-export function initFakeSentry(): { mode: FakeTransportMode; delivered: DeliveredEvent[] } {
+/**
+ * Инициализирует SDK с поддельным транспортом; возвращает режим (меняется в тестах) и доставленные события.
+ * `redaction` — тот же объект правил, что у логгера сервиса (AC-3.12).
+ */
+export function initFakeSentry(options: { readonly redaction?: KitRedaction } = {}): {
+    mode: FakeTransportMode;
+    delivered: DeliveredEvent[];
+} {
     const mode: FakeTransportMode = { delayMs: 0 };
     const delivered: DeliveredEvent[] = [];
 
@@ -28,7 +35,8 @@ export function initFakeSentry(): { mode: FakeTransportMode; delivered: Delivere
         defaultIntegrations: false,
         integrations: [],
         tracesSampleRate: 0,
-        beforeSend: (event, hint) => scrubEvent(event, hint.originalException),
+        beforeSend: (event, hint) => scrubEvent(event, hint.originalException, options.redaction),
+        beforeBreadcrumb: (crumb) => scrubBreadcrumb(crumb, options.redaction),
         transport: () =>
             Sentry.createTransport({ recordDroppedEvent: () => undefined }, async (request) => {
                 if (mode.delayMs === 'hang') {

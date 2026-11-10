@@ -49,6 +49,8 @@ verdeect-kit/
 │   │   ├── peer.ts                    #   loadPeer(name, subpath): динамический import() + текст ошибки AC-1.2
 │   │   ├── service-name.ts            #   формат ^[a-z][a-z0-9-]{1,31}$ (bootstrapService, createCipher, модули)
 │   │   ├── pg-errors.ts               #   isUniqueViolation, isConnectionError, isPoolTimeout — по форме, без pg (эталон I)
+│   │   ├── preparsed-env.ts           #   окружение bootstrapService → KitConfigModule без повторного разбора (E3)
+│   │   ├── tokens.ts                  #   KIT_METRICS, KIT_LOGGER — токены ядра HTTP (E3)
 │   │   ├── ids.ts                     #   ulid, newId (эталон O); реэкспорт — /database
 │   │   └── metadata.ts                #   ключи метаданных декораторов (Idempotent → @Api) без цикла http ↔ idempotency
 │   ├── config/                        # "./config" — E1 (§3.1); zod, @nestjs/common, @nestjs/config
@@ -58,7 +60,7 @@ verdeect-kit/
 │   │   ├── define-env.ts              #   defineEnv, withBaseChecks
 │   │   ├── parse-env.ts               #   parseEnv, InvalidEnvironmentError (пути через точку, без значений)
 │   │   ├── cli-schemas.ts             #   migrateEnvSchema, prepareEnvSchema
-│   │   └── kit-config.module.ts       #   KitConfigModule.forRoot — перечитывает env на каждый контекст
+│   │   └── kit-config.module.ts       #   KitConfigModule.forRoot — разбор env при сборке каждого контекста (load)
 │   ├── observability/                 # "./observability" — E2 (§3.2); nestjs-pino, pino, @prometheus-io/client, @sentry/nestjs
 │   │   ├── redaction.ts               #   SENSITIVE_KEYS, KitRedaction, развёртка на уровни 0–2
 │   │   ├── sanitize-error.ts          #   sanitizeError, registerErrorSanitizer (эталон O)
@@ -70,13 +72,15 @@ verdeect-kit/
 │   │   ├── metrics-server.ts          #   MetricsServer: /health, /metrics на node:http
 │   │   └── lifecycle.ts               #   KitLifecycle: шаги 1–5, общий срок, сторож
 │   ├── http/                          # "./http" — E3 (§3.5); @nestjs/platform-fastify, fastify, @verdeect/auth
-│   │   ├── bootstrap-service.ts       #   parseEnv → логгер → createHttpApp → KitLifecycle шаг 2 → listen
-│   │   ├── create-http-app.ts         #   Fastify, заголовки безопасности API, traceId, /ok, ROUTE_NOT_FOUND
+│   │   ├── index.ts
+│   │   ├── bootstrap-service.ts       #   parseEnv → логгер → createHttpApp → метрики (шаг 5) → listen()
+│   │   ├── create-http-app.ts         #   Fastify, заголовки безопасности API, traceId, участники http (2) и nest (3)
+│   │   ├── kit-http-core.module.ts    #   внутренний глобальный модуль: логгер, HealthRegistry, KitLifecycle, метрики, фильтр, /ok
 │   │   ├── errors.ts                  #   kitErrors, defineErrors, DomainError
 │   │   ├── zod-validation.pipe.ts
 │   │   ├── kit-exception.filter.ts    #   эталон O
 │   │   ├── pagination.ts              #   keyset (эталон I)
-│   │   └── api/                       #   @Api, сборка OpenAPI 3.1 (z.toJSONSchema)
+│   │   └── api/                       #   api.decorator.ts (@Api), openapi-document.ts (OpenAPI 3.1, z.toJSONSchema)
 │   ├── database/                      # "./database" — E4 (§3.3); pg через loadPeer, drizzle-orm
 │   │   ├── kit-database.module.ts     #   пулы основной и чтения, DRIZZLE, DRIZZLE_READ, пробы, шаг 4
 │   │   ├── db.ts                      #   Db.transaction/read/readGlobal/afterCommit/setLocal (эталон O)
@@ -102,10 +106,12 @@ verdeect-kit/
 │   │   ├── tcp-proxy.ts · timing-guard.ts · timeout-scale.ts · worker-scope.ts (E4)
 │   │   ├── repo-files.ts              #   поиск и разбор compose, env_file, CI, Dockerfile, package.json, redaction.ts
 │   │   ├── repo-conventions.ts        #   assertRepoConventions — все правила с E1
-│   │   └── …                          #   createTestApp, expectProblem, assertStrictTenantIsolation, expectOutbox — по этапам
+│   │   ├── create-test-app.ts         #   createTestApp — @nestjs/testing через loadPeer при вызове (E3)
+│   │   ├── expect-problem.ts · expect-matches-api.ts   # E3; ajv — только здесь
+│   │   └── …                          #   assertStrictTenantIsolation, expectOutbox — по этапам
 │   └── cli/                           # bin verdeect-kit
 │       ├── main.ts                    #   разбор команды → динамический import() обработчика
-│       └── commands/                  #   db.ts, openapi.ts, rabbitmq.ts, crypto.ts, redis.ts
+│       └── commands/                  #   openapi.ts (E3); db.ts, rabbitmq.ts, crypto.ts, redis.ts — по этапам
 ├── test/
 │   ├── unit/<подпуть>/                # U: без сети и Docker
 │   ├── integration/<подпуть>/         # I: Testcontainers через собственный startTestStack
@@ -163,10 +169,10 @@ verdeect-kit/
 | `messaging` | `observability`, `config`, `internal` | `database` (`Db`, `DbContext`) | `amqplib`, `amqp-connection-manager`; `pg` — только в `forRoot` |
 | `crypto` | `config`, `internal`, `node:crypto` | — | — |
 | `redis` | `http` (`DomainError`), `observability`, `config`, `internal` | — | `ioredis` |
-| `testing` | любой подпуть; `yaml`, `semver`, `shell-quote` (только `testing`) | — | `testcontainers`, `vitest` |
-| `cli` | любой подпуть, через динамический `import()` в обработчике команды | — | по команде |
+| `testing` | любой подпуть; `yaml`, `semver`, `shell-quote`, `ajv` (только `testing`) | — | `testcontainers`, `vitest`, `@nestjs/testing` |
+| `cli` | любой подпуть или внутренний модуль пакета (`http/api/openapi-document`) через динамический `import()` в обработчике команды | — | по команде |
 
-- ✅ Опциональный peer грузится только через `await loadPeer('<lib>', '<подпуть>')` на верхнем уровне модуля подпути. В ESM отсутствующий статический импорт падает ещё при связывании, до любого кода. Тогда вместо текста AC-1.2 потребитель увидит `ERR_MODULE_NOT_FOUND`.
+- ✅ Опциональный peer грузится только через `await loadPeer('<lib>', '<подпуть>')` на верхнем уровне модуля подпути. В ESM отсутствующий статический импорт падает ещё при связывании, до любого кода. Тогда вместо текста AC-1.2 потребитель увидит `ERR_MODULE_NOT_FOUND`. Исключение — `@nestjs/testing`: он грузится `loadPeer` внутри `createTestApp`, поэтому `/testing` импортируется и без него (PRD v1.13 NFR-3).
 - ✅ `import type` из опционального peer допустим, если тип не выходит в публичный `.d.ts` подпути, который должен грузиться без этого peer.
 - ✅ `messaging` получает `Db` экземпляром через DI от `KitDatabaseModule`, а не импортом значения. Чистые функции, нужные обоим (`newId`, распознавание ошибок), лежат в `internal`.
 - ✅ `@Idempotent` пишет метаданные по ключу из `internal/metadata.ts`, `@Api` их читает. Так `http` не импортирует `idempotency`.
@@ -193,10 +199,12 @@ verdeect-kit/
   4. Отказ на любом шаге — `failStartup`.
 - **Конфигурация → модули пакета:** модули читают ключи через типы `KitBaseEnv`, `KitDatabaseEnv` и т. д. Своих `process.env` в модулях нет, кроме `initSentry` (он работает до Nest) и CLI (свои схемы).
 - **Жизненный цикл:** каждый ресурс регистрируется в `KitLifecycle` на своём шаге:
-  - шаг 2 — HTTP-сервер (`/http`);
-  - шаг 3 — подписчики, relay, очистки;
+  - шаг 2 — HTTP-сервер (`/http`, участник `http`: `server.close()` Fastify) и участники сервиса (потоки SSE) — параллельно;
+  - шаг 3 — участник `nest` (исходный `app.close()` Nest: `onModuleDestroy` → `beforeApplicationShutdown` → адаптер → `onApplicationShutdown`), подписчики, relay, очистки;
   - шаг 4 — пулы БД, RabbitMQ, Redis;
   - шаг 5 — `MetricsServer`.
+  - `app.close()` экземпляра = `lifecycle.close()` (программная остановка без сторожа и `exit`); сигналы ОС ловит только `KitLifecycle.listen()` из `bootstrapService`, `enableShutdownHooks()` не вызывается.
+  - Правило для модулей kit E4–E8: закрытие в `beforeApplicationShutdown` — шаг 3, в `onApplicationShutdown` — шаг 4; оба вызываются внутри участника `nest`.
 
   Общий срок и сторож — в `observability`. Подпути не вызывают `process.exit` сами.
 - **Здоровье и метрики:** подпути регистрируют пробы в `HealthRegistry` (БД — критичная, Redis — некритичная) и пишут метрики через реестр `kitMetrics` экземпляра приложения. Глобального реестра `@prometheus-io/client` нет.

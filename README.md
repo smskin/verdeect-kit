@@ -1,6 +1,6 @@
 # @verdeect/kit
 
-Общий инфраструктурный пакет NestJS-сервисов Вердикта 2.0: схема окружения, тестовый контур, а в следующих этапах — наблюдаемость, HTTP, БД с RLS, идемпотентность, сообщения, шифр и Redis. Один пакет с подпутями и одной версией заменяет копии `src/shared/**` в сервисах. Требования — [requirements/0000-kit/prd.md](requirements/0000-kit/prd.md).
+Общий инфраструктурный пакет NestJS-сервисов Вердикта 2.0: схема окружения, тестовый контур, наблюдаемость, HTTP, а в следующих этапах — БД с RLS, идемпотентность, сообщения, шифр и Redis. Один пакет с подпутями и одной версией заменяет копии `src/shared/**` в сервисах. Требования — [requirements/0000-kit/prd.md](requirements/0000-kit/prd.md).
 
 ## Совместимость
 
@@ -24,11 +24,12 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 
 Опциональные peer нужны только подпути, который их использует. Без них подпуть не импортируется и называет библиотеку: «`@verdeect/kit/<подпуть>` требует `<библиотека>` — добавьте в зависимости сервиса» (AC-1.2).
 
-| Подпуть    | Опциональные peer          |
-| ---------- | -------------------------- |
-| `/config`  | —                          |
-| `/testing` | `testcontainers`, `vitest` |
-| остальные  | в своих этапах             |
+| Подпуть    | Опциональные peer                                                                       |
+| ---------- | --------------------------------------------------------------------------------------- |
+| `/config`  | —                                                                                       |
+| `/http`    | —                                                                                       |
+| `/testing` | `testcontainers`, `vitest`; `@nestjs/testing` — только для `createTestApp` (при вызове) |
+| остальные  | в своих этапах                                                                          |
 
 ## Подпути
 
@@ -37,7 +38,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | `/config`        | E1   | готов, в `[Unreleased]` |
 | `/testing`       | E1   | готов, в `[Unreleased]` |
 | `/observability` | E2   | готов, в `[Unreleased]` |
-| `/http`          | E3   | в своём этапе           |
+| `/http`          | E3   | готов, в `[Unreleased]` |
 | `/database`      | E4   | в своём этапе           |
 | `/idempotency`   | E4   | в своём этапе           |
 | `/messaging`     | E5   | в своём этапе           |
@@ -107,7 +108,7 @@ export class AppModule {}
 
 ## Наблюдаемость
 
-`@verdeect/kit/observability` (prd.md §3.2) — логи, GlitchTip, `/health` и `/metrics`, остановка. Nest-модуля нет: классы собирает сервис (в E3 — `bootstrapService`).
+`@verdeect/kit/observability` (prd.md §3.2) — логи, GlitchTip, `/health` и `/metrics`, остановка. Nest-модуля нет: классы собирает `bootstrapService` (`/http`) или сам сервис.
 
 **Ранний `instrument.ts`.** Интеграции `@sentry/nestjs` требуют инициализации до загрузки приложения, поэтому `initSentry` вызывается в отдельном файле, который подключается через `node --import`:
 
@@ -137,7 +138,9 @@ export const redaction: KitRedaction = {
 };
 ```
 
-**Логгер.** `createLoggerOptions` возвращает `Params` `nestjs-pino` с кортежем `[options, stream]`. Логгер вне Nest — `pino(...params.pinoHttp)`. На Fastify генератор trace-id передаётся и адаптеру: `new FastifyAdapter({genReqId: params.pinoHttp[0].genReqId})` (в E3 — `createHttpApp`).
+**Логгер.** `createLoggerOptions` возвращает `Params` `nestjs-pino` с кортежем `[options, stream]`. Логгер вне Nest — `pino(...params.pinoHttp)`. На Fastify генератор trace-id передаётся и адаптеру: `new FastifyAdapter({genReqId: params.pinoHttp[0].genReqId})` — так делает `createHttpApp`.
+
+**Один журнал доступа на процесс.** `nestjs-pino` 5.3 создаёт один pino-http на процесс (первая конфигурация выигрывает), сбросить его пакет не даёт. Сервис — одно приложение на процесс, и это не мешает: опции журнала доступа (`trustTraceparent` для строки доступа, `quietRoutes`, `redaction`) берутся из первого созданного приложения. Логгер ядра каждого приложения (`KitLifecycle`, `HealthRegistry`, сервер метрик) и trace-id адаптера — свои. В тестах сервиса `createTestApp` с другими опциями логгера (`trustTraceparent`, `quietRoutes`, `redaction`) кладите в отдельный файл Vitest: каждый файл идёт в своём процессе.
 
 **`/health` и `/metrics`.** `MetricsServer` слушает `METRICS_PORT` (`node:http`, вне Nest; `0` — порт выбирает ОС). Пробы регистрируют владельцы зависимостей: `health.register(name, probe, {critical})`. Ошибка прослушивания (`EADDRINUSE`) — отказ `listen()`, её передают в `failStartup`.
 
@@ -146,8 +149,8 @@ export const redaction: KitRedaction = {
 | Шаг | Что                                                                       |
 | --- | ------------------------------------------------------------------------- |
 | 1   | `/health` → 503, пауза `SHUTDOWN_DRAIN_MS` (выполняет сам `KitLifecycle`) |
-| 2   | HTTP не принимает новые соединения, начатые дорабатывают                  |
-| 3   | подписчики, relay, очистка                                                |
+| 2   | HTTP не принимает новые соединения, начатые дорабатывают; потоки SSE      |
+| 3   | хуки модулей Nest, подписчики, relay, очистка                             |
 | 4   | пулы БД, RabbitMQ, Redis                                                  |
 | 5   | сервер метрик                                                             |
 
@@ -168,6 +171,91 @@ export const redaction: KitRedaction = {
 ```
 
 Пороги: `outbox_lag_seconds` (5 с за 1m), `outbox_pending` (1000 за 5m), `events_consumed` (DLQ за 15m > 0), `db_pool_wait_timeouts` (за 5m > 0), `rate_limit_unavailable` (за 5m > 0).
+
+## HTTP
+
+`@verdeect/kit/http` (prd.md §3.5) — точка входа сервиса, словарь ошибок, проверка ввода, keyset-пагинация и OpenAPI.
+
+**`main.ts`.** `bootstrapService` разбирает окружение **до** создания приложения: при неверном окружении — `failStartup`, порт не открывается. Затем логгер, `createHttpApp`, сервер метрик (`METRICS_PORT`, шаг 5), `KitLifecycle.listen()` и `PORT` на `0.0.0.0`. `instrument.ts` подключается через `node --import`; если `SENTRY_DSN` задан, `NODE_ENV = production`, а Sentry не подключён — `warn` `SENTRY_NOT_PRELOADED`, запуск продолжается.
+
+```ts
+// src/main.ts
+import 'reflect-metadata';
+import { bootstrapService } from '@verdeect/kit/http';
+import { AppModule } from './app.module.js';
+import { envSchema } from './env.js';
+import { redaction } from './redaction.js';
+
+await bootstrapService({ module: AppModule, service: 'files', env: envSchema, redaction });
+```
+
+```ts
+// src/app.module.ts — KitConfigModule обязателен, схема — тот же объект, что в main.ts
+@Module({ imports: [KitConfigModule.forRoot({ schema: envSchema }), ItemsModule] })
+export class AppModule {}
+```
+
+Без `KitConfigModule.forRoot({schema})` сборка падает: «модуль сервиса не импортирует KitConfigModule.forRoot({schema})». С той же схемой `KitConfigModule` берёт окружение, разобранное `bootstrapService`, и не разбирает его повторно.
+
+Опции по роли сервиса: BFF — `logger: {trustTraceparent: false}` (trace-id всегда новый); P, O — `logger: {quietRoutes: ['/internal/…']}` (успешный ответ — `debug`); O — `redaction`; `http: {bodyLimit}` — лимит тела (по умолчанию — лимит Fastify 1 MiB, больше — 413). Журнал доступа — один на процесс, см. «Один журнал доступа на процесс» в разделе «Наблюдаемость».
+
+`createHttpApp` даёт: заголовки `X-Content-Type-Options: nosniff` и `Referrer-Policy: no-referrer` на каждом ответе (HSTS, CSP и `no-store` для HTML — сервис и Traefik), trace-id, `GET /ok` (`{status: 'ok'}`, `no-store`, вне журнала доступа и OpenAPI), `KitExceptionFilter`, 404 `ROUTE_NOT_FOUND`. Модули сервиса внедряют `KitLifecycle` и `HealthRegistry`.
+
+**Остановка.** `app.close()` = `lifecycle.close()`: шаги 1–5 без сторожа и `exit`. Шаг 2 — участник `http` (`server.close()` Fastify, keep-alive закрываются) и участники сервиса параллельно; шаг 3 — участник `nest` (исходный `app.close()` Nest: `onModuleDestroy` → `beforeApplicationShutdown` → адаптер → `onApplicationShutdown`). Правило для модулей: `beforeApplicationShutdown` — шаг 3, `onApplicationShutdown` — шаг 4. `enableShutdownHooks()` не вызывайте: сигналы ловит `KitLifecycle.listen()`.
+
+Поток SSE (это «`onStopAccepting`» §3.2) закрывает участник шага 2 сервиса вызовом `reply.raw.end()` или `destroy()`; иначе остановка ждёт до срока:
+
+```ts
+@Injectable()
+export class EventsStream implements OnModuleInit {
+    private readonly streams = new Set<ServerResponse>();
+
+    constructor(private readonly lifecycle: KitLifecycle) {}
+
+    onModuleInit(): void {
+        this.lifecycle.register(
+            { name: 'sse', stop: () => this.streams.forEach((raw) => raw.end()) },
+            { step: 2 },
+        );
+    }
+}
+```
+
+**Ошибки.** Словарь — `defineErrors({...kitErrors, ITEM_NOT_FOUND: {status: 404, message: 'Запись не найдена'}})` один раз на процесс; повторный вызов объединяет словари, тот же код с другим статусом — ошибка при определении, код пакета с другим статусом — ошибка компиляции. `throw new DomainError('ITEM_NOT_FOUND', {id})` → `{error: {code, message, details}}`, статус словаря, `warn` без GlitchTip. Доменные 4xx — только `DomainError`: `HttpException` без тела с другим статусом, чем 400/401/403/404/413/415/429, — 500 `INTERNAL_ERROR` (ошибка разработчика). Тело `{error}` guard'ов `@verdeect/auth` и `@verdeect/platform-client` проходит без изменений. Срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1`, `verdeect_db_pool_wait_timeouts_total{pool="unknown"}`: имя пула фильтр не знает, метку с именем пула даст `/database` (E4).
+
+| Код                      | Статус | Код                        | Статус |
+| ------------------------ | ------ | -------------------------- | ------ |
+| `UNAUTHENTICATED`        | 401    | `RATE_LIMITED`             | 429    |
+| `FORBIDDEN`              | 403    | `INTERNAL_ERROR`           | 500    |
+| `VALIDATION_FAILED`      | 422    | `SERVICE_UNAVAILABLE`      | 503    |
+| `BAD_REQUEST`            | 400    | `SERVICE_STOPPING`         | 503    |
+| `PAYLOAD_TOO_LARGE`      | 413    | `PLATFORM_UNAVAILABLE`     | 503    |
+| `UNSUPPORTED_MEDIA_TYPE` | 415    | `IDEMPOTENCY_KEY_REUSED`   | 422    |
+| `ROUTE_NOT_FOUND`        | 404    | `IDEMPOTENCY_IN_PROGRESS`  | 409    |
+| `VERSION_CONFLICT`       | 409    | `IDEMPOTENCY_KEY_REQUIRED` | 400    |
+
+**Ввод.** `@Body(new ZodValidationPipe(schema))` — ошибка → 422 `VALIDATION_FAILED`, `details.issues: [{path, code}]` (путь через точку, без значений). Неразобранный JSON — 400 `BAD_REQUEST`, неподдерживаемый `Content-Type` — 415, тело больше лимита — 413.
+
+**Пагинация.** `PageQuerySchema` (`cursor`, `limit` 1–200, умолчание 100), чтение `limit + 1` строк, `pageOf(rows, limit, keyOf)` → `{items, nextCursor}`; условие — `afterCursor([t.createdAt, t.id], decodeCursor(query.cursor, 2), 'desc')`. Последний ключ сортировки — `primaryKey()` или `unique()`, все ключи сортировки — `NOT NULL` (`null` в курсоре — 422); неверный курсор — 422 `path: cursor`.
+
+**OpenAPI.** `@Api({summary, response?, envelope?, errors?, extra?})` на маршруте; `verdeect-kit openapi --out contracts/openapi.json --module dist/app.module.js#AppModule` строит OpenAPI 3.1 по метаданным без запуска приложения (окружение не нужно), `info` — из `package.json`. Тело, query и path — из `ZodValidationPipe`, ответ — `response`, ошибки — `errors` + стандартные 400/422/429 (401/403 — у защищённых). `security` — по `@UseGuards(VerdeectAuthGuard)` и `Require*` из `@verdeect/auth/nest`; защиту через `APP_GUARD` генерация не видит, поэтому `@UseGuards` ставится на контроллер, а маршрут без guard'а документируется без `security`. Что генерация не выражает (SSE, сырой прокси) — `extra` или `contracts/openapi.extra.json` рядом с `--out`. Снимок `contracts/openapi.json` коммитится; тест сравнивает его с документом из кода байт в байт, поэтому добавьте его в `.prettierignore` сервиса — иначе форматирование Prettier разойдётся с выводом CLI:
+
+```gitignore
+# .prettierignore
+contracts/openapi.json
+```
+
+Результат — `{"written": "<путь>", "operations": N}` в stdout, выход 0. Ошибка — `{"error": {"code", "message"}}` в stdout, выход 1:
+
+| Код                    | Когда                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `USAGE`                | нет `--out` или неизвестная опция                                                    |
+| `MODULE_NOT_FOUND`     | нет файла `--module` или в нём нет экспорта (`#<экспорт>`, по умолчанию `AppModule`) |
+| `INVALID_PACKAGE_JSON` | нет `package.json` в cwd, он не разбирается или без `name` / `version`               |
+| `INVALID_EXTRA`        | `contracts/openapi.extra.json` — не объект JSON                                      |
+| `INVALID_ENVIRONMENT`  | неверные `LOG_LEVEL` или `REPLICA_ID` (в `keys` — имена, без значений)               |
+| `OPENAPI_FAILED`       | прочий сбой сборки документа (например, код из `errors` не зарегистрирован)          |
+| `UNKNOWN_COMMAND`      | команда не `openapi`                                                                 |
 
 ## Тесты сервиса
 
@@ -216,6 +304,8 @@ export default startTestStack({ service: 'files', postgres: true, mailpit: true 
 - `stop_grace_period` — после подстановки `${VAR:-default}`; переменная без умолчания — «значение не определено»; нет нигде — 10 с Docker. `SHUTDOWN_TIMEOUT_MS` — целое или `${NAME:-N}`; нет нигде — 10000; иное — «значение не определено или не целое число мс» (без значения в тексте). В `env_file` у значения без кавычек ` #…` — комментарий, как в Compose.
 - `image:` в compose разбирается как значение: подстановка `${VAR:-default}`, без префикса `docker.io/library/` или `docker.io/`, дайджест `@sha256:…` отдельно, без тега — `latest`. Неразрешённая переменная в теге образа из `TEST_IMAGES` — нарушение «тег не определён»; образы вне `TEST_IMAGES` и с неопределяемым репозиторием не проверяются. В тексте CI префикс `docker.io/library/` и `docker.io/` снимается так же, тег учитывается, только если в нём есть точка или буква (`postgres:5432` — адрес, а не образ).
 
+HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута (Ajv 2020, тот же построитель, что у CLI).
+
 Ещё в `/testing`: `tcpProxy(target)` — обрывы (`break`, `restore`, `blackhole`, `freeze`, `blackholeOn`) и задержки (`delayOn`) TCP; `timingGuard` — `globalSetup` замеров времени (нагрузка, ядра, отказ при запущенном e2e-контуре `verdeect-*-e2e`); `TEST_TIMEOUT_SCALE` — множитель тайм-аутов конфигов Vitest.
 
 ## Развёртывание
@@ -259,7 +349,7 @@ export default startTestStack({ service: 'files', postgres: true, mailpit: true 
 - `withBaseChecks` — проверки между ключами пакета (`PORT` ≠ `METRICS_PORT`, `SHUTDOWN_DRAIN_MS` < `SHUTDOWN_TIMEOUT_MS`).
 - `parseEnv` — разбор окружения схемой; ошибка — `InvalidEnvironmentError`.
 - `InvalidEnvironmentError` — `{code: 'INVALID_ENVIRONMENT', keys}`, без значений.
-- `KitConfigModule` — `forRoot({schema})`: глобальный `ConfigModule`, окружение перечитывается при каждой сборке контекста.
+- `KitConfigModule` — `forRoot({schema})`: глобальный `ConfigModule`, окружение разбирается при каждой сборке контекста (при `bootstrapService` — без повторного разбора), `process.env` не меняется.
 - `migrateEnvSchema` — окружение CLI `db migrate`: `DATABASE_MIGRATOR_URL`, `LOG_LEVEL`.
 - `prepareEnvSchema` — окружение CLI `db prepare`: `DATABASE_ADMIN_URL`, `DB_OWNER_PASSWORD`, `DB_APP_PASSWORD`, `LOG_LEVEL`.
 - `port` — порт 0–65535.
@@ -301,8 +391,39 @@ export default startTestStack({ service: 'files', postgres: true, mailpit: true 
 - `KitShutdownParticipant` — участник `{name, stop()}`.
 - `KitShutdownStep` — шаг участника `2 | 3 | 4 | 5`.
 
+### @verdeect/kit/http
+
+- `bootstrapService` — `bootstrapService({module, service, env, logger?, http?, redaction?})`: точка входа `main.ts`.
+- `KitBootstrapOptions` — тип опций `bootstrapService`.
+- `createHttpApp` — `createHttpApp({module, service, bodyLimit?, securityHeaders?})`: Fastify-приложение Nest сервиса.
+- `KitHttpAppOptions` — тип опций `createHttpApp`.
+- `kitErrors` — общие коды пакета `{status, message}`.
+- `defineErrors` — `defineErrors({...kitErrors, …})`: словарь сервиса на процесс.
+- `KitErrorDictionary` — тип словаря `код → {status, message}`.
+- `KitErrorEntry` — тип записи словаря.
+- `DomainError` — `new DomainError(code, details?, {cause}?)`: ошибка домена со статусом из словаря, `toBody()`.
+- `KitExceptionFilter` — фильтр ошибок (регистрирует `createHttpApp`; BFF собирает свой на `DomainError`).
+- `ZodValidationPipe` — `new ZodValidationPipe(schema)`: 422 `VALIDATION_FAILED`.
+- `PageQuerySchema` — `{cursor?, limit}` (умолчание 100, максимум 200).
+- `Page` — тип ответа `{items, nextCursor}`.
+- `pageOf` — `pageOf(rows, limit, keyOf)`: страница из `limit + 1` строк.
+- `encodeCursor` — курсор base64url от JSON ключей.
+- `decodeCursor` — `decodeCursor(cursor, arity)`: ключи или `null`; неверный — 422 `path: cursor`.
+- `afterCursor` — `afterCursor(cols, cursor, dir)`: условие Drizzle «после курсора».
+- `Api` — `@Api({summary, response?, envelope?, errors?, extra?})`: маршрут в OpenAPI.
+- `KitApiOptions` — тип опций `@Api`.
+
+CLI: `verdeect-kit openapi --out <файл> [--module <файл>#<экспорт>]` — результат `{written, operations}` в stdout; нет файла, экспорта или `version` в `package.json` — JSON `{error: {code}}` и выход 1.
+
 ### @verdeect/kit/testing
 
+- `createTestApp` — `createTestApp({module, service, overrides?, bodyLimit?})`: приложение сервиса для тестов.
+- `KitTestAppOptions` — тип опций `createTestApp`.
+- `KitTestOverride` — подмена провайдера `{provide, useValue}`.
+- `expectProblem` — `expectProblem(res, {status, code, issues?})`: утверждение об ответе-ошибке.
+- `KitExpectedProblem` — тип ожидаемой ошибки.
+- `KitTestResponse` — тип ответа `{statusCode, json()}`.
+- `expectMatchesApi` — `expectMatchesApi(res, [Controller, 'method'])`: ответ по схеме `@Api`.
 - `TEST_IMAGES` — образы тестов и compose сервисов.
 - `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон, адреса через `provide`.
 - `assertRepoConventions` — проверка репозитория сервиса по правилам выше.

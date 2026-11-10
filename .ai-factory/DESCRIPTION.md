@@ -69,7 +69,8 @@ npm-библиотека для NestJS-сервисов Вердикта 2.0. О
   - `ioredis` 6.0.0 — `/redis`;
   - `amqplib` 2.2.0 + `amqp-connection-manager` 5.0.1 — `/messaging`;
   - `testcontainers` 12.2.1, `vitest` 5.0.4 — `/testing`.
-- **`dependencies`:** только внутренние детали, точные версии: `semver` 7.8.6 (правило `peer-versions`), `yaml` 2.9.1 (разбор compose в `assertRepoConventions`), `shell-quote` 1.12.0 (разбор команд запуска в `assertRepoConventions`; CommonJS, именованный импорт из ESM; импортируется только из `/testing`).
+  - `@nestjs/testing` 12.1.3 (`^12.1.0`) — только `createTestApp` из `/testing`, грузится при вызове: `/testing` импортируется и без него (PRD v1.13 NFR-3).
+- **`dependencies`:** только внутренние детали, точные версии: `semver` 7.8.6 (правило `peer-versions`), `yaml` 2.9.1 (разбор compose в `assertRepoConventions`), `shell-quote` 1.12.0 (разбор команд запуска в `assertRepoConventions`; CommonJS, именованный импорт из ESM; импортируется только из `/testing`). `ajv` 8.20.0 — `Ajv2020` в `expectMatchesApi`, импортируется только из `/testing` (KT-15 п. 4).
 - **Миграции:** SQL генерирует `drizzle-kit` 0.31.11 в сервисе. Пакет даёт фабрики схемы и `runMigrations`.
 - **Тесты (Vitest 5.0.4).** Метаданные декораторов для DI пишет `unplugin-swc`. Уровни (§5):
   - U — `test/unit/<подпуть>`, без контейнеров;

@@ -1,4 +1,4 @@
-// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1, E2; §3.2 — files: alerts).
+// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1–E3, bin E3; §3.2 — files: alerts).
 // Образец — verdeect-platform-client test/unit/package-manifest.spec.ts.
 import { readFileSync } from 'node:fs';
 import semver from 'semver';
@@ -46,13 +46,21 @@ const OPTIONAL_PEERS: Record<string, string> = {
     'amqp-connection-manager': '^5.0.0',
     testcontainers: '^12.2.0',
     vitest: '^5.0.0',
+    '@nestjs/testing': '^12.1.0',
 };
 
-describe('AC-1.1: точки входа пакета (E1, E2)', () => {
-    it('AC-1.1: exports — ровно ./config, ./observability, ./testing, ./package.json', () => {
+describe('AC-1.1: точки входа пакета (E1–E3)', () => {
+    it('AC-1.1: exports — ровно ./config, ./http, ./observability, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
-            ['./config', './observability', './package.json', './testing'].sort(),
+            ['./config', './http', './observability', './package.json', './testing'].sort(),
         );
+    });
+
+    it('AC-1.1: ./http — {types, default} на dist/http/index.*', () => {
+        expect(manifest.exports['./http']).toEqual({
+            types: './dist/http/index.d.ts',
+            default: './dist/http/index.js',
+        });
     });
 
     it('AC-1.1: ./config — {types, default} на dist/config/index.*', () => {
@@ -82,8 +90,8 @@ describe('AC-1.1: точки входа пакета (E1, E2)', () => {
         });
     });
 
-    it('AC-1.1: нет bin и корневого "." в E1', () => {
-        expect(manifest.bin).toBeUndefined();
+    it('AC-1.1: bin — ровно {verdeect-kit: ./dist/cli/main.js}, нет main и корневого "."', () => {
+        expect(manifest.bin).toEqual({ 'verdeect-kit': './dist/cli/main.js' });
         expect(manifest.main).toBeUndefined();
         expect(manifest.exports['.']).toBeUndefined();
     });
@@ -99,7 +107,7 @@ describe('NFR-3: зависимости', () => {
         expect(required).toEqual(REQUIRED_PEERS);
     });
 
-    it('NFR-3: опциональные peer — pg, ioredis, amqplib, amqp-connection-manager, testcontainers, vitest, у всех optional: true', () => {
+    it('NFR-3: опциональные peer — pg, ioredis, amqplib, amqp-connection-manager, testcontainers, vitest, @nestjs/testing, у всех optional: true', () => {
         const optional = Object.fromEntries(
             Object.entries(manifest.peerDependencies).filter(
                 ([name]) => manifest.peerDependenciesMeta[name]?.optional === true,
@@ -111,8 +119,9 @@ describe('NFR-3: зависимости', () => {
         );
     });
 
-    it('NFR-3: peer не дублируются в dependencies; dependencies — только semver, shell-quote и yaml, точные версии', () => {
+    it('NFR-3: peer не дублируются в dependencies; dependencies — только ajv, semver, shell-quote и yaml, точные версии', () => {
         expect(manifest.dependencies).toEqual({
+            ajv: '8.20.0',
             semver: '7.8.6',
             'shell-quote': '1.12.0',
             yaml: '2.9.1',

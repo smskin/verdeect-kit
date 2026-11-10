@@ -70,8 +70,8 @@ function newTraceId(): string {
     return randomBytes(16).toString('hex');
 }
 
-/** trace-id из `traceparent` (если доверяем) или новый. */
-function traceIdGenerator(trust: boolean): TraceIdGenerator {
+/** trace-id из `traceparent` (если доверяем) или новый. Внутренняя: генератор адаптера Fastify в `createHttpApp`. */
+export function traceIdGenerator(trust: boolean): TraceIdGenerator {
     return (req) => {
         if (!trust) {
             return newTraceId();
@@ -104,7 +104,7 @@ function accessLogLevel(
  *
  * На Fastify `genReqId` из `pinoHttp` не вызывается: Fastify ставит свой `request.id`, а pino-http оставляет уже
  * заданный (`req.id = req.id || genReqId(…)`). Поэтому HTTP-адаптер получает тот же генератор:
- * `new FastifyAdapter({genReqId: params.pinoHttp[0].genReqId})` (в E3 это сделает `createHttpApp`).
+ * `new FastifyAdapter({genReqId: params.pinoHttp[0].genReqId})` (так делает `createHttpApp`).
  */
 export function createLoggerOptions(options: KitLoggerOptions): KitLoggerParams {
     assertServiceName(options.service, 'createLoggerOptions');
