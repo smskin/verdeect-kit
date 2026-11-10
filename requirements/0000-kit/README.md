@@ -2,7 +2,7 @@
 
 Общий инфраструктурный npm-пакет сервисов Вердикт 2.0: конфигурация, наблюдаемость и запуск, HTTP-каркас, БД с RLS, идемпотентность, outbox/inbox и RabbitMQ, шифр секретов, Redis, тестовый контур. Код переносится из копий в Identity, BFF, Platform, Orchestrator (эталон — `files/inventory.md`).
 
-> Режим: INIT · Ревизия: r8 · 2026-11-10 · PRD v1.13 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
+> Режим: INIT · Ревизия: r9 · 2026-11-10 · PRD v1.14 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
 
 ## Файлы
 
@@ -58,3 +58,4 @@ UI нет, макетов нет. Пакет `@verdeect/events` — отдель
 - r6 — 2026-11-10: правило команды «на запрет» по построению — обязательный распознанный запуск у приложения, main.* у любой команды, нераспознанный -c оболочки и опция обёртки вне списка — «команда не распознана»; длинные опции и -O/+O оболочки; переменные после файла входа не проверяются (§3.8, AC-1.8).
 - r7 — 2026-11-10: обязательный peer prom-client (deprecated) → @prometheus-io/client (NFR-3, §3.2, §10).
 - r8 — 2026-11-10: вопросы планирования E3 — опциональный peer @nestjs/testing (createTestApp с overrides), CLI openapi --module, defineErrors регистрирует словарь на процесс, KitConfigModule разбирает окружение при сборке контекста; PRD v1.13.
+- r9 — 2026-11-10: вопросы планирования E4 — функция очистки идемпотентности idempotency_purge (SECURITY DEFINER) и помощник idempotencyPurgeSql, проверка функции в assertStrictTenantIsolation, workerScope().tenant — слаг компании, db prepare --service, @Idempotent без принципала — 500; PRD v1.14.
