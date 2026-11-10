@@ -1,0 +1,186 @@
+# verdeect-bff — контур e2e (prd.md §14 п. 3, §15): стенд Playwright на контуре e2e Identity.
+#
+# Запуск: make e2e-up (= docker compose --env-file .env.e2e -f compose.e2e.yml up -d --wait --build).
+# Порядок: сначала контур Identity (make -C ../verdeect-identity build, затем e2e-up), потом make e2e-up —
+# он проверяет Identity, регистрирует клиентов (make e2e-register → .env.e2e) и собирает test-spa.
+#
+# Самостоятельный проект verdeect-bff-e2e, а не слой поверх compose.yml + compose.override.yml
+# (отступление от правила «Four Compose Files»): BFF подключается к сети verdeect-identity-e2e-internal,
+# а не к verdeect-internal/verdeect-edge базового файла; экземпляров два (app., admin.), а базовый
+# файл описывает один bff; сервисы разработки (bff-edge :4444, bff-redis, тома с исходниками) здесь
+# лишние и конфликтуют портами с одновременно поднятой разработкой.
+#
+# Сквозные тесты Orchestrator (OR-112): make e2e-up E2E_ORCHESTRATOR=1 — наложение compose.e2e.orchestrator.yml.
+#
+# Адреса: https://localhost:44432 (app.), https://admin.localhost:44432 (admin.);
+# /metrics и /health app. — 127.0.0.1:49201; Redis сессий — 127.0.0.1:46381 (помощники тестов).
+
+name: verdeect-bff-e2e
+
+x-bff-e2e: &bff-e2e
+  build:
+    context: .
+    target: production
+  image: verdeect-bff:e2e
+  init: true
+  # Остановка по SIGTERM ≤ 10 с (§6.4 п. 10)
+  stop_grace_period: 15s
+  environment: &bff-e2e-env
+    NODE_ENV: production
+    BFF_INSTANCE: app
+    PUBLIC_ORIGIN: https://localhost:44432
+    IDENTITY_ISSUER: https://localhost:44431
+    # Внутренний адрес Identity (§5.2, AC-2.16): BFF входит в TRUSTED_PROXIES Identity (частные диапазоны)
+    IDENTITY_INTERNAL_URL: http://identity:3000
+    OIDC_CLIENT_ID: e2e-bff
+    OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?make e2e-register}
+    SESSION_ENC_KEYS: ${SESSION_ENC_KEYS:?make e2e-register}
+    REDIS_URL: redis://bff-e2e-redis:6379
+    # Брокер контура Identity: события identity.* приходят только туда
+    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    # Адрес Caddy в сети docker динамический — доверяем частным диапазонам
+    TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    # Все браузеры сценариев приходят с адреса шлюза Docker, каждый вход — два /auth/login;
+    # сам лимит проверен H AC-6.1
+    LOGIN_RATE_LIMIT_PER_MIN: '100000'
+    LOG_LEVEL: debug
+    # GlitchTip — только production (GT02)
+    SENTRY_DSN: ''
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+    interval: 5s
+    timeout: 5s
+    retries: 12
+    start_period: 20s
+  depends_on:
+    bff-e2e-redis:
+      condition: service_healthy
+    echo:
+      condition: service_healthy
+    web-e2e:
+      condition: service_healthy
+
+services:
+  bff-e2e:
+    <<: *bff-e2e
+    environment:
+      <<: *bff-e2e-env
+      # В кавычках — строка JSON: без них YAML разберёт отображение.
+      # orchestrator и platform без контура Orchestrator не резолвятся → /api/orchestrator/*,
+      # /api/platform/* 503 (§6.4 п. 7); сеть контура подключает наложение
+      # compose.e2e.orchestrator.yml (OR-112, OR-116)
+      SERVICE_URLS: '{"identity":"http://identity:3000","web":"http://web-e2e","echo":"http://echo:3000","orchestrator":"${E2E_ORCHESTRATOR_URL:-http://orchestrator:3000}","platform":"${E2E_PLATFORM_URL:-http://platform:3000}"}'
+      # D18, как у bff-app; только здесь: в SERVICE_URLS bff-admin-e2e нет orchestrator (AC-8.5)
+      PUBLIC_API_PATHS: 'GET /api/orchestrator/v1/shares/*'
+    networks:
+      default: {}
+      identity-e2e:
+        # Адрес Back-Channel Logout клиента e2e-bff (§14 п. 2); AC-3.5 снимает алиас
+        aliases:
+          - bff-e2e
+    ports:
+      # /metrics и /health (AC-3.2, AC-3.5, AC-5.7)
+      - 127.0.0.1:49201:9100
+
+  bff-admin-e2e:
+    <<: *bff-e2e
+    environment:
+      <<: *bff-e2e-env
+      BFF_INSTANCE: admin
+      PUBLIC_ORIGIN: https://admin.localhost:44432
+      # Закреплённая компания (D8)
+      LOGIN_TENANT: _platform
+      # AC-7.6, D17: таймер бездействия 1 мин (bff-e2e — умолчание 0, UC-17 A2)
+      SESSION_IDLE_TIMEOUT_MIN: '1'
+      OIDC_CLIENT_ID: e2e-bff-admin
+      OIDC_CLIENT_SECRET: ${E2E_ADMIN_CLIENT_SECRET:?make e2e-register}
+      # D8: platform в контуре нет
+      SERVICE_URLS: '{"identity":"http://identity:3000","web":"http://web-e2e"}'
+    networks:
+      default: {}
+      identity-e2e:
+        aliases:
+          - bff-admin-e2e
+
+  bff-e2e-edge:
+    image: caddy:2.11.7-alpine
+    volumes:
+      - ./docker/caddy/Caddyfile.e2e:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    # Только loopback: Chromium резолвит localhost и admin.localhost в 127.0.0.1
+    ports:
+      - 127.0.0.1:44432:443
+    depends_on:
+      bff-e2e:
+        condition: service_healthy
+      bff-admin-e2e:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ['CMD', 'wget', '-q', '-O', '/dev/null', '--no-check-certificate', 'https://localhost/ok']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Сессии BFF обоих экземпляров (префиксы verdeect-bff:<instance>:). Не redis: в сети Identity
+  # есть свой redis; эта служба — только в default.
+  bff-e2e-redis:
+    image: redis:7.4.11-alpine
+    command:
+      ['redis-server', '--save', '', '--appendonly', 'no', '--maxmemory-policy', 'noeviction']
+    ports:
+      - 127.0.0.1:46381:6379
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Заглушка сервиса за /api/echo/* (docker/echo/server.ts)
+  echo:
+    image: node:24.22-alpine3.24
+    user: node
+    command: ['node', '/srv/server.ts']
+    volumes:
+      - ./docker/echo:/srv:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # web BFF: статика test-spa (§14 п. 5), сборка — make e2e-up
+  web-e2e:
+    image: nginx:1.30.5-alpine
+    volumes:
+      - ./docker/web-e2e/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Без сборки — ошибка, а не пустой каталог от root (иначе build:test-spa падает с EACCES)
+      - type: bind
+        source: ./tests/Browser/test-spa/dist
+        target: /usr/share/nginx/html
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1/healthz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  default: {}
+  identity-e2e:
+    external: true
+    name: verdeect-identity-e2e-internal
+
+volumes:
+  caddy-data:

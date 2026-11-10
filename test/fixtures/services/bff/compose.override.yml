@@ -1,0 +1,123 @@
+# Разработка: подхватывается автоматически `docker compose up -d`.
+#
+# Перед первым запуском:
+#   1. Поднять Identity: make -C ../verdeect-identity up (или docker compose up -d там) — BFF ходит к
+#      нему и к его RabbitMQ по сети verdeect-internal.
+#   2. Зарегистрировать в Identity клиента verdeect-bff-app с redirectUris
+#      https://localhost:4444/auth/callback, postLogoutRedirectUris https://localhost:4444/,
+#      backchannelLogoutUri http://bff-app:3000/auth/backchannel-logout (сид Identity — адреса production).
+#   3. cp .env.example .env, заполнить OIDC_CLIENT_SECRET и SESSION_ENC_KEYS (команда — в файле).
+# Адреса инфраструктуры закреплены здесь в environment: устаревший .env разработчика контур не ломает.
+# Порты хоста сдвинуты от Identity (3100, 4443, 9200, 6380); меняются через корневой .env.
+# Вход в браузере — https://localhost:4444 (TLS-край Caddy, сертификат самоподписанный — принять в
+# браузере): cookie __Host-verdeect_bff только Secure, по http сессии нет.
+#
+# После изменения pnpm-lock.yaml: docker compose build, затем удалить тома *-node-modules
+# (docker volume rm …) — иначе в контейнере останутся старые зависимости.
+
+services:
+  bff:
+    build:
+      context: .
+      target: development
+    image: verdeect-bff:development
+    volumes:
+      - .:/app
+      # node_modules — из образа (бинарники хоста и Alpine различаются).
+      - root-node-modules:/app/node_modules
+      - bff-node-modules:/app/apps/bff/node_modules
+      - identity-client-node-modules:/app/packages/identity-client/node_modules
+      # dist — в томе, на хост не пишется (файлы root): иначе сборка на хосте падает с EACCES.
+      - bff-dist:/app/apps/bff/dist
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      NODE_ENV: development
+      BFF_PORT: '3000'
+      METRICS_PORT: '9100'
+      PUBLIC_ORIGIN: https://localhost:${BFF_HTTPS_PORT:-4444}
+      IDENTITY_ISSUER: https://localhost:${IDENTITY_HTTPS_PORT:-4443}
+      # Внутренний адрес Identity (§5.2): BFF входит в его TRUSTED_PROXIES — частные диапазоны dev Identity.
+      IDENTITY_INTERNAL_URL: http://identity:3000
+      SERVICE_URLS: '{"identity":"http://identity:3000","web":"http://web"}'
+      REDIS_URL: redis://bff-redis:6379
+      # Брокер контура Identity: события identity.* приходят только туда. Соединение ленивое —
+      # без Identity BFF работает, страховка событиями выключена.
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      # Адрес Caddy в сети docker динамический — доверяем частным диапазонам.
+      TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # GlitchTip — только production (GT02).
+      SENTRY_DSN: ''
+    ports:
+      - ${BFF_HTTP_PORT:-3101}:3000
+      # Отладчик Node (--inspect) — только разработка.
+      - 127.0.0.1:${BFF_DEBUG_PORT:-9331}:9229
+      # /metrics и /health (METRICS_PORT) — отдельный сервер, на основном порту их нет.
+      - 127.0.0.1:${BFF_METRICS_PORT:-9201}:9100
+    networks:
+      # Своя сеть проекта: bff-redis, web и край не видны соседям по verdeect-internal
+      # (у Identity там свой redis — одинаковые имена дали бы DNS вперемешку).
+      default: {}
+    labels:
+      traefik.http.routers.verdeect-bff.rule: Host(`${BFF_INSTANCE:-app}.verdeect.localhost`)
+    depends_on:
+      bff-redis:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    # Первая сборка tsc в контейнере идёт дольше, чем в production.
+    healthcheck:
+      start_period: 90s
+
+  # TLS-край (https://localhost:4444): cookie __Host- требуют https. В production TLS терминирует Traefik.
+  bff-edge:
+    image: caddy:2.11.7-alpine
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Корневой сертификат tls internal сохраняется — принять в браузере один раз.
+      - caddy-data:/data
+    ports:
+      - ${BFF_HTTPS_PORT:-4444}:443
+    depends_on:
+      bff:
+        condition: service_started
+    healthcheck:
+      test:
+        ['CMD', 'wget', '-q', '-O', '/dev/null', '--no-check-certificate', 'https://localhost/ok']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # Сессии, блокировки, состояние входа (§7). noeviction — как в production: вытеснение ключа сессии
+  # = потеря входа. Без сохранения на диск: после перезапуска — повторный вход.
+  bff-redis:
+    image: redis:7.4.11-alpine
+    command:
+      ['redis-server', '--save', '', '--appendonly', 'no', '--maxmemory-policy', 'noeviction']
+    ports:
+      - 127.0.0.1:${BFF_REDIS_PORT:-6381}:6379
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Заглушка статики SPA (SERVICE_URLS.web, N2): настоящий nginx web — от чата фронтенда.
+  web:
+    image: caddy:2.11.7-alpine
+    command:
+      ['caddy', 'respond', '--listen', ':80', 'verdeect-bff: заглушка web вместо статики SPA']
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://localhost/']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+volumes:
+  caddy-data:
+  root-node-modules:
+  bff-node-modules:
+  identity-client-node-modules:
+  bff-dist:

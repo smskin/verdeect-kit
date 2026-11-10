@@ -1,3 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+.npmrc
+# Serena: локальный кэш индекса
+.serena/cache/
 
 # Windows: метаданные загрузки
 *:Zone.Identifier

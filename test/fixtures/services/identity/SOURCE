@@ -1,0 +1,12 @@
+repository: /home/administrator/projects/verdeect2/verdeect-identity
+commit: 895b05c
+files:
+  - .gitlab-ci.yml
+  - Dockerfile
+  - compose.e2e.yml
+  - compose.override.yml
+  - compose.production.yml
+  - compose.yml
+  - package.json
+  - apps/identity-pages/package.json
+  - apps/identity/package.json

@@ -1,0 +1,182 @@
+// Flat config пакета @verdeect/kit: стиль, TSDoc публичного API, границы подпутей (.ai-factory/ARCHITECTURE.md)
+// и правила AC-9.4 (no-console — NFR-8; pgSchema с литералом и имена <svc>.<имя> — NFR-2). Образец — verdeect-platform-client.
+import js from '@eslint/js';
+import prettier from 'eslint-config-prettier';
+import jsdoc from 'eslint-plugin-jsdoc';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+// Известные сервисы Вердикта (AC-9.4). Расширение списка — через PRD.
+const SERVICES = 'identity|platform|orchestrator|bff|files|media';
+const SERVICE_NAME_MESSAGE =
+    'Имя вида <svc>.<имя> известного сервиса в коде пакета (NFR-2, AC-9.4)';
+const PG_SCHEMA_MESSAGE =
+    'pgSchema с литералом — привязка к схеме сервиса (NFR-2): имя схемы передаёт сервис';
+
+// Общие запреты импорта для всего src/** (ARCHITECTURE.md «Правила зависимостей»).
+const COMMON_PATTERNS = [
+    {
+        group: [
+            'pg',
+            'ioredis',
+            'amqplib',
+            'amqp-connection-manager',
+            'testcontainers',
+            'testcontainers/*',
+            'vitest',
+            'vitest/*',
+        ],
+        allowTypeImports: true,
+        message:
+            'Опциональный peer — только через loadPeer из src/internal/peer.ts (AC-1.2); import type разрешён',
+    },
+    {
+        group: ['@verdeect/kit', '@verdeect/kit/*'],
+        allowTypeImports: true,
+        message: 'Внутри src — только относительные импорты с .js',
+    },
+];
+
+/**
+ * Одно правило no-restricted-imports на группу файлов: в flat config последний блок с тем же
+ * правилом заменяет предыдущий, поэтому общие запреты и запреты подпути собираются вместе.
+ */
+function restrictedImports(extra = []) {
+    return {
+        '@typescript-eslint/no-restricted-imports': [
+            'error',
+            { patterns: [...COMMON_PATTERNS, ...extra] },
+        ],
+    };
+}
+
+export default [
+    {
+        ignores: [
+            '**/node_modules/**',
+            '**/dist/**',
+            'coverage/**',
+            'requirements/**',
+            '.ai-factory/**',
+            '.claude/**',
+            '.serena/**',
+            // Проекты-потребители (AC-9.1): свои package.json и tsconfig, архив пакета в корне не разрешится.
+            'test/consumer/**',
+            // Тестовые данные AC-1.8 и AC-9.4 (в том числе намеренные нарушения).
+            'test/fixtures/**',
+        ],
+    },
+    js.configs.recommended,
+    ...tseslint.configs.recommended,
+    {
+        files: ['**/*.ts'],
+        rules: {
+            curly: ['error', 'all'],
+            '@typescript-eslint/no-explicit-any': 'error',
+            '@typescript-eslint/no-non-null-assertion': 'error',
+            '@typescript-eslint/consistent-type-imports': 'error',
+            '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+        },
+    },
+    {
+        // Без этих опций consistent-type-imports требует `import type` для классов-токенов DI Nest,
+        // и метаданные декораторов теряют ссылку на класс.
+        files: ['src/**/*.ts', 'test/**/*.ts', 'vitest*.config.ts'],
+        languageOptions: {
+            globals: globals.node,
+            parserOptions: {
+                emitDecoratorMetadata: true,
+                experimentalDecorators: true,
+            },
+        },
+    },
+    {
+        // TSDoc у каждого экспорта src/ и у публичных членов экспортируемых интерфейсов и классов.
+        // Линтер не видит реэкспорт в index.ts, поэтому документируются и внутренние экспорты.
+        files: ['src/**/*.ts'],
+        plugins: { jsdoc },
+        rules: {
+            'jsdoc/require-jsdoc': [
+                'error',
+                {
+                    publicOnly: true,
+                    exemptEmptyConstructors: true,
+                    require: {
+                        FunctionDeclaration: true,
+                        ClassDeclaration: true,
+                        ArrowFunctionExpression: false,
+                        MethodDefinition: false,
+                    },
+                    contexts: [
+                        'TSInterfaceDeclaration',
+                        'TSTypeAliasDeclaration',
+                        // Только члены интерфейсов: поля литералов в приведениях и союзах документирует сам тип.
+                        'TSInterfaceBody > TSPropertySignature',
+                        'TSInterfaceBody > TSMethodSignature',
+                        'ExportNamedDeclaration > VariableDeclaration',
+                        'MethodDefinition:not([accessibility="private"]):not([kind="constructor"])',
+                        'TSParameterProperty:not([accessibility="private"])',
+                    ],
+                },
+            ],
+        },
+    },
+    {
+        // AC-9.4: логи только через pino (NFR-8), без привязки к схемам и таблицам сервисов (NFR-2).
+        // Комментарии не разбираются как узлы; спецификаторы импорта и экспорта исключены.
+        files: ['src/**/*.ts'],
+        rules: {
+            'no-console': 'error',
+            'no-restricted-syntax': [
+                'error',
+                {
+                    selector: "CallExpression[callee.name='pgSchema'][arguments.0.type='Literal']",
+                    message: PG_SCHEMA_MESSAGE,
+                },
+                {
+                    selector:
+                        "CallExpression[callee.property.name='pgSchema'][arguments.0.type='Literal']",
+                    message: PG_SCHEMA_MESSAGE,
+                },
+                {
+                    selector: `Literal[value=/^(${SERVICES})\\.[a-z0-9_.-]+$/]:not(ImportDeclaration > Literal):not(ExportNamedDeclaration > Literal):not(ExportAllDeclaration > Literal):not(ImportExpression > Literal)`,
+                    message: SERVICE_NAME_MESSAGE,
+                },
+                {
+                    // `bff.${x}`: часть шаблона до подстановки кончается точкой — тоже имя сервиса.
+                    selector: `TemplateElement[value.raw=/^(${SERVICES})\\.([a-z0-9_-]|$)/]`,
+                    message: SERVICE_NAME_MESSAGE,
+                },
+            ],
+        },
+    },
+    {
+        files: ['src/**/*.ts'],
+        rules: restrictedImports(),
+    },
+    {
+        // internal зависит только от node:* и zod.
+        files: ['src/internal/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: ['@nestjs/*', '../config/*', '../testing/*', 'shell-quote'],
+                message: 'internal зависит только от node:* и zod (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
+        files: ['src/config/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: ['../testing/*', 'shell-quote'],
+                message:
+                    'Рабочий код не импортирует testing и его зависимость shell-quote (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
+        files: ['*.js', '*.mjs', 'scripts/**/*.mjs'],
+        languageOptions: { globals: globals.node },
+    },
+    prettier,
+];

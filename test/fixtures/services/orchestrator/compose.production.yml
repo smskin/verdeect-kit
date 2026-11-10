@@ -1,0 +1,136 @@
+# Production: docker compose -f compose.yml -f compose.production.yml up -d
+#
+# Образ — из реестра (без сборки), портов на хосте нет: Traefik находит Orchestrator по labels в сети
+# verdeect-edge, Prometheus читает :9100 по verdeect-internal. PostgreSQL, RabbitMQ, Redis и S3 — внешние.
+# Переменные приходят из CI/CD; обязательные — ${VAR:?причина}, секретов по умолчанию нет (prd.md §4.4).
+# Список обязательных должен совпадать с целью config-prod в Makefile — менять вместе.
+# Ключи §4.4 с умолчанием — ${VAR:-значение схемы}: пустая строка не прошла бы проверку числа. Полноту сверяет
+# test/support/compose-env.spec.ts (EnvSchema ↔ сервис orchestrator).
+# Порядок развёртывания §19: роли БД → миграции → node-agent на нодах (compose.node.yml, задание deploy-node) →
+# Orchestrator → образ рантайма → RUNTIME_IMAGE.
+# До первого запуска оператор выполняет db:prepare под суперпользователем (prd.md §11.4, §19): его
+# переменные (DATABASE_ADMIN_URL, пароли ролей) сюда не входят.
+
+name: ${COMPOSE_PROJECT_NAME:?задайте имя проекта compose для этого хоста}
+
+x-logging: &logging
+    driver: json-file
+    options:
+        max-size: 20m
+        max-file: '5'
+
+x-hardening: &hardening
+    image: ${ORCHESTRATOR_IMAGE:?адрес образа в реестре}:${VERSION:?версия образа}
+    build: !reset null
+    init: true
+    read_only: true
+    user: '1000:1000' # пользователь node образа
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs:
+        - /tmp:noexec,nosuid,size=64m
+    logging: *logging
+
+# GlitchTip: только production, без ПДн; трассировки выключены в коде (instrument.ts).
+x-sentry: &sentry
+    SENTRY_DSN: ${SENTRY_DSN:?DSN проекта orchestrator-backend}
+    SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+    SENTRY_RELEASE: ${VERSION}
+
+services:
+    orchestrator:
+        <<: *hardening
+        # Остановка по SIGTERM укладывается в 10 с (AC-10.8); 15 с — запас до SIGKILL.
+        stop_grace_period: 15s
+        environment:
+            <<: *sentry
+            NODE_ENV: production
+            LOG_LEVEL: ${LOG_LEVEL:-info}
+            # Пусто — имя хоста контейнера, уникально у каждой реплики. Явное значение дало бы всем репликам один id:
+            # ответы канала rtr:{replicaId} ушли бы не тому экземпляру, config-prod такое запрещает.
+            REPLICA_ID: ${REPLICA_ID:-}
+            DATABASE_URL: ${DATABASE_URL:?учётная запись роли orchestrator_app, не владелец схемы}
+            DB_POOL_MAX: ${DB_POOL_MAX:-10}
+            DB_POOL_ACQUIRE_TIMEOUT_MS: ${DB_POOL_ACQUIRE_TIMEOUT_MS:-5000}
+            RABBITMQ_URL: ${RABBITMQ_URL:?адрес RabbitMQ с exchange verdeect.events}
+            RABBITMQ_RETRY_SECONDS: ${RABBITMQ_RETRY_SECONDS:-5}
+            REDIS_URL: ${REDIS_URL:?адрес Redis (шина реплик, черновики)}
+            S3_ENDPOINT: ${S3_ENDPOINT:?адрес S3-совместимого хранилища журналов}
+            S3_BUCKET: ${S3_BUCKET:?приватный бакет журналов DSH}
+            S3_ACCESS_KEY: ${S3_ACCESS_KEY:?ключ доступа к бакету}
+            S3_SECRET_KEY: ${S3_SECRET_KEY:?секрет доступа к бакету}
+            S3_REGION: ${S3_REGION:-us-east-1}
+            # Только издатель Identity: собственные токены агента Orchestrator не принимает (prd.md §4.4). JWKS —
+            # по внутреннему алиасу identity сети verdeect-internal; хост *.invalid отвергнет схема окружения.
+            AUTH_ISSUERS: '[{"iss":"${IDENTITY_ISSUER:?издатель Identity, например https://id.verdeect.ru}","jwksUri":"http://identity:3000/oidc/jwks","kinds":["user","service"]}]'
+            AUTH_RESOURCE: ${AUTH_RESOURCE:-https://api.verdeect.ru}
+            IDENTITY_TOKEN_URL: ${IDENTITY_TOKEN_URL:?token endpoint Identity для clientCredentials}
+            ORCHESTRATOR_CLIENT_ID: ${ORCHESTRATOR_CLIENT_ID:-verdeect-orchestrator}
+            ORCHESTRATOR_CLIENT_SECRET: ${ORCHESTRATOR_CLIENT_SECRET:?секрет клиента verdeect-orchestrator}
+            SERVICE_URLS: ${SERVICE_URLS:?JSON-адреса platform, files, media, web, identity}
+            AGENT_TOKEN_ISSUER: ${AGENT_TOKEN_ISSUER:-https://orchestrator.verdeect.internal}
+            AGENT_TOKEN_TTL_SEC: ${AGENT_TOKEN_TTL_SEC:-600}
+            SIGNING_KEY_ENCRYPTION_KEYS: ${SIGNING_KEY_ENCRYPTION_KEYS:?JSON-массив ключей version и secret, первый — текущий}
+            # url ноды — http://node-agent-<id>:3000 (алиас compose.node.yml).
+            NODES: ${NODES:?JSON реестр нод агентов}
+            RUNTIME_IMAGE: ${RUNTIME_IMAGE:?JSON образа рантайма stable, canary, canaryPercent}
+            RUNTIME_ORCHESTRATOR_URL: ${RUNTIME_ORCHESTRATOR_URL:?адрес Orchestrator для контейнеров}
+            RUNTIME_POOL_PER_NODE: ${RUNTIME_POOL_PER_NODE:-3}
+            RUNTIME_IDLE_MINUTES: ${RUNTIME_IDLE_MINUTES:-15}
+            RUNTIME_EVICT_PROTECT_MINUTES: ${RUNTIME_EVICT_PROTECT_MINUTES:-5}
+            RUNTIME_START_TIMEOUT_SEC: ${RUNTIME_START_TIMEOUT_SEC:-60}
+            RUNTIME_CRASH_LIMIT: '${RUNTIME_CRASH_LIMIT:-{"count":3,"windowMin":10,"pauseMin":15}}'
+            RUNTIME_DRAIN_TIMEOUT_MIN: ${RUNTIME_DRAIN_TIMEOUT_MIN:-10}
+            RUNTIME_MAX_LOADED_SESSIONS: ${RUNTIME_MAX_LOADED_SESSIONS:-20}
+            RUNTIME_STARTS_PER_NODE: ${RUNTIME_STARTS_PER_NODE:-5}
+            RUNTIME_FLUSH_TIMEOUT_SEC: ${RUNTIME_FLUSH_TIMEOUT_SEC:-30}
+            LLM_UPSTREAM_TIMEOUT_SEC: ${LLM_UPSTREAM_TIMEOUT_SEC:-120}
+            MODEL_PROVIDERS: ${MODEL_PROVIDERS:?JSON поставщики моделей с ключами}
+            VOICE_BROWSER_RECOGNITION: ${VOICE_BROWSER_RECOGNITION:-true}
+            TRANSCRIBE_RATE_PER_MIN: ${TRANSCRIBE_RATE_PER_MIN:-30}
+            WARM_MIN_INTERVAL_SEC: ${WARM_MIN_INTERVAL_SEC:-30}
+            STREAM_LIMIT_PER_MEMBER: ${STREAM_LIMIT_PER_MEMBER:-10}
+            ARCHIVE_PURGE_DAYS: ${ARCHIVE_PURGE_DAYS:-30}
+            BLANK_SESSION_TTL_HOURS: ${BLANK_SESSION_TTL_HOURS:-24}
+        # Каталог моделей (prd.md §5.1) — конфигурация, не часть образа: смена модели без пересборки (G5).
+        # Файл с хоста (образец — apps/orchestrator/config/models.yaml); provider — id из MODEL_PROVIDERS.
+        # После правки — перезапуск: каталог читается при старте, ошибка — отказ запуска с путём поля.
+        volumes:
+            - ${MODEL_CATALOG_PATH:?путь на хосте к каталогу моделей}:/app/apps/orchestrator/config/models.yaml:ro
+        deploy:
+            # Без состояния в процессе: relay берёт outbox через SKIP LOCKED, межэкземплярная доставка — Redis.
+            replicas: ${ORCHESTRATOR_REPLICAS:-2}
+            resources:
+                limits:
+                    cpus: '1'
+                    memory: 512M
+                    pids: 200
+                reservations:
+                    cpus: '0.25'
+                    memory: 192M
+        restart: unless-stopped
+
+    orchestrator-migrate:
+        <<: *hardening
+        environment:
+            <<: *sentry
+            NODE_ENV: production
+            LOG_LEVEL: ${LOG_LEVEL:-info}
+            # Владелец схемы — только для миграций (DDL); у приложения такой роли нет.
+            DATABASE_MIGRATOR_URL: ${DATABASE_MIGRATOR_URL:?учётная запись роли orchestrator_owner}
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.5'
+                    memory: 256M
+                    pids: 50
+        restart: 'no'
+
+networks:
+    # Сети создаёт инфраструктура хоста (Traefik и соседи), стек к ним только подключается.
+    verdeect-edge:
+        name: verdeect-edge
+        external: true
+    verdeect-internal:
+        name: verdeect-internal
+        external: true

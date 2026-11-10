@@ -1,0 +1,55 @@
+# verdeect-bff — базовый compose (prd.md §15): сервисы, общие для всех контуров.
+#
+# Контуры:
+#   разработка  docker compose up -d                       (+ compose.override.yml автоматически)
+#   production  docker compose -f compose.yml -f compose.production.yml up -d
+#   e2e         compose.e2e.yml, самостоятельный проект verdeect-bff-e2e (make e2e-up)
+#
+# Сети общие для всех сервисов Вердикта (фиксированные имена):
+#   verdeect-edge      — Traefik ведёт хост app./admin. в BFF по labels, без правил по пути (D11);
+#   verdeect-internal  — Identity и сервисы по SERVICE_URLS; Identity шлёт Back-Channel Logout на
+#                        http://bff-<instance>:3000 (dev/e2e).
+# Экземпляр (app | admin) задаёт BFF_INSTANCE; в production — два сервиса bff-app и bff-admin.
+
+name: ${COMPOSE_PROJECT_NAME:-verdeect-bff}
+
+services:
+  bff:
+    build:
+      context: .
+      target: production
+    image: ${BFF_IMAGE:-verdeect-bff}:${VERSION:-dev}
+    init: true
+    # Остановка по SIGTERM ≤ 10 с (§6.4 п. 10) — запас сверх умолчания Docker в 10 с.
+    stop_grace_period: 15s
+    networks:
+      verdeect-edge: {}
+      verdeect-internal:
+        aliases:
+          - bff-${BFF_INSTANCE:-app}
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: verdeect-edge
+      traefik.http.routers.verdeect-bff.rule: Host(`${BFF_INSTANCE:-app}.verdeect.ru`)
+      traefik.http.services.verdeect-bff.loadbalancer.server.port: '3000'
+    # /ok — без обращения к Redis (§13); в alpine нет curl.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  # Общие сети хоста: BFF ими не владеет (make down их не удаляет). Создаются один раз на хост —
+  # инфраструктурой в production, `make networks` (часть `make up`) в разработке.
+  verdeect-edge:
+    name: verdeect-edge
+    external: true
+  verdeect-internal:
+    name: verdeect-internal
+    external: true

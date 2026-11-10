@@ -1,0 +1,132 @@
+# Production: docker compose -f compose.yml -f compose.production.yml up -d
+#
+# Два экземпляра из одного образа (D1, prd.md §15): bff-app (app.verdeect.ru) и bff-admin
+# (admin.verdeect.ru), по 2 реплики. Базовый сервис bff выключен — его место занимают они.
+# Образ — из реестра (без сборки), портов на хосте нет: Traefik находит экземпляры по labels в сети
+# verdeect-edge. Redis и RabbitMQ — внешние.
+# Переменные приходят из CI/CD (окружение production); обязательные — ${VAR:?причина}, секретов по
+# умолчанию нет. Список обязательных повторяет цель config-prod в Makefile — менять вместе.
+# Сроки и лимиты (REFRESH_*, SESSION_*, *_TTL_SEC, …) берутся из умолчаний схемы окружения (§4.3):
+# пустая строка не проходит проверку числа, поэтому сюда их добавлять только с явным значением.
+# Redis: maxmemory-policy noeviction, ACL на префикс verdeect-bff:<instance>: — отсюда свой
+# REDIS_URL у каждого экземпляра. Traefik: forwardedHeaders.trustedIPs и TRUSTED_PROXIES описывают
+# один и тот же адрес прокси. Сбор логов (Alloy → Loki) — с хоста по json-file.
+# Порядок первого развёртывания (Identity → пользователи RabbitMQ → Redis ACL → BFF → web) —
+# docs/deployment.md; требования к окружению, метрики и алерты §13 — docs/operations.md.
+# Метрики: /metrics на METRICS_PORT (9100) в сети verdeect-internal, задания сбора bff-app и bff-admin —
+# метка job различает экземпляры (правила алертов — docker/prometheus/bff-alerts.yml).
+
+name: ${COMPOSE_PROJECT_NAME:?задайте имя проекта compose для этого хоста}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '5'
+
+x-bff: &bff
+  image: ${BFF_IMAGE:?адрес образа в реестре}:${VERSION:?версия образа}
+  build: !reset null
+  init: true
+  # Остановка по SIGTERM ≤ 10 с (§6.4 п. 10) — запас сверх умолчания Docker в 10 с.
+  stop_grace_period: 15s
+  read_only: true
+  user: '1000:1000' # пользователь node образа
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  tmpfs:
+    - /tmp:noexec,nosuid,size=64m
+  logging: *logging
+  # Healthcheck /ok — из HEALTHCHECK образа.
+  deploy:
+    # Без состояния, кроме Redis; потоки и обмены — без sticky-сессий (§13).
+    replicas: ${BFF_REPLICAS:-2}
+    resources:
+      limits:
+        cpus: '1'
+        memory: 512M
+        pids: 200
+      reservations:
+        cpus: '0.25'
+        memory: 128M
+  restart: unless-stopped
+
+# Общее окружение экземпляров.
+x-bff-env: &bff-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  IDENTITY_ISSUER: ${IDENTITY_ISSUER:?издатель, например https://id.verdeect.ru}
+  # Пусто — серверные запросы прямо на издатель (разнесение по серверам, §5.2). Задан — адрес BFF
+  # должен входить в TRUSTED_PROXIES Identity.
+  IDENTITY_INTERNAL_URL: ${IDENTITY_INTERNAL_URL:-}
+  SERVICE_URLS: ${SERVICE_URLS:?JSON-карта имя → URL, identity и web обязательны}
+  RABBITMQ_URL: ${RABBITMQ_URL:?адрес RabbitMQ (права §9)}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:?адреса Traefik}
+  # GlitchTip (GT02, GT11): только production, только ошибки, без ПДн (в коде).
+  SENTRY_DSN: ${SENTRY_DSN:?DSN проекта bff-backend}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+  SENTRY_RELEASE: ${VERSION}
+
+services:
+  bff:
+    profiles: [disabled]
+
+  bff-app:
+    <<: *bff
+    environment:
+      <<: *bff-env
+      BFF_INSTANCE: app
+      PUBLIC_ORIGIN: https://app.verdeect.ru
+      OIDC_CLIENT_ID: verdeect-bff-app
+      OIDC_CLIENT_SECRET: ${BFF_APP_CLIENT_SECRET:?секрет клиента verdeect-bff-app}
+      LOGIN_TENANT: ''
+      # D17: таймер бездействия у app. выключен
+      SESSION_IDLE_TIMEOUT_MIN: '0'
+      # D18: снимок «Поделиться» без сессии; SERVICE_URLS обязан содержать orchestrator — иначе ошибка запуска
+      PUBLIC_API_PATHS: 'GET /api/orchestrator/v1/shares/*'
+      REDIS_URL: ${BFF_APP_REDIS_URL:?адрес Redis с ACL на префикс verdeect-bff:app:}
+      SESSION_ENC_KEYS: ${BFF_APP_SESSION_ENC_KEYS:?v<N>:<base64 32 байта> через запятую}
+    networks:
+      verdeect-edge: {}
+      verdeect-internal:
+        aliases: [bff-app]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: verdeect-edge
+      traefik.http.routers.verdeect-bff-app.rule: Host(`app.verdeect.ru`)
+      traefik.http.services.verdeect-bff-app.loadbalancer.server.port: '3000'
+
+  bff-admin:
+    <<: *bff
+    environment:
+      <<: *bff-env
+      BFF_INSTANCE: admin
+      PUBLIC_ORIGIN: https://admin.verdeect.ru
+      OIDC_CLIENT_ID: verdeect-bff-admin
+      OIDC_CLIENT_SECRET: ${BFF_ADMIN_CLIENT_SECRET:?секрет клиента verdeect-bff-admin}
+      # Закреплённая компания платформы (D8).
+      LOGIN_TENANT: _platform
+      # D17: таймер бездействия admin. — 12 ч
+      SESSION_IDLE_TIMEOUT_MIN: '720'
+      # D18: у admin. публичных путей нет
+      PUBLIC_API_PATHS: ''
+      REDIS_URL: ${BFF_ADMIN_REDIS_URL:?адрес Redis с ACL на префикс verdeect-bff:admin:}
+      SESSION_ENC_KEYS: ${BFF_ADMIN_SESSION_ENC_KEYS:?v<N>:<base64 32 байта> через запятую}
+    networks:
+      verdeect-edge: {}
+      verdeect-internal:
+        aliases: [bff-admin]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: verdeect-edge
+      traefik.http.routers.verdeect-bff-admin.rule: Host(`admin.verdeect.ru`)
+      traefik.http.services.verdeect-bff-admin.loadbalancer.server.port: '3000'
+
+networks:
+  # Сети создаёт инфраструктура хоста (Traefik и соседи), стек к ним только подключается.
+  verdeect-edge:
+    name: verdeect-edge
+    external: true
+  verdeect-internal:
+    name: verdeect-internal
+    external: true

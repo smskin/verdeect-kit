@@ -1,0 +1,70 @@
+# verdeect-platform — базовый compose (prd.md §16): сервисы, общие для всех контуров.
+#
+# Контуры:
+#   разработка  docker compose up -d                       (+ compose.override.yml автоматически)
+#   production  docker compose -f compose.yml -f compose.production.yml up -d
+# Контура e2e нет: P-тесты запускают Platform в процессе теста на контуре e2e Identity (prd.md §16).
+#
+# Сети общие для всех сервисов Вердикта (фиксированные имена):
+#   verdeect-edge      — Traefik находит Platform по labels, маршрут только по хосту;
+#   verdeect-internal  — BFF вызывает Platform как http://platform:3000, Prometheus — :9100.
+# Отдельного воркера нет: relay outbox, подписчик и очистка работают в HTTP-процессе (prd.md §9).
+# Роли БД создаёт `db:prepare` под суперпользователем до миграций (prd.md §8.4) — в production это
+# шаг оператора (docs/deployment.md), в разработке — сервис platform-db-prepare.
+
+name: ${COMPOSE_PROJECT_NAME:-verdeect-platform}
+
+services:
+  platform:
+    build:
+      context: .
+      target: production
+    image: ${PLATFORM_IMAGE:-verdeect-platform}:${VERSION:-dev}
+    init: true
+    depends_on:
+      platform-migrate:
+        condition: service_completed_successfully
+    networks:
+      verdeect-edge: {}
+      verdeect-internal:
+        aliases: [platform]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: verdeect-edge
+      traefik.http.routers.verdeect-platform.rule: Host(`platform.api.verdeect.ru`)
+      # Только PORT: /health и /metrics (METRICS_PORT 9100) наружу не публикуются.
+      traefik.http.services.verdeect-platform.loadbalancer.server.port: '3000'
+    # /ok — без обращения к БД и брокеру; в alpine нет curl.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/ok').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Миграции — отдельный одноразовый шаг с ролью platform_owner; приложение ждёт его успеха.
+  platform-migrate:
+    # Тот же образ: сборка дублируется, чтобы compose не пытался скачать локальный тег (кэш BuildKit общий).
+    build:
+      context: .
+      target: production
+    image: ${PLATFORM_IMAGE:-verdeect-platform}:${VERSION:-dev}
+    command: ['node', 'dist/cli.js', 'migrate']
+    restart: 'no'
+    networks: [verdeect-internal]
+    labels:
+      traefik.enable: 'false'
+
+networks:
+  # Общие сети хоста: Platform ими не владеет (make down их не удаляет). Создаются один раз на хост —
+  # инфраструктурой в production, `make networks` (часть `make up`) в разработке.
+  verdeect-edge:
+    name: verdeect-edge
+    external: true
+  verdeect-internal:
+    name: verdeect-internal
+    external: true

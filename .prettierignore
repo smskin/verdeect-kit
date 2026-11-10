@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+pnpm-lock.yaml
+requirements/
+.ai-factory/
+.claude/
+.serena/
+*.tgz
+.ai-factory.json
+.mcp.json
+AGENTS.md
+test/fixtures/

@@ -1,0 +1,53 @@
+{
+  "name": "bff",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node --enable-source-maps dist/main.js",
+    "test": "vitest run",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "test:timing": "vitest run -c vitest.timing.config.ts",
+    "test:protocol": "vitest run -c vitest.protocol.config.ts",
+    "test:load": "vitest run -c vitest.load.config.ts"
+  },
+  "dependencies": {
+    "@fastify/http-proxy": "11.6.5",
+    "@nestjs/common": "12.1.3",
+    "@nestjs/config": "12.0.1",
+    "@nestjs/core": "12.1.3",
+    "@nestjs/platform-fastify": "12.1.3",
+    "@prometheus-io/client": "0.16.1",
+    "@sentry/nestjs": "11.7.0",
+    "@verdeect/identity-client": "workspace:*",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "amqp-connection-manager": "5.0.1",
+    "amqplib": "2.2.0",
+    "fastify": "5.12.7",
+    "ioredis": "6.0.0",
+    "nestjs-pino": "5.3.1",
+    "pino": "10.4.0",
+    "pino-http": "11.0.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "12.1.3",
+    "@swc/core": "1.16.18",
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.2",
+    "jose": "6.2.12",
+    "openid-client": "6.8.8",
+    "testcontainers": "12.2.1",
+    "typescript": "5.9.3",
+    "unplugin-swc": "2.0.0",
+    "vitest": "5.0.4",
+    "ws": "8.22.0"
+  }
+}

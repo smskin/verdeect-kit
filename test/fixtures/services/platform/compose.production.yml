@@ -1,0 +1,122 @@
+# Production: docker compose -f compose.yml -f compose.production.yml up -d
+#
+# Образ — из реестра (без сборки), портов на хосте нет: Traefik находит Platform по labels в сети
+# verdeect-edge, Prometheus читает :9100 по verdeect-internal. PostgreSQL и RabbitMQ — внешние.
+# Переменные приходят из CI/CD; обязательные — ${VAR:?причина}, секретов по умолчанию нет.
+# Список обязательных повторяет цель config-prod в Makefile — менять вместе.
+# Сроки и пределы (AUTHZ_*, RABBITMQ_RETRY_SECONDS, …) берутся из значений по умолчанию схемы
+# (prd.md §4.3): пустая строка не проходит проверку числа, поэтому сюда их добавлять только с явным
+# значением.
+# До первого запуска оператор выполняет db:prepare под суперпользователем (docs/deployment.md):
+# его переменные (DATABASE_ADMIN_URL, пароли ролей) сюда не входят.
+
+name: ${COMPOSE_PROJECT_NAME:?задайте имя проекта compose для этого хоста}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '5'
+
+# AUTH_ISSUERS — только издатель Identity (prd.md §16, AC-6.1): второго издателя нет, JWKS — по
+# внутреннему алиасу identity сети verdeect-internal. Хост .invalid в IDENTITY_ISSUER отвергнет EnvSchema при
+# запуске. Одно значение на platform и platform-plan-apply — через якорь.
+x-auth-issuers: &auth-issuers '[{"iss":"${IDENTITY_ISSUER:?издатель Identity, например https://id.verdeect.ru}","jwksUri":"http://identity:3000/oidc/jwks","kinds":["user","service"]}]'
+
+x-hardening: &hardening
+  image: ${PLATFORM_IMAGE:?адрес образа в реестре}:${VERSION:?версия образа}
+  build: !reset null
+  init: true
+  read_only: true
+  user: '1000:1000' # пользователь node образа
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  tmpfs:
+    - /tmp:noexec,nosuid,size=64m
+  logging: *logging
+
+services:
+  platform:
+    <<: *hardening
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: ${DATABASE_URL:?учётная запись роли platform_app, не владелец схемы}
+      RABBITMQ_URL: ${RABBITMQ_URL:?адрес RabbitMQ с exchange verdeect.events}
+      AUTH_ISSUERS: *auth-issuers
+      # Готовые модули — решение развёртывания (D8), не значение по умолчанию.
+      MODULES_READY: ${MODULES_READY:?готовые модули каталога через запятую}
+      # GlitchTip: только production, без ПДн; трассировки выключены в коде.
+      SENTRY_DSN: ${SENTRY_DSN:?DSN проекта platform-backend}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+      SENTRY_RELEASE: ${VERSION}
+    deploy:
+      # Без состояния: relay берёт outbox через SKIP LOCKED, очистка идемпотентна (prd.md §9).
+      replicas: ${PLATFORM_REPLICAS:-2}
+      resources:
+        limits:
+          # Кэш решений — до AUTHZ_CACHE_MAX_ENTRIES (100 000) записей в памяти реплики.
+          cpus: '1'
+          memory: 512M
+          pids: 200
+        reservations:
+          cpus: '0.25'
+          memory: 192M
+    restart: unless-stopped
+
+  platform-migrate:
+    <<: *hardening
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Владелец схемы — только для миграций (DDL); у приложения такой роли нет.
+      DATABASE_MIGRATOR_URL: ${DATABASE_MIGRATOR_URL:?учётная запись роли platform_owner}
+      SENTRY_DSN: ${SENTRY_DSN:?DSN проекта platform-backend}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+      SENTRY_RELEASE: ${VERSION}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 50
+    restart: 'no'
+
+  # Тарифы из seed/plans.json (D10, prd.md §10) — после миграций и до запуска приложения (§16);
+  # Dockerfile копирует seed/ в образ. Повтор того же файла ничего не меняет.
+  platform-plan-apply:
+    <<: *hardening
+    command: ['node', 'dist/cli.js', 'plan:apply', '--file', 'seed/plans.json']
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Два подключения (§8.4): запись plan — владельцем схемы, эпоха и outbox по компаниям — ролью
+      # приложения (RLS действует).
+      DATABASE_MIGRATOR_URL: ${DATABASE_MIGRATOR_URL:?учётная запись роли platform_owner}
+      DATABASE_URL: ${DATABASE_URL:?учётная запись роли platform_app, не владелец схемы}
+      # Ключи EnvSchema CLI — те же значения, что у platform: module.changed совпадает с решением.
+      RABBITMQ_URL: ${RABBITMQ_URL:?адрес RabbitMQ с exchange verdeect.events}
+      AUTH_ISSUERS: *auth-issuers
+      MODULES_READY: ${MODULES_READY:?готовые модули каталога через запятую}
+      SENTRY_DSN: ${SENTRY_DSN:?DSN проекта platform-backend}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:?окружение GlitchTip}
+      SENTRY_RELEASE: ${VERSION}
+    networks: [verdeect-internal]
+    labels:
+      traefik.enable: 'false'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 50
+    restart: 'no'
+
+networks:
+  # Сети создаёт инфраструктура хоста (Traefik и соседи), стек к ним только подключается.
+  verdeect-edge:
+    name: verdeect-edge
+    external: true
+  verdeect-internal:
+    name: verdeect-internal
+    external: true

@@ -1,0 +1,516 @@
+# verdeect-orchestrator — GitLab CI.
+#
+# Стадии: prepare → install → lint → test → Build → Deploy. Запуск — вручную (Run pipeline).
+# Теги раннеров:
+#   CI       — docker/shell-сборщик: образы (build-ci-image, Build) и деплой;
+#   CI_NODE  — docker executor для проверок в CI-образе (стадия `ci` Dockerfile — те же Node и pnpm,
+#              что в production).
+# Решения:
+#   - integration- и http-тесты берут PostgreSQL 17, RabbitMQ, Redis и MinIO из service-контейнеров
+#     (TEST_DATABASE_ADMIN_URL, TEST_RABBITMQ_URL, TEST_REDIS_URL, TEST_S3_*): Docker для Testcontainers
+#     в docker executor нет; роли создаёт setup тестов кодом db:prepare, миграции — под
+#     orchestrator_owner, тесты — под orchestrator_app; exchange verdeect.events и бакет создаёт setup;
+#   - образ рантайма verdeect-agent-runtime (E4, OR-25): сборка, runtime-smoke и R-тесты — задание runtime-image
+#     на теге CI (shell-раннер с Docker хоста, без dind и privileged); R-тесты и смоук идут в CI-образе с сокетом
+#     Docker хоста, их контейнеры — соседи CI-контейнера; build-runtime публикует образ и удаляет его с хоста;
+#   - дымовой старт образа (Build) повторяет порядок развёртывания: db:prepare → migrate → приложение
+#     под orchestrator_app; брокера, Redis и S3 нет → /health degraded при database up;
+#   - каталог моделей до E2 не входит в образ: дымовой старт монтирует фикстуру тестов, production —
+#     файл хоста (MODEL_CATALOG_PATH);
+#   - уровни тестов (aif-ci «Test Levels in CI»): tests (unit всех пакетов), tests-integration (integration и http
+#     orchestrator, H node-agent — без тайминговых), tests-timing (верхние границы времени, test/timing); test-load —
+#     ручным заданием, когда появится нагрузочный набор (E7). TEST_TIMEOUT_SCALE=1. tests-timing идёт после
+#     tests и tests-integration своего pipeline (needs), TIMING_RUNNER_TAG должен вести на раннер с concurrent = 1
+#     (по умолчанию CI_NODE — до появления такого раннера; needs защищает только от заданий своего pipeline).
+#     when: always — тайминг идёт и при красных tests/tests-integration; красный tests-timing после упавшего install —
+#     следствие, причину смотреть в install.
+#     Шардирование tests-integration — когда задание длится > 15 мин: parallel: N (2–4) +
+#     --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL, у каждого шарда свои service-контейнеры;
+#   - отчёты JUnit — уникальное имя на уровень (report-unit.xml, report-integration.xml, report-timing.xml), они же в
+#     artifacts:paths; after_script печатает число <testcase каждого отчёта для сверки с вкладкой Tests;
+#   - спайк spike/ — отдельный workspace, в конвейер не входит; контура e2e нет (нет браузерного UI);
+#   - ни один job не отправляет события в GlitchTip (DSN в тестах пуст); source maps backend остаются
+#     в образе (--enable-source-maps), загрузки в GlitchTip нет.
+#
+# Ветки (общая схема CI 2.0, CO-31): вход в реестр, публикация и выкат — только main (rules build-ci-image, публикация в
+# Build и build-runtime, deploy-production); на остальных ветках Build собирает и проверяет образы orchestrator и node-agent
+# без docker login и push, runtime-image собирает образ рантайма и гоняет на нём R-тесты локально.
+#
+# Переменные CI/CD:
+#   реестр (переменные уровня инстанса GitLab; ветки этапов не защищаются):
+#     CI_DOCKER_REGISTRY — адрес реестра, без Protected;
+#     DOCKER_AUTH_CONFIG — учётка Nexus ci-pull (только чтение docker-hosted), без Protected: runner тянет
+#       ${CI_IMAGE} на любой ветке; в репозитории не задаётся и здесь не объявляется; в shell-jobs с входом в
+#       реестр его снимает unset (якоря .docker-login, .docker-cleanup), иначе Docker CLI игнорирует docker login
+#       («DOCKER_AUTH_CONFIG is set and takes precedence»);
+#     CI_DOCKER_REGISTRY_USER / CI_DOCKER_REGISTRY_PASSWORD (masked) — учётка build-server с правом записи,
+#       Protected: доступна только на main;
+#   на остальных ветках jobs берут готовый ${CI_IMAGE} (:latest). Ветка, меняющая стадию `ci` Dockerfile, тестируется
+#   на прежнем :latest до слияния в main. Очистка Nexus удалила :latest — один запуск pipeline на main восстанавливает;
+#   PRODUCTION_RUNNER_TAG — тег раннера production-хоста;
+#   production (environment: production, protected) — список совпадает с ${VAR:?} в
+#   compose.production.yml и целью config-prod Makefile: COMPOSE_PROJECT_NAME, DATABASE_URL (роль
+#   orchestrator_app), DATABASE_MIGRATOR_URL (роль orchestrator_owner), RABBITMQ_URL, REDIS_URL,
+#   S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY, IDENTITY_ISSUER (AUTH_ISSUERS собирает
+#   compose.production.yml — только издатель Identity), IDENTITY_TOKEN_URL, ORCHESTRATOR_CLIENT_SECRET,
+#   SERVICE_URLS, SIGNING_KEY_ENCRYPTION_KEYS, NODES, RUNTIME_IMAGE, RUNTIME_ORCHESTRATOR_URL,
+#   MODEL_PROVIDERS, MODEL_CATALOG_PATH, SENTRY_DSN, SENTRY_ENVIRONMENT; необязательные — LOG_LEVEL, REPLICA_ID,
+#   S3_REGION, ORCHESTRATOR_REPLICAS.
+#   db:prepare (суперпользователь, пароли ролей) — шаг оператора до первого деплоя
+#   (docs/database.md), его переменных в GitLab нет.
+#   Первая линия защиты: production-переменные — только в scope окружения `production`.
+
+stages:
+    - prepare
+    - install
+    - lint
+    - test
+    - Build
+    - Deploy
+
+workflow:
+    rules:
+        - if: $CI_PIPELINE_SOURCE == "web"
+
+default:
+    interruptible: true
+    retry:
+        max: 2
+        when:
+            - runner_system_failure
+            - stuck_or_timeout_failure
+
+variables:
+    # Держать одинаковым с PROMETHEUS_IMAGE в Makefile.
+    PROMETHEUS_IMAGE: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+    CI_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}-ci:latest
+    ORCHESTRATOR_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}
+    NODE_AGENT_IMAGE: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}/node-agent
+    DOCKER_BUILDKIT: '1'
+    # Стор pnpm внутри проекта — его кэширует GitLab.
+    PNPM_STORE_DIR: ${CI_PROJECT_DIR}/.pnpm-store
+    # Те же теги, что compose.override.yml и test/support/images.ts (проверяет test/support/images.spec.ts, CO-37).
+    POSTGRES_IMAGE: postgres:17.11-alpine3.24
+    RABBITMQ_IMAGE: rabbitmq:4.3.6-management-alpine
+    REDIS_IMAGE: redis:7.4.11-alpine
+    MINIO_IMAGE: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    # Тайм-ауты тестов без запаса на нагрузку (docs/testing.md); локально — вручную 2–3 на загруженной машине.
+    TEST_TIMEOUT_SCALE: '1'
+    # Раннер без параллельных заданий для tests-timing; переопределить в CI/CD variables.
+    TIMING_RUNNER_TAG: CI_NODE
+
+# Сводка отчётов JUnit задания: путь и число тестов (сверка с вкладкой Tests pipeline).
+.junit-summary: &junit-summary
+    - |
+        for f in $JUNIT_REPORTS; do
+          if [ -f "$f" ]; then echo "junit $f — $(grep -c '<testcase' "$f") testcase"; else echo "junit $f — нет отчёта"; fi
+        done || true
+
+# DOCKER_AUTH_CONFIG (ci-pull) задан для всех jobs: Docker CLI с ним игнорирует docker login — снять до входа.
+.docker-login: &docker-login
+    - unset DOCKER_AUTH_CONFIG
+    - echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+
+.docker-cleanup:
+    after_script:
+        - unset DOCKER_AUTH_CONFIG
+        - docker logout "$CI_DOCKER_REGISTRY" || true
+        - docker image prune -f || true
+
+# Стор pnpm по pnpm-lock.yaml: install прогревает (pull-push), остальные задания только читают.
+# node_modules артефактом не передаётся — десятки тысяч файлов, выгрузка падает с 413 Request Entity Too Large.
+.pnpm-cache: &pnpm-cache
+    key:
+        files: [pnpm-lock.yaml]
+    paths: [.pnpm-store/]
+    policy: pull
+
+.pnpm-install: &pnpm-install
+    - pnpm install --frozen-lockfile --prefer-offline --store-dir "$PNPM_STORE_DIR"
+
+# Проверки — в CI-образе; зависимости ставит каждое задание из кэша стора pnpm.
+.node-job:
+    image: ${CI_IMAGE}
+    tags: [CI_NODE]
+    needs: [install]
+    cache: *pnpm-cache
+    before_script:
+        - *pnpm-install
+
+# Тестовые job'ы не должны видеть реальную инфраструктуру: переменные проекта/группы перекрывают
+# окружение тестов (test/support задаёт своё), а тесты очищают таблицы, очереди и бакет — реальные
+# данные были бы стёрты. Поэтому всё, что может указывать на них, снимается до запуска.
+.prepare-env: &prepare-env
+    - unset DATABASE_URL DATABASE_MIGRATOR_URL DATABASE_ADMIN_URL RABBITMQ_URL REDIS_URL
+    - unset ORCHESTRATOR_OWNER_PASSWORD ORCHESTRATOR_APP_PASSWORD ORCHESTRATOR_CLIENT_SECRET
+    - unset IDENTITY_TOKEN_URL SERVICE_URLS SIGNING_KEY_ENCRYPTION_KEYS NODES MODEL_PROVIDERS
+    - for name in $(env | grep -oE '^(SENTRY|AUTH|AWS|S3)_[A-Z0-9_]*' || true); do unset "$name"; done
+
+# Только main: учётка записи (Protected) на ветках недоступна; ветки берут готовый ${CI_IMAGE}.
+build-ci-image:
+    stage: prepare
+    tags: [CI]
+    extends: .docker-cleanup
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    script:
+        - *docker-login
+        - docker pull "$CI_IMAGE" || true
+        - docker build --target ci --cache-from "$CI_IMAGE" --build-arg BUILDKIT_INLINE_CACHE=1 -t "$CI_IMAGE" .
+        - docker push "$CI_IMAGE"
+
+install:
+    stage: install
+    image: ${CI_IMAGE}
+    tags: [CI_NODE]
+    # На ветках build-ci-image нет — install идёт на готовом ${CI_IMAGE}.
+    needs:
+        - job: build-ci-image
+          optional: true
+    # Прогрев стора и проверка lockfile; node_modules не передаётся.
+    script:
+        - *pnpm-install
+    cache:
+        <<: *pnpm-cache
+        policy: pull-push
+
+code-style:
+    stage: lint
+    extends: .node-job
+    script:
+        - pnpm lint
+        - pnpm format:check
+
+static-analysis:
+    stage: lint
+    extends: .node-job
+    script:
+        - pnpm typecheck
+        # Политика зависимостей (нет @deepseek-ai/*) — статическая проверка, make analyse.
+        - pnpm check:deps
+        # Индексы на заполненных таблицах (OR-45 п. 15, docs/database.md).
+        - pnpm check:migrations
+
+# Алерты §18. Отдельное задание: в заданиях CI_NODE нет Docker CLI, promtool — в образе Prometheus.
+alerts-check:
+    stage: lint
+    tags: [CI_NODE]
+    needs: []
+    image:
+        name: ${PROMETHEUS_IMAGE}
+        entrypoint: ['']
+    script:
+        - cd deploy/prometheus
+        - promtool check rules orchestrator.rules.yml
+        - promtool test rules orchestrator.rules.test.yml
+
+# Unit-тесты всех пакетов: каждый пишет report-unit.xml в свой каталог.
+tests:
+    stage: test
+    extends: .node-job
+    variables:
+        JUNIT_REPORTS: apps/orchestrator/report-unit.xml apps/node-agent/report-unit.xml packages/dsh-platform/report-unit.xml
+    script:
+        - *prepare-env
+        - pnpm -r --if-present test --reporter=default --reporter=junit --outputFile=report-unit.xml
+    after_script:
+        - *junit-summary
+    artifacts:
+        when: always
+        paths: [apps/*/report-unit.xml, packages/*/report-unit.xml]
+        reports:
+            # Unit-тесты плагина (AC-3.7, AC-3.8, AC-6.x, AC-7.6) — packages/*.
+            junit: [apps/*/report-unit.xml, packages/*/report-unit.xml]
+
+# PostgreSQL 17, RabbitMQ, Redis и MinIO из service-контейнеров. Свой before_script шаблона заменяет before_script
+# .node-job — установка зависимостей повторена здесь (как .broker-services BFF). Файлы integration идут последовательно
+# (fileParallelism: false: общий PostgreSQL, файлы очищают таблицы) — БД Redis и vhost RabbitMQ на воркер не нужны.
+.with-services:
+    extends: .node-job
+    services:
+        - name: ${POSTGRES_IMAGE}
+          alias: postgres
+        - name: ${RABBITMQ_IMAGE}
+          alias: rabbitmq
+        - name: ${REDIS_IMAGE}
+          alias: redis
+          command: ['redis-server', '--save', '', '--appendonly', 'no']
+        - name: ${MINIO_IMAGE}
+          alias: minio
+          command: ['server', '/data']
+    variables:
+        POSTGRES_DB: orchestrator
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: postgres
+        MINIO_ROOT_USER: orchestrator-test
+        MINIO_ROOT_PASSWORD: orchestrator-test-secret
+        # SSE-S3 (AES256) журналов §11.2 требует KMS; ключ только для тестов.
+        MINIO_KMS_SECRET_KEY: orchestrator-test:bZ1zSKub3hV/LShoQcuO2j6E3DKxO6crquQYlwpgFwQ=
+    before_script:
+        - *pnpm-install
+        - *prepare-env
+        # Суперпользователь service-контейнера: роли и схему создаёт setup тестов (код db:prepare).
+        - export TEST_DATABASE_ADMIN_URL=postgres://postgres:postgres@postgres:5432/orchestrator
+        - export TEST_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+        - export TEST_REDIS_URL=redis://redis:6379
+        - export TEST_S3_ENDPOINT=http://minio:9000
+        - export TEST_S3_ACCESS_KEY="$MINIO_ROOT_USER" TEST_S3_SECRET_KEY="$MINIO_ROOT_PASSWORD"
+        - for i in $(seq 1 60); do nc -z postgres 5432 && break; sleep 1; done
+        - nc -z postgres 5432
+        - for i in $(seq 1 120); do nc -z rabbitmq 5672 && break; sleep 1; done
+        - nc -z rabbitmq 5672
+        # Порт 5672 открывается раньше готовности брокера (рукопожатие AMQP рвётся) — ждём ещё API управления (15672,
+        # хост rabbitmq — тот же, что в TEST_RABBITMQ_URL), как healthcheck compose.override.yml.
+        - for i in $(seq 1 120); do nc -z rabbitmq 15672 && break; sleep 1; done
+        - for i in $(seq 1 90); do wget -q -O /dev/null http://guest:guest@rabbitmq:15672/api/health/checks/local-alarms && break; sleep 1; done
+        - wget -q -O /dev/null http://guest:guest@rabbitmq:15672/api/health/checks/local-alarms
+        - for i in $(seq 1 30); do nc -z redis 6379 && break; sleep 1; done
+        - nc -z redis 6379
+        - for i in $(seq 1 30); do nc -z minio 9000 && break; sleep 1; done
+        - nc -z minio 9000
+
+# Integration и http orchestrator и H node-agent (без тайминговых — они в tests-timing).
+tests-integration:
+    stage: test
+    extends: .with-services
+    variables:
+        JUNIT_REPORTS: apps/orchestrator/report-integration.xml apps/node-agent/report-integration.xml
+    script:
+        - pnpm -r --if-present test:integration --reporter=default --reporter=junit --outputFile=report-integration.xml
+    after_script:
+        - *junit-summary
+    artifacts:
+        when: always
+        paths: [apps/*/report-integration.xml]
+        reports:
+            junit: apps/*/report-integration.xml
+
+# Тайминговые проверки (верхние границы по часам, test/timing): после тестовых заданий своего pipeline (needs), даже при
+# их падении (when: always); один прогон за раз (resource_group). timing-guard без docker CLI пропускает проверку контуров.
+tests-timing:
+    stage: test
+    extends: .with-services
+    tags: [$TIMING_RUNNER_TAG]
+    resource_group: tests-timing
+    needs: [install, tests, tests-integration]
+    when: always
+    variables:
+        JUNIT_REPORTS: apps/orchestrator/report-timing.xml
+    script:
+        - pnpm --filter orchestrator exec vitest run -c vitest.timing.config.ts --reporter=default --reporter=junit --outputFile=report-timing.xml
+    after_script:
+        - *junit-summary
+    artifacts:
+        when: always
+        paths: [apps/orchestrator/report-timing.xml]
+        reports:
+            junit: apps/orchestrator/report-timing.xml
+
+# Проверки образа рантайма (prd.md §19, D8; план E4 Task 60, OR-25, OR-37): сборка на хосте раннера CI, runtime-smoke
+# (параметры контейнера — из кода node-agent) и R-тесты — в CI-образе с сокетом Docker хоста.
+# Сеть (OR-38 B, как verdeect-agents ноды; scripts/runtime-net.mjs): на прогон — сеть runtime-ci-$CI_JOB_ID, internal, без
+# icc, мост rci$CI_JOB_ID (правила хоста пишутся по нему). Контейнер рантайма — только в ней; выход — через прокси выхода
+# (docker/egress-proxy, сеть хоста, слушает шлюз сети; белый список — адреса теста). CI-контейнер с тестовым Orchestrator
+# и подделками — в сети хоста (OR-65), как локальный прогон: Testcontainers ходит на опубликованные порты по 127.0.0.1
+# (lo UFW пропускает; с docker0 на шлюз UFW режет — DNAT для docker0 Docker не делает), прокси достаёт тест по шлюзу
+# сети rci (RUNTIME_TARGET_HOST не задан — targetHost() берёт шлюз; 127.0.0.1 не годится: он в NO_PROXY контейнера).
+# Порты теста и Testcontainers случайные, прокси слушает адрес шлюза своей сети — параллельные задания не пересекаются.
+# Без privileged. Контейнер рантайма — только в сети rci; если UFW режет трафик моста rci* к шлюзу — не обходить сетью
+# хоста: остановиться, правило для хоста — по §19 (единственное: rci+ → 3128, docs/deployment.md).
+# Каждая команда — отдельной строкой; очистка в after_script обязательна (образ ≈ 1 ГиБ, диска ≈ 11 ГБ).
+# На всех ветках образ собирается здесь и не публикуется (публикация — build-runtime, только main). CI-образ запускается
+# не от root (uid:gid раннера, группа сокета Docker; ревью E4 п. 17): node_modules, dist и отчёты в рабочей копии
+# принадлежат пользователю раннера, git clean следующего pipeline их удаляет. Зависимости — из кэша стора pnpm.
+runtime-image:
+    stage: test
+    tags: [CI]
+    needs: [install]
+    cache: *pnpm-cache
+    variables:
+        RUNTIME_TAG: test-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+        JOB_LABEL: verdeect.ci.job=${CI_JOB_ID}
+        # При таймауте задания after_script по умолчанию не выполняется (GitLab, «Ensuring after_script execution»):
+        # script обрывается раньше таймаута задания (1 ч), очистке остаётся 5 мин (OR-59).
+        RUNNER_SCRIPT_TIMEOUT: 50m
+        RUNNER_AFTER_SCRIPT_TIMEOUT: 5m
+    script:
+        - echo "disk before $( (df -h /var/lib/docker 2>/dev/null || df -h /) | tail -1)" | tee runtime-report.txt
+        - DSH_VERSION=$(docker run --rm -v "$CI_PROJECT_DIR":/app -w /app "$CI_IMAGE" node -p "require('./runtime/upstream.lock.json').version")
+        - >-
+            docker build -f runtime/Dockerfile --label "$JOB_LABEL" --label "verdeect.ci.pipeline=$CI_PIPELINE_ID"
+            --build-arg VERSION="$RUNTIME_TAG" --build-arg DSH_VERSION="$DSH_VERSION"
+            -t "verdeect-agent-runtime:$RUNTIME_TAG" .
+        - echo "image size $(docker image inspect -f '{{.Size}}' "verdeect-agent-runtime:$RUNTIME_TAG") bytes" | tee -a runtime-report.txt
+        # Фон пишет в свой файл, а не в вывод задания: унаследованный stdout держал бы задание открытым до таймаута (OR-59).
+        - scripts/ci/runtime-mem-peak.sh "$JOB_LABEL" runtime-mem-peak.txt > runtime-mem-peak.log 2>&1 &
+        - echo $! > runtime-mem-peak.pid
+        # -o runtime-image: образ собран шагом выше, внутри не пересобирается. Окружение задания в контейнер не
+        # передаётся (только явные -e) — тесты не видят переменных реальной инфраструктуры (как *prepare-env).
+        # Код R-тестов сохраняется, фон останавливается и при успехе, и при ошибке, затем выход с этим кодом (OR-59).
+        # Перед R-тестами — диагностика окружения контейнера (scripts/ci/runtime-diag.sh, OR-63).
+        # uid раннера (gitlab-runner) в образе не существует: os.userInfo() бросает ENOENT, Testcontainers getReaper падает
+        # в globalSetup («No test files found» + charCodeAt при печати). /etc/passwd образа + строка для uid:gid раннера —
+        # только чтение; файлы рабочей копии по-прежнему принадлежат раннеру (OR-64).
+        - docker run --rm "$CI_IMAGE" cat /etc/passwd > ci-passwd
+        - echo "gitlab-ci:x:$(id -u):$(id -g):CI:/tmp:/bin/sh" >> ci-passwd
+        - |
+            status=0
+            docker run --rm --name "runtime-tests-$CI_JOB_ID" --label "$JOB_LABEL" \
+              --network host -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 \
+              --user "$(id -u):$(id -g)" --group-add "$(stat -c %g /var/run/docker.sock)" -e HOME=/tmp \
+              -v /var/run/docker.sock:/var/run/docker.sock -v "$CI_PROJECT_DIR":/app -w /app \
+              -v "$CI_PROJECT_DIR/ci-passwd":/etc/passwd:ro \
+              -e RUNTIME_TAG -e CI_JOB_ID -e CI=true -e PNPM_STORE_DIR=/app/.pnpm-store \
+              "$CI_IMAGE" bash -c 'pnpm install --frozen-lockfile --prefer-offline --store-dir "$PNPM_STORE_DIR" && { scripts/ci/runtime-diag.sh; make PNPM=pnpm -o runtime-image runtime-smoke test-runtime; }' \
+              || status=$?
+            kill "$(cat runtime-mem-peak.pid)" 2>/dev/null || true
+            echo "peak memory $(cat runtime-mem-peak.txt) MiB" | tee -a runtime-report.txt
+            echo "runtime tests exit $status" | tee -a runtime-report.txt
+            exit "$status"
+    after_script:
+        - kill "$(cat runtime-mem-peak.pid 2>/dev/null)" 2>/dev/null || true
+        # Только ресурсы этого задания (ревью E4 п. 16): контейнеры Testcontainers прогона, рантайма и прокси несут
+        # метку verdeect.ci.job; чужие контейнеры Testcontainers на хосте не трогаются.
+        - docker rm -f -v $(docker ps -aq --filter "label=verdeect.ci.job=$CI_JOB_ID") 2>/dev/null || true
+        - docker network rm $(docker network ls -q --filter "label=verdeect.ci.job=$CI_JOB_ID") 2>/dev/null || true
+        - docker volume rm $(docker volume ls -q --filter "label=verdeect.ci.job=$CI_JOB_ID") 2>/dev/null || true
+        - docker image rm -f $(docker image ls -q --filter "label=verdeect.ci.pipeline=$CI_PIPELINE_ID") 2>/dev/null || true
+        - docker builder prune --filter until=24h -f || true
+        - echo "disk after $( (df -h /var/lib/docker 2>/dev/null || df -h /) | tail -1)" | tee -a runtime-report.txt
+    artifacts:
+        when: always
+        paths: [runtime-report.txt, runtime-mem-peak.log]
+        reports:
+            junit: apps/orchestrator/report-runtime.xml
+
+Build:
+    stage: Build
+    tags: [CI]
+    extends: .docker-cleanup
+    needs: [code-style, static-analysis, alerts-check, tests, tests-integration, tests-timing]
+    variables:
+        IMAGE_TAG: ${ORCHESTRATOR_IMAGE}:${CI_COMMIT_SHORT_SHA}
+        NODE_AGENT_TAG: ${NODE_AGENT_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    script:
+        # Публикация только с main: учётка build-server (Protected) на ветках недоступна — без docker login и push.
+        - |
+            if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+              unset DOCKER_AUTH_CONFIG
+              echo "$CI_DOCKER_REGISTRY_PASSWORD" | docker login -u "$CI_DOCKER_REGISTRY_USER" --password-stdin "$CI_DOCKER_REGISTRY"
+            fi
+        - docker pull "$ORCHESTRATOR_IMAGE:latest" || true
+        - >-
+            docker build --target production
+            --cache-from "$ORCHESTRATOR_IMAGE:latest" --build-arg BUILDKIT_INLINE_CACHE=1
+            --build-arg VERSION="$CI_COMMIT_SHORT_SHA"
+            -t "$IMAGE_TAG" -t "$ORCHESTRATOR_IMAGE:latest" .
+        # node-agent (§6.6) — тот же порядок: сборка на всех ветках, публикация только с main.
+        - docker pull "$NODE_AGENT_IMAGE:latest" || true
+        - >-
+            docker build -f apps/node-agent/Dockerfile --target production
+            --cache-from "$NODE_AGENT_IMAGE:latest" --build-arg BUILDKIT_INLINE_CACHE=1
+            --build-arg VERSION="$CI_COMMIT_SHORT_SHA"
+            -t "$NODE_AGENT_TAG" -t "$NODE_AGENT_IMAGE:latest" .
+        # Дымовой старт до push (prd.md §19): db:prepare, migrate, приложение с ограничениями compose.production.yml,
+        # /health. Тот же скрипт — make orchestrator-smoke локально (OR-66).
+        - scripts/ci/orchestrator-smoke.sh "$IMAGE_TAG"
+        - |
+            if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+              docker push "$IMAGE_TAG"
+              docker push "$ORCHESTRATOR_IMAGE:latest"
+              docker push "$NODE_AGENT_TAG"
+              docker push "$NODE_AGENT_IMAGE:latest"
+            else
+              echo "Ветка $CI_COMMIT_BRANCH: образы orchestrator и node-agent собраны, смоук пройден; публикация — только с $CI_DEFAULT_BRANCH"
+            fi
+    after_script:
+        - docker rm -f "orchestrator-smoke-$CI_JOB_ID" "orchestrator-smoke-db-$CI_JOB_ID" || true
+        - docker network rm "orchestrator-smoke-$CI_JOB_ID" || true
+        - unset DOCKER_AUTH_CONFIG
+        - docker logout "$CI_DOCKER_REGISTRY" || true
+        - docker image prune -f || true
+
+# Образ рантайма для выкатки (§19: сначала публикация образа рантайма, затем RUNTIME_IMAGE). Только main: на ветках
+# образ собирает и проверяет runtime-image. Тот же коммит проверен заданием runtime-image — повторного смоука нет; слои —
+# из кэша сборки на том же хосте. После push образ удаляется.
+build-runtime:
+    stage: Build
+    tags: [CI]
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    needs: [runtime-image]
+    variables:
+        RUNTIME_IMAGE_TAG: ${CI_DOCKER_REGISTRY}/${CI_PROJECT_PATH}/verdeect-agent-runtime:${CI_COMMIT_SHORT_SHA}
+    script:
+        - *docker-login
+        - DSH_VERSION=$(docker run --rm -v "$CI_PROJECT_DIR":/app -w /app "$CI_IMAGE" node -p "require('./runtime/upstream.lock.json').version")
+        - >-
+            docker build -f runtime/Dockerfile --build-arg VERSION="$CI_COMMIT_SHORT_SHA" --build-arg DSH_VERSION="$DSH_VERSION"
+            -t "$RUNTIME_IMAGE_TAG" .
+        - docker push "$RUNTIME_IMAGE_TAG"
+        - docker image rm "$RUNTIME_IMAGE_TAG"
+    after_script:
+        - unset DOCKER_AUTH_CONFIG
+        - docker logout "$CI_DOCKER_REGISTRY" || true
+        - docker image rm "$RUNTIME_IMAGE_TAG" || true
+        - docker builder prune --filter until=24h -f || true
+
+# Выкатка node-agent и прокси выхода (prd.md §19: node-agent на нодах — раньше Orchestrator). Раннер — на хосте ноды;
+# новая нода — новая строка матрицы (значения записаны здесь: матрицу нельзя построить из CI/CD-переменной) и запись в
+# NODES (docs/deployment.md «Добавление ноды»). Переменные — ${VAR:?} compose.node.yml, в окружении production.
+deploy-node:
+    stage: Deploy
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: manual
+    parallel:
+        matrix:
+            - NODE_ID: node-1
+              NODE_RUNNER_TAG: NODE_1
+    tags: [$NODE_RUNNER_TAG]
+    needs: [Build]
+    dependencies: []
+    environment:
+        name: production
+    resource_group: node-$NODE_ID
+    interruptible: false
+    variables:
+        VERSION: ${CI_COMMIT_SHORT_SHA}
+        COMPOSE_PROJECT_NAME: verdeect-node-$NODE_ID
+        COMPOSE_FILE: compose.node.yml
+    extends: .docker-cleanup
+    script:
+        - *docker-login
+        - docker compose pull node-agent
+        - docker compose up -d --wait --remove-orphans
+        - docker compose ps
+        - make node-check AGENT_GATEWAY="$AGENT_GATEWAY" AGENT_NETWORK="${AGENT_NETWORK_NAME:-verdeect-agents}"
+
+# Одна установка на окружение (общий SaaS, без матрицы клиентов).
+deploy-production:
+    stage: Deploy
+    # Только main, вручную.
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: manual
+    tags: [$PRODUCTION_RUNNER_TAG]
+    # Образ рантайма публикуется раньше выкатки, node-agent на нодах обновлён раньше Orchestrator (§19).
+    needs: [Build, build-runtime, deploy-node]
+    dependencies: []
+    environment:
+        name: production
+        url: https://orchestrator.api.verdeect.ru/ok
+    resource_group: production
+    interruptible: false
+    variables:
+        VERSION: ${CI_COMMIT_SHORT_SHA}
+    extends: .docker-cleanup
+    script:
+        - *docker-login
+        - export COMPOSE_FILE=compose.yml:compose.production.yml
+        - docker compose pull
+        # Миграции до новых реплик; up ещё раз запустит orchestrator-migrate — повтор ничего не применит.
+        - docker compose run --rm orchestrator-migrate
+        - docker compose up -d --wait --remove-orphans
+        - docker compose ps
+        - docker compose logs --tail=50 orchestrator

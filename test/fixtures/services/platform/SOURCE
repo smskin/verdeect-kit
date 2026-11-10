@@ -1,0 +1,10 @@
+repository: /home/administrator/projects/verdeect2/verdeect-platform
+commit: 468ac5b
+files:
+  - .gitlab-ci.yml
+  - Dockerfile
+  - compose.override.yml
+  - compose.production.yml
+  - compose.yml
+  - package.json
+  - apps/platform/package.json

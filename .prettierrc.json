@@ -1,0 +1,22 @@
+{
+  "tabWidth": 4,
+  "singleQuote": true,
+  "semi": true,
+  "printWidth": 100,
+  "trailingComma": "all",
+  "endOfLine": "lf",
+  "overrides": [
+    {
+      "files": ["*.yaml", "*.yml", "*.json", "*.md"],
+      "options": {
+        "tabWidth": 2
+      }
+    },
+    {
+      "files": ["README.md"],
+      "options": {
+        "embeddedLanguageFormatting": "off"
+      }
+    }
+  ]
+}

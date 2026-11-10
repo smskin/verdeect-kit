@@ -1,0 +1,176 @@
+# Разработка: подхватывается автоматически `docker compose up -d`.
+#
+# Перед первым запуском: cp apps/identity/.env.example apps/identity/.env и заполнить
+# IDENTITY_SECRETS и CLIENT_SECRET_KEY (команды генерации — в файле).
+# Адреса инфраструктуры закреплены здесь в environment: устаревший .env разработчика контур не ломает.
+# Порты хоста сдвинуты от стандартных (несколько сервисов Вердикта рядом); меняются через корневой .env.
+# RabbitMQ (E7): UI управления — http://localhost:15772 (guest/guest), метрики Identity —
+# http://127.0.0.1:9200/metrics. Письма перехватывает mailpit — UI на http://localhost:8025.
+# Вход в браузере — https://localhost:4443 (TLS-край Caddy, сертификат самоподписанный — принять в
+# браузере): oidc-provider ставит только Secure-cookies, по http вход невозможен.
+#
+# После изменения pnpm-lock.yaml: docker compose build, затем удалить тома *-node-modules
+# (docker volume rm …) — иначе в контейнере останутся старые зависимости.
+
+x-dev-source: &dev-source
+  build:
+    context: .
+    target: development
+  image: verdeect-identity:development
+  volumes:
+    - .:/app
+    # node_modules — из образа (бинарники хоста и Alpine различаются).
+    - root-node-modules:/app/node_modules
+    - identity-node-modules:/app/apps/identity/node_modules
+    - pages-node-modules:/app/apps/identity-pages/node_modules
+    # dist — общий том identity и identity-migrate, на хост не пишется (файлы root).
+    - identity-dist:/app/apps/identity/dist
+    # public — сборка страниц, общий том identity и identity-pages; на хост не пишется (файлы root) —
+    # иначе make build / make clean на хосте падают с EACCES.
+    - identity-public:/app/apps/identity/public
+
+services:
+  identity:
+    <<: *dev-source
+    env_file:
+      - path: apps/identity/.env
+        required: true
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://identity_app_login:identity_app@postgres:5432/identity
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      SMTP_URL: smtp://mailpit:1025
+      IDENTITY_PORT: '3000'
+      IDENTITY_ISSUER: https://localhost:${IDENTITY_HTTPS_PORT:-4443}
+      # Адрес Caddy в сети docker динамический — доверяем частным диапазонам (AC-8.2).
+      TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # GlitchTip — только production (GT02).
+      SENTRY_DSN: ''
+      SENTRY_FRONTEND_DSN: ''
+    ports:
+      - ${IDENTITY_HTTP_PORT:-3100}:3000
+      # Отладчик Node (--inspect) — только разработка.
+      - 127.0.0.1:${IDENTITY_DEBUG_PORT:-9330}:9229
+      # /metrics (METRICS_PORT, prd.md §17) — отдельный сервер, на основном порту его нет.
+      - 127.0.0.1:${IDENTITY_METRICS_PORT:-9200}:9100
+    labels:
+      traefik.http.routers.verdeect-identity.rule: Host(`id.verdeect.localhost`)
+    depends_on:
+      identity-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      # Соединение ленивое и переподключается: брокер может подняться позже Identity.
+      rabbitmq:
+        condition: service_started
+    # Первая сборка tsc в контейнере идёт дольше, чем в production.
+    healthcheck:
+      start_period: 90s
+
+  identity-migrate:
+    <<: *dev-source
+    # Миграции из смонтированных исходников: сначала сборка (тот же том dist, что у identity).
+    command: ['sh', '-c', 'pnpm build && node dist/cli.js migrate']
+    environment:
+      # Владелец схемы — суперпользователь контейнера postgres; приложение — identity_app_login.
+      DATABASE_URL: postgres://identity_owner:identity_owner@postgres:5432/identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Страницы собираются в apps/identity/public (vite build --watch) и отдаются Identity с того же origin
+  # через TLS-край: cookies интеракции привязаны к домену Identity (prd.md §19).
+  identity-pages:
+    <<: *dev-source
+    working_dir: /app/apps/identity-pages
+    command: ['pnpm', 'build:watch']
+    networks: [verdeect-internal]
+
+  # TLS-край (https://localhost:4443): без https oidc-provider не ставит Secure-cookies и вход в
+  # браузере невозможен. В production TLS терминирует Traefik.
+  identity-edge:
+    image: caddy:2.11.7-alpine
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    ports:
+      - ${IDENTITY_HTTPS_PORT:-4443}:443
+    networks: [verdeect-internal]
+    depends_on:
+      identity:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '-q',
+          '-O',
+          '/dev/null',
+          '--no-check-certificate',
+          'https://localhost/pages/config.json',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # Лимит входа по IP (FR-12, §17). Без сохранения на диск: счётчики минутные.
+  redis:
+    image: redis:7.4.11-alpine
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - 127.0.0.1:${IDENTITY_REDIS_PORT:-6380}:6379
+    networks: [verdeect-internal]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Перехват SMTP (письма §13): UI и API — http://localhost:8025. В production SMTP внешний.
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    ports:
+      - 127.0.0.1:${IDENTITY_MAILPIT_PORT:-8025}:8025
+    networks: [verdeect-internal]
+
+  # Брокер событий verdeect.events (prd.md §10, §10.1). В production RabbitMQ внешний.
+  rabbitmq:
+    image: rabbitmq:4.3.6-management-alpine
+    ports:
+      - 127.0.0.1:${RABBITMQ_UI_PORT:-15772}:15672
+    networks: [verdeect-internal]
+
+  # В production БД внешняя. PostgreSQL 16 — как в Testcontainers (prd.md §18).
+  postgres:
+    image: postgres:16.15-alpine3.24
+    environment:
+      POSTGRES_DB: identity
+      POSTGRES_USER: identity_owner
+      POSTGRES_PASSWORD: identity_owner
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Учётная запись приложения identity_app_login (в production её создаёт инфраструктура).
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - 127.0.0.1:${IDENTITY_DB_PORT:-5433}:5432
+    networks: [verdeect-internal]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U identity_owner -d identity']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  caddy-data:
+  identity-public:
+  root-node-modules:
+  identity-node-modules:
+  pages-node-modules:
+  identity-dist:
