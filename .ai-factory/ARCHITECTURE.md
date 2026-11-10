@@ -81,14 +81,14 @@ verdeect-kit/
 │   │   ├── kit-exception.filter.ts    #   эталон O
 │   │   ├── pagination.ts              #   keyset (эталон I)
 │   │   └── api/                       #   api.decorator.ts (@Api), openapi-document.ts (OpenAPI 3.1, z.toJSONSchema)
-│   ├── database/                      # "./database" — E4 (§3.3); pg через loadPeer, drizzle-orm
+│   ├── database/                      # "./database" — E4 (§3.3); pg: requirePeer при загрузке, import() при вызове; drizzle-orm
 │   │   ├── kit-database.module.ts     #   пулы основной и чтения, DRIZZLE, DRIZZLE_READ, пробы, шаг 4
 │   │   ├── db.ts                      #   Db.transaction/read/readGlobal/afterCommit/setLocal (эталон O)
 │   │   ├── tenant.ts                  #   tenantColumn, tenantPolicy, DbContext
 │   │   ├── prepare-database.ts        #   роли <svc>_owner/_app/_directory, схема (эталон O)
 │   │   ├── migrations.ts              #   runMigrations, журнал <schema>.__migrations
 │   │   ├── run-exclusive.ts · batches.ts · if-newer.ts
-│   ├── idempotency/                   # "./idempotency" — E4 (§3.3а); pg через loadPeer
+│   ├── idempotency/                   # "./idempotency" — E4 (§3.3а); pg: requirePeer при загрузке
 │   │   ├── table.ts · kit-idempotency.module.ts · idempotent.decorator.ts · idempotency.interceptor.ts
 │   ├── messaging/                     # "./messaging" — E5 (§3.4); amqplib + amqp-connection-manager через loadPeer
 │   │   ├── define-event.ts · envelope.ts · tables.ts
@@ -172,13 +172,14 @@ verdeect-kit/
 | `testing` | любой подпуть; `yaml`, `semver`, `shell-quote`, `ajv` (только `testing`) | — | `testcontainers`, `vitest`, `@nestjs/testing` |
 | `cli` | любой подпуть или внутренний модуль пакета (`http/api/openapi-document`) через динамический `import()` в обработчике команды | — | по команде |
 
-- ✅ Опциональный peer грузится только через `await loadPeer('<lib>', '<подпуть>')` на верхнем уровне модуля подпути. В ESM отсутствующий статический импорт падает ещё при связывании, до любого кода. Тогда вместо текста AC-1.2 потребитель увидит `ERR_MODULE_NOT_FOUND`. Исключение — `@nestjs/testing`: он грузится `loadPeer` внутри `createTestApp`, поэтому `/testing` импортируется и без него (PRD v1.13 NFR-3).
+- ✅ Проверка опционального peer — синхронная, при загрузке модуля подпути: `requirePeer('<lib>', '<подпуть>')` (`src/internal/peer.ts`, `createRequire(import.meta.url).resolve` с текстом AC-1.2). Ошибка возникает при импорте подпути, а не при первом вызове.
+- ✅ Сам peer грузится динамическим `import()` при вызове (мемоизированный загрузчик подпути, например `loadPg()`, `loadDrizzle()` в `src/database/pg.ts`). Top-level await в статическом графе подпути нет: `drizzle-kit` загружает схему сервиса (фабрики `/database`, `/idempotency`) через `require`, а `require` ESM с top-level await падает `ERR_REQUIRE_ASYNC_MODULE` (П15, план E4). Статический импорт значения peer запрещён: в ESM отсутствующий пакет падает ещё при связывании, до любого кода, и потребитель видит `ERR_MODULE_NOT_FOUND` вместо текста AC-1.2. Модули E1–E3 с top-level `await loadPeer` (`src/testing/start-test-stack.ts`) не переделываются: `/testing` не загружается через `require`. Исключение — `@nestjs/testing`: он грузится `loadPeer` внутри `createTestApp`, поэтому `/testing` импортируется и без него (PRD v1.13 NFR-3).
 - ✅ `import type` из опционального peer допустим, если тип не выходит в публичный `.d.ts` подпути, который должен грузиться без этого peer.
 - ✅ `messaging` получает `Db` экземпляром через DI от `KitDatabaseModule`, а не импортом значения. Чистые функции, нужные обоим (`newId`, распознавание ошибок), лежат в `internal`.
 - ✅ `@Idempotent` пишет метаданные по ключу из `internal/metadata.ts`, `@Api` их читает. Так `http` не импортирует `idempotency`.
 - ✅ Тесты могут импортировать любой подпуть, включая `testing`. Внутри своего подпути — через относительные пути, между подпутями — через `../<подпуть>/index.js`.
 - ❌ Импорт вверх или вбок вне таблицы: `config` → `observability`, `http` → `database`/`idempotency`, `database` → `http`, `crypto` → Nest-модулей.
-- ❌ Статический `import` значений из `pg`, `ioredis`, `amqplib`, `amqp-connection-manager`, `testcontainers`, `vitest` где-либо в `src/` (кроме `loadPeer`).
+- ❌ Статический `import` значений из `pg`, `ioredis`, `amqplib`, `amqp-connection-manager`, `testcontainers`, `vitest` где-либо в `src/` (peer — только `requirePeer` + `import()` или `loadPeer`).
 - ❌ Импорт `testing` из любого другого подпути. `default` у `./testing` в `exports`.
 - ❌ Импорт по имени собственного пакета (`@verdeect/kit/...`) внутри `src/` — только относительные пути с `.js`.
 - ❌ Перенос peer из NFR-3 в `dependencies` или смена «обязательный ↔ опциональный» без требования.
@@ -226,7 +227,7 @@ verdeect-kit/
 
 1. **P0 — один способ.** Опция — только для различия по роли сервиса, названного в PRD: BFF — `trustTraceparent: false`, `dedupe: 'none'`, свой фильтр; Identity — `tenantNullable`; P и O — `quietRoutes`. Режимов совместимости, псевдонимов ключей и чтения старых форматов нет.
 2. **Перенос, а не написание.** Каждый модуль переносится из эталона `inventory.md` §1 вместе с его тестами. В шапке файла указаны эталон и что взято из других копий. Отличие от эталона — только по решению PRD.
-3. **Загрузка без лишних peer.** Подпуть грузится, если установлены его peer. Опциональный peer — только через `loadPeer` с понятным текстом ошибки (AC-1.2).
+3. **Загрузка без лишних peer.** Подпуть грузится, если установлены его peer. Опциональный peer — синхронная проверка `requirePeer` при загрузке модуля и `import()` при вызове (или `loadPeer` внутри функции), с понятным текстом ошибки (AC-1.2).
 4. **Безопасность по построению.** Один объект `KitRedaction` на сервис для логов и GlitchTip. `SENSITIVE_KEYS` не отключается. Значения окружения, секреты, ПДн, ключи Redis и параметры SQL не попадают в логи, события, ответы и тексты ошибок (NFR-4).
 5. **Строгий RLS.** Тенант — только из `DbContext`. `Db.read` без тенанта — ошибка. Роль приложения — `NOBYPASSRLS`, не владелец схемы. Исключение строгой модели одно — `outbox` (пустой тенант видит все строки для relay и очистки).
 6. **Атомарность и доставка.** Данные и событие пишутся в одной транзакции. Relay публикует с подтверждением брокера по `seq`. Подписчик занимает inbox в транзакции обработчика: повтор `id` → `duplicate`. Неразбираемое уходит в DLQ с `x-dlq-reason`.
@@ -263,12 +264,19 @@ export async function loadPeer<T>(library: string, subpath: string): Promise<T> 
 ```
 
 ```ts
-// src/database/pool.ts — пулы KitDatabaseModule (prd.md §3.3)
+// src/database/pg.ts — pg и драйвер Drizzle для /database (prd.md §3.3, AC-1.2; П15)
 import type { Pool, PoolConfig } from 'pg'; // ✅ только тип, стирается при сборке
-import { loadPeer } from '../internal/peer.js';
+import { requirePeer } from '../internal/peer.js';
 
-const pg = await loadPeer<typeof import('pg')>('pg', 'database'); // ✅ top-level await
-// import pg from 'pg';                                           // ❌ ERR_MODULE_NOT_FOUND до любого кода
+requirePeer('pg', 'database'); // ✅ синхронная проверка при загрузке модуля — текст AC-1.2 при импорте подпути
+
+let pg: Promise<typeof import('pg')> | undefined;
+export function loadPg(): Promise<typeof import('pg')> {
+    pg ??= import('pg'); // ✅ сам peer — динамический import() при вызове
+    return pg;
+}
+// const pg = await loadPeer('pg', 'database'); // ❌ top-level await: drizzle-kit (require) не загрузит схему сервиса
+// import pg from 'pg';                         // ❌ ERR_MODULE_NOT_FOUND до любого кода
 ```
 
 ### `messaging` без `pg` до `forRoot`
