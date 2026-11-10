@@ -4,6 +4,7 @@
 // ac-10-8-shutdown.http-spec.ts и or-106-health-stopping-first.http-spec.ts. Ребёнок импортирует dist, собранный в
 // beforeAll в node_modules/.cache (dist/ не трогается).
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -65,6 +66,24 @@ function start(mode: 'plain' | 'sse'): Promise<Started> {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * GET /ok по новому TCP-соединению (agent: false, без пула keep-alive): AC-3.9 проверяет отказ нового соединения.
+ * Запрос по соединению из пула fetch мог попасть на сокет, который сервер закрывает на шаге 2, — ECONNRESET вместо
+ * ECONNREFUSED (CI main, прогон №6). Результат — код ошибки соединения или null при ответе.
+ */
+function probeNewConnection(port: number): Promise<string | null> {
+    return new Promise((resolve) => {
+        const req = request({ host: '127.0.0.1', port, path: '/ok', agent: false }, (res) => {
+            res.resume();
+            // Ответ получен: соединение принято. close — и после end, и при обрыве ответа (без зависания опроса).
+            res.once('error', () => resolve(null));
+            res.once('close', () => resolve(null));
+        });
+        req.once('error', (error: NodeJS.ErrnoException) => resolve(error.code ?? error.message));
+        req.end();
+    });
+}
+
 /** Время первого ответа /health 503 и первого отказа соединения /ok от начала опроса. */
 async function poll(app: Started, until: Promise<unknown>) {
     let healthDown: number | null = null;
@@ -84,11 +103,10 @@ async function poll(app: Started, until: Promise<unknown>) {
             await res?.text();
         }
         if (okRefused === null) {
-            try {
-                await (await fetch(`http://127.0.0.1:${app.port}/ok`)).text();
-            } catch (error) {
+            const code = await probeNewConnection(app.port);
+            if (code !== null) {
                 okRefused = now;
-                refusalCode = (error as { cause?: { code?: unknown } }).cause?.code;
+                refusalCode = code;
             }
         }
         await sleep(POLL_MS);
