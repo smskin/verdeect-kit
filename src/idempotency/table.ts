@@ -11,6 +11,7 @@ import {
     text,
     timestamp,
     unique,
+    uuid,
     type PgSchema,
 } from 'drizzle-orm/pg-core';
 import { assertServiceName } from '../internal/service-name.js';
@@ -36,6 +37,8 @@ function defineTable(schema: PgSchema) {
             subject: text('subject').notNull(),
             key: text('key').notNull(),
             fingerprint: text('fingerprint').notNull(),
+            // Метка попытки, захватившей строку: ответ пишет только она (KT-22 п. 3).
+            attempt: uuid('attempt').notNull().defaultRandom(),
             state: text('state').notNull().default('in_progress'),
             responseStatus: smallint('response_status'),
             responseBody: jsonb('response_body'),
@@ -62,7 +65,8 @@ function defineTable(schema: PgSchema) {
 export type KitIdempotencyTable = ReturnType<typeof defineTable>;
 
 /**
- * Таблица `idempotency_key` в схеме сервиса (§6): область (`tenant?`, `subject`), ключ, отпечаток запроса, состояние,
+ * Таблица `idempotency_key` в схеме сервиса (§6): область (`tenant?`, `subject`), ключ, отпечаток запроса, метка
+ * попытки `attempt` (ответ пишет только захватившая строку попытка), состояние,
  * сохранённый ответ (статус, тело, `Location`), время создания; RLS
  * `tenant IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')`. SQL генерирует `drizzle-kit` сервиса;
  * `FORCE ROW LEVEL SECURITY`, права `<svc>_app` и функцию очистки (`idempotencyPurgeSql`) — SQL-миграция сервиса.

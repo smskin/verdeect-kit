@@ -1,8 +1,12 @@
 // AC-4.3 (UC-5): Db.afterCommit — задачи после COMMIT по порядку, при откате не выполняются, сбой задачи не отменяет
-// остальные; read-only — AfterCommitInReadOnlyError (prd.md §3.3). Перенос I after-commit.int-spec.ts и O db.int-spec.ts.
+// остальные; read-only — AfterCommitInReadOnlyError; транзакция не этого Db или вложенная —
+// AfterCommitOutsideTransactionError (prd.md §3.3; KT-22 п. 2). Перенос I after-commit.int-spec.ts и O db.int-spec.ts.
 import type { Logger } from '@nestjs/common';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AfterCommitInReadOnlyError } from '../../../src/database/db.js';
+import {
+    AfterCommitInReadOnlyError,
+    AfterCommitOutsideTransactionError,
+} from '../../../src/database/db.js';
 import { note } from '../../fixtures/database/schema.js';
 import {
     adminQuery,
@@ -96,5 +100,38 @@ describe('UC-5: Db.afterCommit', () => {
                 return Promise.resolve();
             }),
         ).rejects.toBeInstanceOf(AfterCommitInReadOnlyError);
+    });
+
+    it('AC-4.3: afterCommit с транзакцией другого Db или вложенной → AfterCommitOutsideTransactionError; своя — задача после COMMIT', async () => {
+        const other = await createTestDb();
+        const task = vi.fn();
+        try {
+            await expect(
+                other.db.transaction(ctx('acme'), (tx) => {
+                    test.db.afterCommit(tx, task);
+
+                    return Promise.resolve();
+                }),
+            ).rejects.toBeInstanceOf(AfterCommitOutsideTransactionError);
+            await expect(
+                test.db.transaction(ctx('acme'), (tx) =>
+                    tx.transaction((nested) => {
+                        test.db.afterCommit(nested, task);
+
+                        return Promise.resolve();
+                    }),
+                ),
+            ).rejects.toBeInstanceOf(AfterCommitOutsideTransactionError);
+            expect(task).not.toHaveBeenCalled();
+
+            await test.db.transaction(ctx('acme'), (tx) => {
+                test.db.afterCommit(tx, task);
+
+                return Promise.resolve();
+            });
+            expect(task).toHaveBeenCalledOnce();
+        } finally {
+            await other.close();
+        }
     });
 });

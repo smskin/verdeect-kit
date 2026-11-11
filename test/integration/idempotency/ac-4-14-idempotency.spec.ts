@@ -2,16 +2,19 @@
 // in_progress, срок 24 ч, область (sub, компания, служба, tenantFromBody), ошибка обработчика, маршрут без guard'а, RLS
 // таблицы (prd.md §3.3а v1.14). Перенос O http/shared/idempotency и ac-2-2-idempotency. Проект isolated: initFakeSentry —
 // процесс-глобальный Sentry.
+import { Logger } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import pg from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fingerprintOf } from '../../../src/idempotency/idempotency.interceptor.js';
 import { workerScope } from '../../../src/testing/worker-scope.js';
 import { adminQuery, appUrl } from '../../support/database.js';
 import { initFakeSentry, type DeliveredEvent } from '../../support/fake-sentry.js';
 import {
     OTHER_TENANT,
+    closeGate,
     createStand,
+    nextEntry,
     handlers,
     post,
     resetHandlers,
@@ -20,21 +23,6 @@ import {
     userToken,
     type IdempotencyStand,
 } from './support.js';
-
-async function until(condition: () => boolean): Promise<void> {
-    for (let attempt = 0; attempt < 200 && !condition(); attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-}
-
-function gate(): () => void {
-    let release = (): void => undefined;
-    handlers.gate = new Promise<void>((resolve) => {
-        release = resolve;
-    });
-
-    return release;
-}
 
 describe('UC-7: Idempotency-Key', () => {
     let stand: IdempotencyStand;
@@ -79,9 +67,10 @@ describe('UC-7: Idempotency-Key', () => {
     });
 
     it('AC-4.14: параллельный первый — 409 IDEMPOTENCY_IN_PROGRESS', async () => {
-        const release = gate();
+        const release = closeGate();
+        const entered = nextEntry();
         const first = post(stand, '/echo', { token, key: 'k-3' });
-        await until(() => handlers.calls === 1);
+        await entered;
 
         const second = await post(stand, '/echo', { token, key: 'k-3' });
         release();
@@ -138,6 +127,41 @@ describe('UC-7: Idempotency-Key', () => {
         expect((await post(stand, '/echo', { token, key: 'k-old' })).statusCode).toBe(201);
         expect((await post(stand, '/echo', { token, key: 'k-young' })).statusCode).toBe(409);
         expect(handlers.calls).toBe(1);
+    });
+
+    it('AC-4.14: первый запрос дольше 5 мин, второй перехватил строку и завершился — ответ второго не затёрт первым (KT-22 п. 3)', async () => {
+        const releaseFirst = closeGate();
+        const entered = nextEntry();
+        const first = post(stand, '/echo', { token, key: 'k-14' });
+        await entered;
+        // Строка первого запроса выглядит брошенной: in_progress старше 5 минут.
+        await adminQuery(
+            "update kit.idempotency_key set created_at = now() - interval '6 minutes' where key = 'k-14'",
+        );
+        handlers.gate = null;
+        // Файл в проекте isolated: шпион прототипа логгера Nest допустим.
+        const warn = vi.spyOn(Logger.prototype, 'warn');
+
+        const second = await post(stand, '/echo', { token, key: 'k-14' });
+        releaseFirst();
+        const firstResponse = await first;
+        const taken = warn.mock.calls.find(
+            ([, message]) =>
+                message ===
+                'идемпотентность: строку перехватила другая попытка — ответ не сохранён',
+        );
+        warn.mockRestore();
+        expect(taken).toBeDefined();
+        expect(JSON.stringify(taken)).not.toContain('k-14');
+        expect(JSON.stringify(taken)).not.toContain('"n"');
+        const replay = await post(stand, '/echo', { token, key: 'k-14' });
+
+        expect(second.statusCode).toBe(201);
+        expect(firstResponse.statusCode).toBe(201);
+        expect(replay.headers['idempotent-replayed']).toBe('true');
+        expect(replay.json()).toEqual(second.json());
+        expect(replay.headers.location).toBe('/echo/2');
+        expect(handlers.calls).toBe(2);
     });
 
     it('AC-4.14: запись старше 24 ч — запрос выполняется заново без Idempotent-Replayed', async () => {
@@ -201,9 +225,10 @@ describe('UC-7: Idempotency-Key', () => {
         expect(replay.statusCode).toBe(201);
         expect(replay.headers['idempotent-replayed']).toBe('true');
 
-        const release = gate();
+        const release = closeGate();
+        const entered = nextEntry();
         const first = post(stand, '/service-plain', { token: svc, key: 'k-9' });
-        await until(() => handlers.calls === 2);
+        await entered;
         const second = await post(stand, '/service-plain', { token: svc, key: 'k-9' });
         release();
 

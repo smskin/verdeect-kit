@@ -1,0 +1,1 @@
+ALTER TABLE "consumer"."idempotency_key" ADD COLUMN "attempt" uuid DEFAULT gen_random_uuid() NOT NULL;

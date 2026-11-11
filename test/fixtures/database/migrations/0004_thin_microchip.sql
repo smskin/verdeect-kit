@@ -1,0 +1,1 @@
+ALTER TABLE "kit"."idempotency_key" ADD COLUMN "attempt" uuid DEFAULT gen_random_uuid() NOT NULL;

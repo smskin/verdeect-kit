@@ -3,6 +3,7 @@
 // Обработчик вызывается в процессе с write и env (без vi.stubEnv); своя БД и сервис kitcli.
 import {
     cpSync,
+    mkdirSync,
     mkdtempSync,
     readdirSync,
     readFileSync,
@@ -258,5 +259,43 @@ describe('UC-12: CLI db', () => {
         });
         expect(run.stdout).not.toContain('kitcli_owner');
         expectNoSecrets(run, 'wrong-password');
+    });
+
+    it('AC-4.17: ошибка SQL миграции — DB_COMMAND_FAILED с sqlState из cause (DrizzleQueryError), без текста SQL', async () => {
+        const broken = join(temp, 'broken');
+        mkdirSync(join(broken, 'meta'), { recursive: true });
+        writeFileSync(
+            join(broken, 'meta', '_journal.json'),
+            JSON.stringify({
+                version: '7',
+                dialect: 'postgresql',
+                entries: [
+                    {
+                        idx: 0,
+                        version: '7',
+                        // Позже применённых миграций: drizzle применяет только более новые записи журнала.
+                        when: 4_102_444_800_000,
+                        tag: '0000_broken',
+                        breakpoints: true,
+                    },
+                ],
+            }),
+        );
+        writeFileSync(
+            join(broken, '0000_broken.sql'),
+            'SELECT * FROM kitcli.no_such_table_marker;',
+        );
+
+        const run = await db(['migrate', '--folder', broken, '--schema', 'kitcli'], migrateEnv());
+
+        expect(run.code).toBe(1);
+        expect(run.result).toEqual({
+            error: {
+                code: 'DB_COMMAND_FAILED',
+                message: 'команда db завершилась ошибкой',
+                sqlState: '42P01',
+            },
+        });
+        expect(run.stdout + run.stderr).not.toContain('no_such_table_marker');
     });
 });

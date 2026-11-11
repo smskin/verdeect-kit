@@ -85,6 +85,15 @@
 
 ### Fixed
 
+- `/database`: `Db.setLocal` отвергает служебную `app.tenant` (`TypeError`) — тенант задаётся только `DbContext` в `transaction`/`read` (KT-22 п. 1).
+- `/database`: `Db.afterCommit` с транзакцией другого `Db` или вложенной — `AfterCommitOutsideTransactionError` вместо молчаливой потери задачи (KT-22 п. 2).
+- `/idempotency`: ответ пишет только попытка, захватившая строку, — колонка `attempt` в `createIdempotencyTable`; долгий первый запрос не затирает ответ перехватившего повтора, `warn` без ключа и тела (KT-22 п. 3). Сервису — миграция `drizzle-kit` с новой колонкой.
+- `/database`: `runExclusive` передаёт в `fn` соединение блокировки, `deleteInBatches` — опция `connection`; очистка идемпотентности идёт на соединении блокировки и работает при `DB_POOL_MAX = 1` (KT-22 п. 4).
+- `/idempotency`: проход очистки, прерванный остановкой, — `verdeect_cleanup_runs_total{result="interrupted"}` вместо `ok`; алерт `VerdeectCleanupFailing` его не учитывает (KT-22 п. 5).
+- CLI `db`: `sqlState` ищется по цепочке `cause` (до 10 уровней) — код pg внутри `DrizzleQueryError` больше не теряется; системные коды Node (`EPIPE`) в `sqlState` не попадают (KT-22 п. 6).
+- `/testing`: `assertStrictTenantIsolation` проверяет функцию очистки по точной сигнатуре `idempotency_purge(integer)`; другая перегрузка без нужной — «функции нет» (KT-22 п. 7).
+- Тесты `/database` и `/idempotency` уровня I — без реальных пауз: сигналы входа в обработчик, события `acquire` пула и шлагбаумы вместо `setTimeout` и опроса (KT-22 п. 8).
+
 - `/http`: OpenAPI — у маршрутов с `@RequireTenant()` ответ 409 `TENANT_REQUIRED` (тело guard'а `@verdeect/auth`); `expectMatchesApi` проверяет описанные статусы ошибок по схеме `ErrorResponse` и падает на неописанном статусе.
 - `/http`: `bootstrapService` — `SENTRY_NOT_PRELOADED` только при верной конфигурации Sentry (верный `SENTRY_DSN`, `NODE_ENV = production`); при неверном `SENTRY_*` предупреждения нет — `initSentry` выключил Sentry намеренно.
 - `/testing`: `expectMatchesApi` — скомпилированная схема Ajv кэшируется по маршруту и статусу.

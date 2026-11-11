@@ -44,6 +44,22 @@ export interface KitIdempotencyModuleOptions {
     readonly table: KitIdempotencyTable;
 }
 
+/**
+ * Итог прохода (AC-9.5, KT-22 п. 5): `ok` — удалять больше нечего; `partial` — упёрся в `maxBatches`, записи старше
+ * срока остались; `interrupted` — остановлен (выкат), алерт `VerdeectCleanupFailing` его не учитывает.
+ */
+function resultOf(
+    complete: boolean,
+    batches: number,
+    maxBatches: number,
+): 'ok' | 'partial' | 'interrupted' {
+    if (complete) {
+        return 'ok';
+    }
+
+    return batches === maxBatches ? 'partial' : 'interrupted';
+}
+
 /** Логгер прохода: pino экземпляра (`service`, `replica` в `base`) или логгер Nest. */
 interface CleanupLog {
     debug(fields: object, message: string): void;
@@ -146,12 +162,14 @@ export class IdempotencyCleanup
             const outcome = await runExclusive(
                 this.db,
                 `verdeect-kit:idempotency-cleanup:${this.schema}`,
-                () =>
+                // Пачки — на соединении блокировки: очистка не берёт второе соединение пула (KT-22 п. 4).
+                (connection) =>
                     deleteInBatches({
                         db: this.db,
                         sql: (batch) => sql`select ${fn}(${batch}::int) as deleted`,
                         ...limits,
                         shouldContinue: () => !this.stopped,
+                        connection,
                     }),
             );
             if (!outcome.ran) {
@@ -160,7 +178,7 @@ export class IdempotencyCleanup
                 return;
             }
             const { deleted, batches, complete } = outcome.result;
-            const result = !complete && batches === limits.maxBatches ? 'partial' : 'ok';
+            const result = resultOf(complete, batches, limits.maxBatches);
             this.metrics?.cleanupRuns.inc({ table, result });
             this.log.info({ table, deleted, batches, result }, 'очистка идемпотентности: проход');
         } catch (error) {

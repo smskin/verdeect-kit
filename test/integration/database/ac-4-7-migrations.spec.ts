@@ -22,7 +22,7 @@ import {
 } from '../../support/postgres.js';
 
 const FOLDER = fileURLToPath(new URL('../../fixtures/database/migrations', import.meta.url));
-const MIGRATION_COUNT = 4;
+const MIGRATION_COUNT = 5;
 
 describe('UC-1: миграции', () => {
     const database = uniqueName('ac47');

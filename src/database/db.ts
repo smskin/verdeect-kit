@@ -8,7 +8,7 @@ import { isConnectionError } from '../internal/pg-errors.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError } from '../observability/sentry.js';
 import type { DrizzleDriver, NodePgDatabase, Pool, PoolClient } from './pg.js';
-import type { DbContext } from './tenant.js';
+import { TENANT_SETTING, type DbContext } from './tenant.js';
 
 /** Чтение через пул чтения (`readGlobal`): Drizzle node-postgres без транзакции. */
 export type DbReader = NodePgDatabase;
@@ -41,6 +41,20 @@ export class AfterCommitInReadOnlyError extends Error {
     }
 }
 
+/**
+ * `Db.afterCommit` с дескриптором, который не является транзакцией этого `Db` (другой `Db`, `DRIZZLE`, вложенная
+ * `tx.transaction()`): задача никогда бы не выполнилась — ошибка вместо молчаливой потери.
+ */
+export class AfterCommitOutsideTransactionError extends Error {
+    override readonly name = 'AfterCommitOutsideTransactionError';
+
+    constructor() {
+        super(
+            'Db.afterCommit: нужна транзакция этого Db (Db.transaction) — не вложенная и не другого Db',
+        );
+    }
+}
+
 /** Пулы и драйвер `Db`. */
 export interface DbOptions {
     /** Основной пул (`transaction`, `runExclusive`). */
@@ -54,8 +68,16 @@ export interface DbOptions {
 /** Имя переменной `Db.setLocal`. */
 const LOCAL_NAME = /^app\.[a-z_]{1,48}$/;
 
+/** Служебные переменные пакета: задаются только `DbContext` в `transaction`/`read`, не `setLocal` (KT-22 п. 1). */
+const RESERVED_LOCALS: ReadonlySet<string> = new Set([TENANT_SETTING]);
+
 interface DbInternals {
     readonly main: Pool;
+    readonly runOn: <T>(
+        client: PoolClient,
+        ctx: DbContext,
+        fn: (tx: DbTx) => Promise<T>,
+    ) => Promise<T>;
     readonly batchRuns: Set<Promise<unknown>>;
     stopping: boolean;
 }
@@ -74,6 +96,19 @@ function internalsOf(db: Db): DbInternals {
 /** Основной пул `Db` (для `runExclusive`). */
 export function mainPoolOf(db: Db): Pool {
     return internalsOf(db).main;
+}
+
+/**
+ * Транзакция `Db` (тенант, `afterCommit`) на уже выданном клиенте — например, на соединении блокировки `runExclusive`,
+ * без второго соединения пула (KT-22 п. 4). Клиент не возвращается в пул: им владеет вызывающий.
+ */
+export function transactionOn<T>(
+    db: Db,
+    client: PoolClient,
+    ctx: DbContext,
+    fn: (tx: DbTx) => Promise<T>,
+): Promise<T> {
+    return internalsOf(db).runOn(client, ctx, fn);
 }
 
 /** Идёт остановка `Db` (шаг 3): новые пачки не начинаются. */
@@ -142,7 +177,12 @@ export class Db {
         this.readPool = options.read;
         this.reader = options.drizzle(options.read);
         this.readOnly.add(this.reader);
-        internals.set(this, { main: options.main, batchRuns: new Set(), stopping: false });
+        internals.set(this, {
+            main: options.main,
+            runOn: (client, ctx, fn) => this.run(ctx, fn, false, client),
+            batchRuns: new Set(),
+            stopping: false,
+        });
     }
 
     /** Транзакция чтения и записи на основном пуле с тенантом `ctx.tenant` (`null` — строки компаний не видны). */
@@ -171,10 +211,14 @@ export class Db {
      * Задача после `COMMIT` транзакции `tx` — по порядку, до возврата результата `transaction`; при откате не
      * выполняется; ошибка задачи — `error`-лог и GlitchTip, не пробрасывается. Только для того, что можно потерять.
      * @throws {AfterCommitInReadOnlyError} `tx` — транзакция `read` или дескриптор `readGlobal`.
+     * @throws {AfterCommitOutsideTransactionError} `tx` — не транзакция этого `Db` (другой `Db`, вложенная).
      */
     afterCommit(tx: DbTx | DbReader, task: AfterCommitTask): void {
         if (this.readOnly.has(tx)) {
             throw new AfterCommitInReadOnlyError();
+        }
+        if (!this.transactions.has(tx)) {
+            throw new AfterCommitOutsideTransactionError();
         }
         const tasks = this.afterCommitTasks.get(tx) ?? [];
         tasks.push(task);
@@ -183,11 +227,17 @@ export class Db {
 
     /**
      * Переменная транзакции `app.*` (`set_config(name, value, true)`), имя и значение — параметрами (AC-4.16).
-     * @throws {TypeError} имя вне `^app\.[a-z_]{1,48}$` или `tx` — не транзакция `Db`.
+     * Служебная `app.tenant` запрещена: тенант задаётся только `DbContext` в `transaction`/`read`.
+     * @throws {TypeError} имя вне `^app\.[a-z_]{1,48}$`, служебное имя пакета или `tx` — не транзакция `Db`.
      */
     async setLocal(tx: DbTx | DbReader, name: string, value: string): Promise<void> {
         if (!LOCAL_NAME.test(name)) {
             throw new TypeError('Db.setLocal: имя вне ^app\\.[a-z_]{1,48}$');
+        }
+        if (RESERVED_LOCALS.has(name)) {
+            throw new TypeError(
+                `Db.setLocal: ${name} — служебная переменная пакета; тенант задаётся только DbContext в Db.transaction или Db.read`,
+            );
         }
         if (!this.transactions.has(tx)) {
             throw new TypeError('Db.setLocal: нужна транзакция Db.transaction или Db.read');
@@ -207,35 +257,37 @@ export class Db {
         ctx: DbContext,
         fn: (tx: DbTx) => Promise<T>,
         readOnly: boolean,
+        held?: PoolClient,
     ): Promise<T> {
         const pool = readOnly ? this.readPool : mainPoolOf(this);
         let current: DbTx | undefined;
-        try {
-            const result = await withPoolClient(
-                pool,
-                // ponytail: экземпляр Drizzle на транзакцию (без схемы — микросекунды); кэш — если покажет профиль.
-                (client) =>
-                    this.drizzle(client).transaction(
-                        async (tx) => {
-                            current = tx;
-                            this.transactions.add(tx);
-                            if (readOnly) {
-                                this.readOnly.add(tx);
-                            }
-                            await tx.execute(
-                                sql`select set_config('app.tenant', ${ctx.tenant ?? ''}, true)`,
-                            );
+        // ponytail: экземпляр Drizzle на транзакцию (без схемы — микросекунды); кэш — если покажет профиль.
+        const onClient = (client: PoolClient): Promise<T> =>
+            this.drizzle(client).transaction(
+                async (tx) => {
+                    current = tx;
+                    this.transactions.add(tx);
+                    if (readOnly) {
+                        this.readOnly.add(tx);
+                    }
+                    await tx.execute(
+                        sql`select set_config('app.tenant', ${ctx.tenant ?? ''}, true)`,
+                    );
 
-                            return fn(tx);
-                        },
-                        { accessMode: readOnly ? 'read only' : 'read write' },
-                    ),
-                (error) =>
-                    this.logger.debug(
-                        { traceId: ctx.traceId, err: sanitizeError(error) },
-                        'Db: соединение сломано, клиент уничтожен',
-                    ),
+                    return fn(tx);
+                },
+                { accessMode: readOnly ? 'read only' : 'read write' },
             );
+        try {
+            const result =
+                held === undefined
+                    ? await withPoolClient(pool, onClient, (error) =>
+                          this.logger.debug(
+                              { traceId: ctx.traceId, err: sanitizeError(error) },
+                              'Db: соединение сломано, клиент уничтожен',
+                          ),
+                      )
+                    : await onClient(held);
             await this.runAfterCommit(current, ctx.traceId);
 
             return result;

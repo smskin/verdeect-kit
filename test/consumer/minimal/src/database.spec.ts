@@ -47,7 +47,7 @@ describe('UC-1: БД потребителя', () => {
             "select rolname from pg_roles where rolname like 'consumer\\_%' order by rolname",
         );
 
-        expect(journal[0]?.count).toBe(2);
+        expect(journal[0]?.count).toBe(3);
         expect(roles.map((row) => row.rolname)).toEqual([
             'consumer_app',
             'consumer_directory',

@@ -3,7 +3,7 @@
 // mismatch до in_progress, release при ошибке, один повтор complete). По PRD: область user/agent → (tenant, sub),
 // service → client_id или (client_id, поле tenantFromBody); Location в ответе; без принципала — 500; коды — DomainError
 // словаря /http; сравнение области — IS NOT DISTINCT FROM (tenant nullable).
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
     Inject,
     Injectable,
@@ -51,7 +51,7 @@ export interface IdempotencyScope {
 }
 
 type BeginResult =
-    | { readonly state: 'new' }
+    | { readonly state: 'new'; readonly attempt: string }
     | {
           readonly state: 'replay';
           readonly status: number;
@@ -234,7 +234,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         try {
             body = await lastValueFrom(next.handle(), { defaultValue: undefined });
         } catch (error) {
-            await this.release(ctx, scope, key, fields);
+            await this.release(ctx, scope, key, begin.attempt, fields);
             throw error;
         }
         const status =
@@ -246,6 +246,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
             ctx,
             scope,
             key,
+            begin.attempt,
             { status, body: body ?? null, location },
             fields,
         );
@@ -270,6 +271,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
         fingerprint: string,
     ): Promise<BeginResult> {
         const t = this.table;
+        // Метка попытки: ответ пишет только та попытка, что захватила строку (KT-22 п. 3).
+        const attempt = randomUUID();
 
         return this.db.transaction(ctx, async (tx): Promise<BeginResult> => {
             // ON CONFLICT DO NOTHING без ON CONSTRAINT работает, пока idempotency_key_scope_key (tenant, subject, key) —
@@ -277,11 +280,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
             // ON CONFLICT ON CONSTRAINT idempotency_key_scope_key (KT-21 п. 3).
             const inserted = await tx
                 .insert(t)
-                .values({ tenant: scope.tenant, subject: scope.subject, key, fingerprint })
+                .values({ tenant: scope.tenant, subject: scope.subject, key, fingerprint, attempt })
                 .onConflictDoNothing()
                 .returning({ key: t.key });
             if (inserted.length > 0) {
-                return { state: 'new' };
+                return { state: 'new', attempt };
             }
             const [row] = await tx
                 .select({
@@ -310,6 +313,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
                     .update(t)
                     .set({
                         fingerprint,
+                        attempt,
                         state: 'in_progress',
                         responseStatus: null,
                         responseBody: null,
@@ -318,7 +322,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
                     })
                     .where(this.where(scope, key));
 
-                return { state: 'new' };
+                return { state: 'new', attempt };
             }
             if (row.fingerprint !== fingerprint) {
                 return { state: 'mismatch' };
@@ -336,18 +340,28 @@ export class IdempotencyInterceptor implements NestInterceptor {
         });
     }
 
-    /** Обработчик упал: строка удаляется — повтор выполнит запрос заново; сбой release не подменяет ответ. */
+    /**
+     * Обработчик упал: строка своей попытки удаляется — повтор выполнит запрос заново; перехваченную строку другой
+     * попытки не трогает; сбой release не подменяет ответ.
+     */
     private async release(
         ctx: DbContext,
         scope: IdempotencyScope,
         key: string,
+        attempt: string,
         fields: Record<string, unknown>,
     ): Promise<void> {
         try {
             await this.db.transaction(ctx, (tx) =>
                 tx
                     .delete(this.table)
-                    .where(and(this.where(scope, key), eq(this.table.state, 'in_progress'))),
+                    .where(
+                        and(
+                            this.where(scope, key),
+                            eq(this.table.state, 'in_progress'),
+                            eq(this.table.attempt, attempt),
+                        ),
+                    ),
             );
         } catch (error) {
             this.logger.error(
@@ -360,12 +374,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     /**
      * Один повтор `complete` сразу после сбоя (эталон O). После двух сбоев ответ клиенту не меняется: строка остаётся
-     * `in_progress` и через 5 минут переиспользуется.
+     * `in_progress` и через 5 минут переиспользуется. Ответ пишется только своей попытки: строку перехватил повторный
+     * запрос (обработчик дольше 5 минут) — ответ не сохраняется, `warn` без ключа и тела (KT-22 п. 3).
      */
     private async completeWithRetry(
         ctx: DbContext,
         scope: IdempotencyScope,
         key: string,
+        attempt: string,
         response: {
             readonly status: number;
             readonly body: unknown;
@@ -383,11 +399,25 @@ export class IdempotencyInterceptor implements NestInterceptor {
                         responseBody: response.body,
                         responseLocation: response.location,
                     })
-                    .where(this.where(scope, key)),
+                    .where(and(this.where(scope, key), eq(this.table.attempt, attempt))),
             );
+        // Перехват строки другой попыткой — warn без ключа (даже без префикса) и тела (KT-22 п. 3).
+        const taken = (rowCount: number | null): boolean => {
+            if ((rowCount ?? 0) > 0) {
+                return false;
+            }
+            this.logger.warn(
+                { subjectKind: fields.subjectKind, traceId: fields.traceId },
+                'идемпотентность: строку перехватила другая попытка — ответ не сохранён',
+            );
+
+            return true;
+        };
         try {
-            await complete();
-            this.logger.debug({ ...fields, state: 'done' }, 'идемпотентность: complete');
+            const result = await complete();
+            if (!taken(result.rowCount)) {
+                this.logger.debug({ ...fields, state: 'done' }, 'идемпотентность: complete');
+            }
 
             return;
         } catch (error) {
@@ -397,7 +427,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
             );
         }
         try {
-            await complete();
+            taken((await complete()).rowCount);
         } catch (error) {
             this.logger.error(
                 { ...fields, err: sanitizeError(error) },
