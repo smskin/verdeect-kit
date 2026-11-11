@@ -80,6 +80,22 @@ describe('UC-11: подписочное соединение', () => {
         expect(app.get<Redis>(KIT_REDIS).options.commandTimeout).toBe(500);
     });
 
+    it('AC-8.6: enableReadyCheck: false и connectionName <svc> / <svc>-subscriber; keyPrefix только у основного (§3.7 v1.18)', () => {
+        const main = app.get<Redis>(KIT_REDIS).options;
+        const subscriber = app.get<Redis>(KIT_REDIS_SUBSCRIBER).options;
+
+        expect(main).toMatchObject({
+            enableReadyCheck: false,
+            connectionName: 'kit',
+            keyPrefix: 'kit:',
+        });
+        expect(subscriber).toMatchObject({
+            enableReadyCheck: false,
+            connectionName: 'kit-subscriber',
+        });
+        expect(subscriber.keyPrefix ?? '').toBe('');
+    });
+
     it('AC-8.6: отписка последнего обработчика — UNSUBSCRIBE; ошибка обработчика не мешает другим', async () => {
         const channels = app.get(KitRedisChannels);
         const got = deferred();

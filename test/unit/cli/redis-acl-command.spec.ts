@@ -1,4 +1,5 @@
-// UC-12 (U): команда verdeect-kit redis acl — aclfile с user default off и пользователями сервисов, --out обязателен,
+// UC-12, AC-8.1 (U; PRD v1.18): команда verdeect-kit redis acl —
+// aclfile с user default off и пользователями сервисов, --out обязателен,
 // USAGE, INVALID_ENVIRONMENT без значений (prd.md §3.7; D3 плана E8; ARCHITECTURE.md «CLI»). Обработчик вызывается в
 // процессе; образец — ac-5-10-rabbitmq-command.spec.ts.
 import { existsSync } from 'node:fs';
@@ -42,7 +43,7 @@ afterEach(async () => {
 });
 
 describe('UC-12: verdeect-kit redis acl', () => {
-    it('UC-12: redis acl --services svc-a,bff-app --out f — user default off первой строкой, по строке на сервис, stdout {out, services}, выход 0', async () => {
+    it('AC-8.1: redis acl --services svc-a,bff-app --out f — user default off первой строкой, #<хеш> без открытого пароля, по строке на сервис, stdout {out, services}, выход 0', async () => {
         const { code, json } = await run(
             ['acl', '--services', 'svc-a, bff-app', '--out', 'acl/users.acl'],
             {
@@ -68,7 +69,7 @@ describe('UC-12: verdeect-kit redis acl', () => {
         ['ключа нет', {}],
         ['хеш не 64 hex', { REDIS_PASSWORD_HASH_BFF_APP: HASH_B.toUpperCase() }],
     ])(
-        'UC-12: %s у REDIS_PASSWORD_HASH_BFF_APP — INVALID_ENVIRONMENT, keys без значений, выход 1, файла нет',
+        'AC-8.1: %s у REDIS_PASSWORD_HASH_BFF_APP — INVALID_ENVIRONMENT, keys без значений, выход 1, файла нет',
         async (_name, env) => {
             const { code, json, text } = await run(
                 ['acl', '--services', 'svc-a,bff-app', '--out', 'users.acl'],

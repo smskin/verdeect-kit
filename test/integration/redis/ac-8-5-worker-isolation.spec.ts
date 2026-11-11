@@ -87,16 +87,32 @@ describe('UC-14: изоляция воркеров в Redis', () => {
         await unsubscribe2();
     });
 
-    it('AC-8.5: redisWorkerOverride() — {provide: KIT_REDIS_PREFIX, useValue: workerScope().redisPrefix}', async () => {
+    it('AC-8.5: redisWorkerOverride() — {provide: KIT_REDIS_PREFIX, useValue: workerScope().redisPrefix}; ключи и каналы с префиксом <svc>:w<N>:', async () => {
         const override = redisWorkerOverride();
         expect(override).toEqual({ provide: KIT_REDIS_PREFIX, useValue: `kit:w${POOL}:` });
 
         const app = await createRedisApp({ overrides: [override] });
         await app.init();
+        const listener = adminRedis();
         try {
             await app.get<Redis>(KIT_REDIS).set('k', 'mine');
             expect(await admin.get(`kit:w${POOL}:k`)).toBe('mine');
+
+            // Каналы под redisWorkerOverride() — тоже с префиксом воркера (PRD v1.18, AC-8.5).
+            await listener.subscribe(`kit:w${POOL}:x`);
+            let deliver: (message: string) => void = () => undefined;
+            const message = new Promise<string>((resolve) => {
+                deliver = resolve;
+            });
+            listener.on('message', (channel: string, text: string) => {
+                if (channel === `kit:w${POOL}:x`) {
+                    deliver(text);
+                }
+            });
+            expect(await app.get(KitRedisChannels).publish('x', 'worker')).toBe(1);
+            expect(await withDeadline(message, 'нет сообщения в канале воркера')).toBe('worker');
         } finally {
+            listener.disconnect();
             await app.close();
         }
     });

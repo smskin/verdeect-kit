@@ -1,5 +1,6 @@
 // AC-8.4 (UC-11): throwRateLimited → DomainError RATE_LIMITED, 429 и Retry-After в секундах вверх через KitExceptionFilter
-// (prd.md §3.5, §3.7; D6 плана E8). Перенос I RateLimitedError и B BffError.rateLimited — обобщены до DomainError.
+// (prd.md §3.5, §3.7 v1.18; D6 плана E8): тело details.retryAfterSec = Retry-After; другие коды заголовка не получают.
+// Перенос I RateLimitedError и B BffError.rateLimited — обобщены до DomainError.
 import 'reflect-metadata';
 import { Controller, Get, Module } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -19,6 +20,11 @@ class LimitedController {
     @Get('bare')
     bare(): never {
         throw new DomainError('RATE_LIMITED');
+    }
+
+    @Get('other')
+    other(): never {
+        throw new DomainError('FORBIDDEN', { retryAfterSec: 5 });
     }
 }
 
@@ -78,6 +84,23 @@ describe('UC-11: 429 RATE_LIMITED', () => {
 
         expectProblem(res, { status: 429, code: 'RATE_LIMITED' });
         expect(res.headers['retry-after']).toBe('2');
+    });
+
+    it('AC-8.4: тело содержит details.retryAfterSec, заголовок Retry-After равен ему', async () => {
+        app = await createTestApp({ module: LimitedModule, service: 'probe' });
+        const res = await app.inject({ method: 'GET', url: '/limited' });
+        const body = res.json<{ error: { details: { retryAfterSec?: unknown } } }>();
+
+        expect(body.error.details.retryAfterSec).toBe(2);
+        expect(res.headers['retry-after']).toBe(String(body.error.details.retryAfterSec));
+    });
+
+    it('AC-8.4: DomainError другого кода с details.retryAfterSec — без Retry-After (§3.5)', async () => {
+        app = await createTestApp({ module: LimitedModule, service: 'probe' });
+        const res = await app.inject({ method: 'GET', url: '/other' });
+
+        expectProblem(res, { status: 403, code: 'FORBIDDEN' });
+        expect(res.headers['retry-after']).toBeUndefined();
     });
 
     it('AC-8.4: DomainError RATE_LIMITED без retryAfterSec — 429 без Retry-After', async () => {
