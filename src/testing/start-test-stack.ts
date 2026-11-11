@@ -1,10 +1,14 @@
 // startTestStack — globalSetup Vitest: контейнеры TEST_IMAGES раз на прогон, адреса через provide (prd.md §3.8, E1;
 // AC-1.12, AC-1.13). Эталоны — O test/support/global-setup.ts (minio, provide, teardown), I global-setup.ts (mailpit),
 // O setup-error.ts (текст ошибки в stderr до throw: Vite теряет текст ошибок globalSetup).
-// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии; rabbitmq (E5), redis (E8)
-// — позже. Код БД — динамический import() (без pg /testing импортируется).
+// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии; redis (E8) — позже.
+// Код БД — динамический import() (без pg /testing импортируется).
+// E5: rabbitmq — definitions.json (internal/rabbitmq-definitions, как CLI), vhost и пользователь на воркер (эталон B
+// test/support/broker.ts), удаление по префиксу <svc>-test-.
 import { randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { availableParallelism, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type Pg from 'pg';
 import type * as Testcontainers from 'testcontainers';
 import type { StartedTestContainer } from 'testcontainers';
@@ -12,7 +16,15 @@ import type { TestProject } from 'vitest/node';
 import { loadPeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
+import type { KitEvent } from '../messaging/define-event.js';
 import { TEST_IMAGES } from './images.js';
+import { assertOutboxCoverage, setCoverageDir } from './outbox-coverage.js';
+import {
+    deleteTestVhosts,
+    prepareWorkerVhosts,
+    RabbitAdmin,
+    type KitRabbitWorker,
+} from './rabbitmq-admin.js';
 
 const { GenericContainer, Wait } = await loadPeer<typeof Testcontainers>(
     'testcontainers',
@@ -20,6 +32,7 @@ const { GenericContainer, Wait } = await loadPeer<typeof Testcontainers>(
 );
 
 const MINIO_USER = 'kit-test';
+const RABBIT_ADMIN = 'kit-admin';
 
 /** Параметры startTestStack в E1 (§3.8). */
 export interface TestStackOptions {
@@ -36,6 +49,17 @@ export interface TestStackOptions {
     readonly mailpit?: boolean;
     /** MinIO — kitS3Endpoint, kitS3AccessKey, kitS3SecretKey. */
     readonly minio?: boolean;
+    /**
+     * RabbitMQ TEST_IMAGES.rabbitmq: definitions.json сервиса (как `verdeect-kit rabbitmq definitions`), vhost и
+     * пользователь на воркер; адреса — kitRabbitmqUrl, kitRabbitmqManagementUrl, kitRabbitmqWorkers. Teardown удаляет
+     * vhost и пользователей с префиксом `<svc>-test-` (AC-5.18).
+     */
+    readonly rabbitmq?: boolean;
+    /**
+     * События, которые публикует сервис: каталог покрытия прогона (`kitOutboxCoverageDir`); при `KIT_OUTBOX_COVERAGE=1`
+     * teardown падает со списком событий без успешного `expectOutbox` (GAP-2, AC-5.13).
+     */
+    readonly outboxEvents?: readonly KitEvent[];
 }
 
 declare module 'vitest' {
@@ -62,6 +86,17 @@ declare module 'vitest' {
         readonly kitS3AccessKey?: string;
         /** Пароль MinIO, случайный на прогон (флаг minio). */
         readonly kitS3SecretKey?: string;
+        /** amqp://<администратор>:<пароль>@<host>:<port> — vhost `/`, полные права (флаг rabbitmq). */
+        readonly kitRabbitmqUrl?: string;
+        /** http://<host>:<port 15672> — management API без учётных данных (флаг rabbitmq). */
+        readonly kitRabbitmqManagementUrl?: string;
+        /**
+         * vhost воркеров: индекс — `VITEST_POOL_ID − 1`; `url` — пользователь воркера с правами M3 сервиса, `adminUrl` —
+         * администратор того же vhost (флаг rabbitmq).
+         */
+        readonly kitRabbitmqWorkers?: readonly KitRabbitWorker[];
+        /** Каталог покрытия outbox прогона: файлы воркеров `w<N>.txt` (флаг outboxEvents). */
+        readonly kitOutboxCoverageDir?: string;
     }
 }
 
@@ -73,6 +108,8 @@ interface StackPart {
         container: StartedTestContainer,
         project: TestProject,
     ) => Promise<void> | void;
+    /** Очистка до остановки контейнера; ошибки — в stderr, teardown не падает. */
+    readonly teardown?: () => Promise<void>;
 }
 
 /** Ошибка шага подготовки БД: в stderr — имя шага и код, без текста pg (адрес, имя роли); у migrate — и текст SQL. */
@@ -263,6 +300,70 @@ function minioPart(labels: Record<string, string>): StackPart {
     };
 }
 
+/** Число воркеров прогона: `maxWorkers` проектов (число ≥ 1), иначе `os.availableParallelism()`. */
+export function maxWorkersOf(configs: readonly { readonly maxWorkers?: unknown }[]): number {
+    const counts = configs
+        .map(({ maxWorkers }) => maxWorkers)
+        .filter((value): value is number => typeof value === 'number' && value >= 1);
+
+    return counts.length === 0 ? Math.max(1, availableParallelism()) : Math.max(...counts);
+}
+
+function rabbitmqPart(labels: Record<string, string>, service: string): StackPart {
+    const password = randomBytes(16).toString('hex');
+    const prefix = `${service}-test-`;
+    let admin: RabbitAdmin | undefined;
+
+    return {
+        name: 'rabbitmq',
+        start: () =>
+            new GenericContainer(TEST_IMAGES.rabbitmq)
+                .withLabels(labels)
+                .withEnvironment({
+                    RABBITMQ_DEFAULT_USER: RABBIT_ADMIN,
+                    RABBITMQ_DEFAULT_PASS: password,
+                })
+                .withExposedPorts(5672, 15672)
+                .withWaitStrategy(Wait.forLogMessage(/Server startup complete/))
+                .withStartupTimeout(120_000)
+                .start(),
+        provide: async (container, project) => {
+            const host = container.getHost();
+            const url = `amqp://${RABBIT_ADMIN}:${password}@${host}:${container.getMappedPort(5672)}`;
+            const managementUrl = `http://${host}:${container.getMappedPort(15672)}/`;
+            admin = new RabbitAdmin(managementUrl, RABBIT_ADMIN, password);
+            await admin.waitReady();
+            const workers = maxWorkersOf([
+                project.config,
+                ...project.vitest.projects.map((item) => item.config),
+            ]);
+            const prepared = await prepareWorkerVhosts(admin, {
+                service,
+                workers,
+                runId: randomBytes(4).toString('hex'),
+                amqpAdminUrl: url,
+            });
+            if (prepared.removed.length > 0) {
+                process.stderr.write(
+                    `[startTestStack] удалены vhost прошлых прогонов: ${prepared.removed.join(', ')}\n`,
+                );
+            }
+            project.provide('kitRabbitmqUrl', url);
+            project.provide('kitRabbitmqManagementUrl', managementUrl);
+            project.provide('kitRabbitmqWorkers', prepared.workers);
+        },
+        teardown: async () => {
+            if (admin === undefined) {
+                return;
+            }
+            const { vhosts, users } = await deleteTestVhosts(admin, prefix);
+            process.stderr.write(
+                `[startTestStack] RabbitMQ: удалено vhost ${vhosts}, пользователей ${users}\n`,
+            );
+        },
+    };
+}
+
 function errorMessage(reason: unknown): string {
     return reason instanceof Error ? reason.message : String(reason);
 }
@@ -284,6 +385,7 @@ export function startTestStack(
                 : []),
             ...(options.mailpit === true ? [mailpitPart(labels)] : []),
             ...(options.minio === true ? [minioPart(labels)] : []),
+            ...(options.rabbitmq === true ? [rabbitmqPart(labels, options.service)] : []),
         ];
         const results = await Promise.allSettled(parts.map((part) => part.start()));
         const started = results.flatMap((result) =>
@@ -298,24 +400,57 @@ export function startTestStack(
             process.stderr.write(`${message}\n`);
             throw new Error(message, { cause: firstFailure.reason });
         }
+        let preparing = '';
         try {
             for (const [index, part] of parts.entries()) {
                 const container = started[index];
                 if (container !== undefined) {
+                    preparing = part.name;
                     await part.provide(container, project);
                 }
             }
         } catch (error) {
             await Promise.allSettled(started.map((container) => container.stop()));
-            const message = `[startTestStack] не удалось подготовить БД: ${errorMessage(error)}`;
+            const message = `[startTestStack] не удалось подготовить ${preparing}: ${errorMessage(error)}`;
             process.stderr.write(`${message}\n`);
             throw new Error(message, {
                 cause: error,
             });
         }
 
+        const coverage =
+            options.outboxEvents === undefined
+                ? undefined
+                : mkdtempSync(join(tmpdir(), `kit-outbox-${options.service}-`));
+        if (coverage !== undefined) {
+            setCoverageDir(coverage);
+            project.provide('kitOutboxCoverageDir', coverage);
+        }
+
         return async () => {
-            await Promise.all(started.map((container) => container.stop()));
+            try {
+                await stopParts();
+                // После освобождения ресурсов: ошибка покрытия выходит из teardown.
+                if (options.outboxEvents !== undefined && process.env.KIT_OUTBOX_COVERAGE === '1') {
+                    assertOutboxCoverage(options.outboxEvents);
+                }
+            } finally {
+                setCoverageDir(undefined);
+                if (coverage !== undefined) {
+                    rmSync(coverage, { recursive: true, force: true });
+                }
+            }
         };
+
+        async function stopParts(): Promise<void> {
+            for (const part of parts) {
+                await part.teardown?.().catch((error: unknown) => {
+                    process.stderr.write(
+                        `[startTestStack] очистка ${part.name} не удалась: ${errorMessage(error)}\n`,
+                    );
+                });
+            }
+            await Promise.all(started.map((container) => container.stop()));
+        }
     };
 }

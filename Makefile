@@ -95,8 +95,8 @@ test-module: ## U + I подпутей: make test-module M='config testing' (б�
 	fi
 
 .PHONY: test-integration
-test-integration: ## Уровень I (test/integration) — Testcontainers, нужен Docker
-	$(PNPM) test:integration
+test-integration: ## Уровень I (test/integration) — Testcontainers, нужен Docker; покрытие outbox (AC-5.13)
+	KIT_OUTBOX_COVERAGE=1 $(PNPM) test:integration
 
 # Нагрузку хоста только сообщает; отказ при поднятом контуре e2e делает timingGuard (globalSetup).
 .PHONY: test-timing

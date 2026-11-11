@@ -21,7 +21,7 @@ describe('UC-14: пустая БД из шаблона', () => {
         expect(inject('kitDatabaseTemplate')).toBe('kit_template');
     });
 
-    it('AC-4.18: БД kit подготовлена и мигрирована — журнал kit.__migrations, таблицы note, setting и idempotency_key, FORCE RLS у note и idempotency_key', async () => {
+    it('AC-4.18: БД kit подготовлена и мигрирована — журнал kit.__migrations, таблицы note, setting, idempotency_key, outbox и inbox, FORCE RLS у note, idempotency_key и outbox', async () => {
         const tables = await adminQuery<{ relname: string; force: boolean }>(
             String(inject('kitDatabaseAdminUrl')),
             `select c.relname, c.relforcerowsecurity as force from pg_class c
@@ -32,7 +32,9 @@ describe('UC-14: пустая БД из шаблона', () => {
         expect(tables).toEqual([
             { relname: '__migrations', force: false },
             { relname: 'idempotency_key', force: true },
+            { relname: 'inbox', force: false },
             { relname: 'note', force: true },
+            { relname: 'outbox', force: true },
             { relname: 'setting', force: false },
         ]);
     });

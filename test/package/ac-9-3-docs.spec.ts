@@ -12,6 +12,7 @@ const ENTRY_POINTS = [
     'src/database/index.ts',
     'src/http/index.ts',
     'src/idempotency/index.ts',
+    'src/messaging/index.ts',
     'src/observability/index.ts',
     'src/testing/index.ts',
 ];
@@ -130,6 +131,10 @@ describe('UC-16: документация пакета', () => {
             'ENCRYPTION_KEYS',
             'RABBITMQ_RETRY_SECONDS',
             '.retry',
+            'rabbitmq definitions',
+            'RABBITMQ_PASSWORD_HASH_',
+            'удалить очередь',
+            'x-dlq-reason',
         ]) {
             expect(deploy, fragment).toContain(fragment);
         }

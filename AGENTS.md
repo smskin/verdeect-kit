@@ -18,13 +18,14 @@
 
 ## Структура проекта
 
-Состояние после E4 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/testing` и CLI `verdeect-kit openapi`, `db`. Следующие подпути появляются по этапам E5–E8 (`requirements/0000-kit/README.md`).
+Состояние после E5 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`. Следующие подпути появляются по этапам E7–E8 (`requirements/0000-kit/README.md`).
 
 ```
 verdeect-kit/
 ├── src/
 │   ├── internal/                 # без точки входа: peer.ts (loadPeer, requirePeer, AC-1.2), service-name.ts, pg-errors.ts,
-│                                 #   preparsed-env.ts, tokens.ts, ids.ts, metadata.ts, sql-identifier.ts
+│                                 #   preparsed-env.ts, tokens.ts, ids.ts, metadata.ts, sql-identifier.ts, tx-context.ts, outbox-policy.ts,
+│                                 #   rabbitmq-definitions.ts, cleanup-result.ts
 │   ├── config/                   # ./config — §3.1: fragments, helpers, define-env, parse-env, cli-schemas, kit-config.module
 │   ├── observability/            # ./observability — §3.2: redaction, sanitize-error, logger-options, sentry, fail-startup,
 │                                 #   health-registry, metrics, metrics-server, lifecycle
@@ -34,11 +35,14 @@ verdeect-kit/
 │                                 #   migrations, db, kit-database.module, batches, run-exclusive, if-newer
 │   ├── idempotency/              # ./idempotency — §3.3а: peer, table, idempotent.decorator, idempotency.interceptor,
 │                                 #   kit-idempotency.module
+│   ├── messaging/                # ./messaging — §3.4: peer, errors, define-event, envelope, tables, topology, redelivery,
+│                                 #   rabbit-connection, outbox-store, outbox-relay, inbox, subscriber, cleanup, config,
+│                                 #   kit-messaging.module
 │   ├── testing/                  # ./testing (только development) — §3.8 E1, E3, E4: images, start-test-stack, repo-files,
 │                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale, create-test-app,
 │                                 #   expect-problem, expect-matches-api, scratch-database, worker-scope,
-│                                 #   tenant-isolation, count-queries
-│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts, commands/db.ts
+│                                 #   tenant-isolation, count-queries, rabbitmq-admin, outbox-coverage, test-events
+│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts, commands/db.ts, commands/rabbitmq.ts
 ├── alerts/verdeect-kit.rules.yml # шаблон правил vmalert (alertRulesTemplate, §3.2), входит в архив
 ├── test/
 │   ├── unit/<подпуть>/           # U: без сети и Docker (+ *.test-d.ts)
@@ -50,7 +54,8 @@ verdeect-kit/
 │                                 #   http/api-app.module.ts (AC-3.7), http/shutdown-app.mjs (AC-3.9),
 │                                 #   database/ (схема kit и миграции drizzle-kit, pnpm db:fixtures — E4)
 │   └── support/                  # общие помощники: docker.ts, fake-sentry.ts (поддельный транспорт GlitchTip),
-│                                 #   postgres.ts, database.ts (Db и приложение уровня I)
+│                                 #   postgres.ts, database.ts (Db и приложение уровня I), broker.ts (RabbitMQ vhost воркера),
+│                                 #   messaging.ts (стенды /messaging, TestConsumer)
 ├── .github/workflows/ci.yml      # CI: lint, test (Node 22, 24: U + I), timing, package, publish по тегу v*
 ├── Makefile                      # единая точка входа: make help
 ├── scripts/publish.mjs           # публикация из CI: тег = version, версии нет в npm (AC-1.10)
@@ -88,6 +93,7 @@ verdeect-kit/
 | `src/config/index.ts` | публичная поверхность `@verdeect/kit/config` |
 | `src/observability/index.ts` | публичная поверхность `@verdeect/kit/observability` |
 | `src/http/index.ts` | публичная поверхность `@verdeect/kit/http` |
+| `src/messaging/index.ts` | публичная поверхность `@verdeect/kit/messaging` |
 | `src/cli/main.ts` | CLI `verdeect-kit` (поле `bin`) |
 | `src/testing/index.ts` | публичная поверхность `@verdeect/kit/testing` |
 | `package.json` | `exports`, peer-зависимости (NFR-3), скрипты |

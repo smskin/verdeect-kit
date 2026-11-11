@@ -15,6 +15,12 @@ const ISOLATED: string[] = [
     'test/integration/idempotency/ac-4-14-idempotency.spec.ts',
     // vi.stubEnv и process.exit — стенд bootstrapService.
     'test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/messaging/ac-5-7-dlq-retry.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/messaging/ac-5-9-replica-errors.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/messaging/ac-5-19-broker-down.spec.ts',
 ];
 
 export default defineConfig({

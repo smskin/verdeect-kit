@@ -1,5 +1,6 @@
 // AC-4.12 (UC-9): runExclusive — pg_try_advisory_lock между «репликами» (два Db на разных пулах), без ожидания; снятие
-// блокировки после исключения (prd.md §3.3). O job-lock (Redis) не переносится.
+// блокировки после исключения, RESET ALL сеанса перед возвратом в пул (review E4) (prd.md §3.3). O job-lock (Redis)
+// не переносится.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runExclusive } from '../../../src/database/run-exclusive.js';
 import { createTestDb, type TestDb } from '../../support/database.js';
@@ -70,6 +71,26 @@ describe('UC-9: runExclusive', () => {
         });
 
         expect(outcome).toEqual({ ran: true, result: true });
+    });
+
+    it('AC-4.12: сеанс соединения блокировки сброшен перед возвратом в пул (DB_POOL_MAX = 1)', async () => {
+        const single = await createTestDb({ poolMax: 1 });
+        try {
+            await runExclusive(single.db, 'kit-test:reset', async (connection) => {
+                await connection.query('set statement_timeout = 1234');
+                await connection.query("select set_config('app.leak', 'x', false)");
+            });
+
+            // poolMax 1 — основной пул отдаёт то же соединение, что держало блокировку.
+            const { rows } = await single.main.query<{ st: string; leak: string | null }>(
+                "select current_setting('statement_timeout') as st, current_setting('app.leak', true) as leak",
+            );
+
+            expect(rows[0]?.st).toBe('0');
+            expect(rows[0]?.leak ?? '').toBe('');
+        } finally {
+            await single.close();
+        }
     });
 
     it('§3.3: пустой ключ → TypeError', async () => {

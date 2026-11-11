@@ -1,4 +1,5 @@
-// AC-4.15 (UC-4, UC-14): countQueries — все запросы пула за время fn по порядку, клиенты восстановлены (prd.md §3.8).
+// AC-4.15 (UC-4, UC-14): countQueries — все запросы пула за время fn по порядку, клиенты восстановлены, onQuery на
+// каждый запрос (review E4) (prd.md §3.8).
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { countQueries } from '../../../src/testing/count-queries.js';
@@ -45,5 +46,39 @@ describe('UC-14: countQueries', () => {
         }
         const after = await countQueries(test.main, () => Promise.resolve());
         expect(after.count).toBe(0);
+    });
+
+    it('AC-4.15: onQuery получает текст каждого запроса по порядку', async () => {
+        const seen: string[] = [];
+        const { queries } = await countQueries(
+            test.main,
+            () =>
+                test.db.transaction(ctx('acme'), async (tx) => {
+                    await tx.execute(sql`select 7 as seven`);
+                }),
+            { onQuery: (text) => seen.push(text) },
+        );
+
+        expect(seen).toEqual(queries);
+        expect(seen).toContain('select 7 as seven');
+    });
+
+    it('AC-4.15: исключение onQuery не прерывает запрос и пробрасывается после fn', async () => {
+        let finished = false;
+        await expect(
+            countQueries(
+                test.main,
+                async () => {
+                    await test.main.query('select 1');
+                    finished = true;
+                },
+                {
+                    onQuery: () => {
+                        throw new Error('колбэк');
+                    },
+                },
+            ),
+        ).rejects.toThrow('колбэк');
+        expect(finished).toBe(true);
     });
 });

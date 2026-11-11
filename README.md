@@ -44,7 +44,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | `/http`          | E3   | готов, в `[Unreleased]` |
 | `/database`      | E4   | готов, в `[Unreleased]` |
 | `/idempotency`   | E4   | готов, в `[Unreleased]` |
-| `/messaging`     | E5   | в своём этапе           |
+| `/messaging`     | E5   | готов, в `[Unreleased]` |
 | `/crypto`        | E7   | в своём этапе           |
 | `/redis`         | E8   | в своём этапе           |
 
@@ -173,7 +173,7 @@ export const redaction: KitRedaction = {
     service: platform
 ```
 
-Пороги: `outbox_lag_seconds` (5 с за 1m), `outbox_pending` (1000 за 5m), `events_consumed` (DLQ за 15m > 0), `db_pool_wait_timeouts` (за 5m > 0), `rate_limit_unavailable` (за 5m > 0).
+Пороги: `outbox_lag_seconds` (5 с за 1m), `outbox_pending` (1000 за 5m), `events_consumed` (DLQ за 15m > 0), `db_pool_wait_timeouts` (за 5m > 0), `rate_limit_unavailable` (за 5m > 0), `cleanup_runs` (`error` и `partial` за 2 ч > 0).
 
 ## HTTP
 
@@ -323,6 +323,88 @@ create(@Body(new ZodValidationPipe(CreateFile)) body: CreateFileDto) { … }
 - Ответы: нет ключа при `required` — 400 `IDEMPOTENCY_KEY_REQUIRED`; ключ не по формату `^[\x21-\x7E]{1,200}$` — 422 `VALIDATION_FAILED` (`path: Idempotency-Key`); другое тело — 422 `IDEMPOTENCY_KEY_REUSED`; запрос ещё идёт — 409 `IDEMPOTENCY_IN_PROGRESS`. Сохраняются только успешные ответы; брошенная `in_progress` переиспользуется через 5 минут, запись — 24 часа. Заголовки и коды попадают в OpenAPI по метаданным `@Idempotent`.
 - Очистка — при старте и раз в час, одной репликой (`runExclusive`), пачками функцией `idempotency_purge`. Метрика `verdeect_cleanup_runs_total{table, result}`: `ok`, `partial` (упёрлась в предел пачек — очистка не успевает), `interrupted` (остановлена при выкате; алерт не срабатывает), `error`; алерт `VerdeectCleanupFailing` (`error` и `partial`) (порог `verdeect_kit_threshold:cleanup_runs`). Число удалённых строк — в `info`-логе прохода «очистка идемпотентности: проход» (`service`, `replica`, `table`, `deleted`).
 
+## Сообщения
+
+`/messaging` требует `amqplib` и `amqp-connection-manager` (проверка при импорте подпути); `pg` — только при outbox или `dedupe: 'inbox'` (проверка в `forRoot`, до прослушивания порта).
+
+**Имя сервиса** — имя экземпляра (`^[a-z][a-z0-9-]{1,31}$`, тот же текст отказа, что у `bootstrapService`): от него очереди `<svc>`, `<svc>.retry`, `<svc>.dlq`, `<svc>.replica.<REPLICA_ID>` и пользователь RabbitMQ. BFF — два экземпляра `bff-app` и `bff-admin`, у каждого свои очереди и пользователь.
+
+**События** — `defineEvent({type, version, subject, tenant?, data})`: `type` — каталог `01` §7.2 (`<service>.<entity>.<action>`), `tenant: 'required'` по умолчанию, `'none'` — только для событий без компании; `data` — `z.object` без `.strict()` (новые поля без мажора). Каталог событий — `@verdeect/events`.
+
+```ts
+export const CompanyCreated = defineEvent({
+    type: 'platform.company.created',
+    version: 1,
+    subject: 'company',
+    data: z.object({ companyId: z.string(), name: z.string().min(1) }),
+});
+```
+
+**Таблицы** — в схеме Drizzle сервиса `createOutboxTable(schema, {tenantNullable?})` и `createInboxTable(schema)`; SQL генерирует `drizzle-kit`, ручная миграция добавляет `FORCE` и права роли приложения:
+
+```sql
+ALTER TABLE "platform"."outbox" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+GRANT SELECT, INSERT, UPDATE, DELETE ON "platform"."outbox" TO "platform_app";
+--> statement-breakpoint
+GRANT SELECT, INSERT, DELETE ON "platform"."inbox" TO "platform_app";
+```
+
+Outbox — единственное исключение строгой модели: пустой тенант видит все строки (relay, очистка); `assertStrictTenantIsolation` проверяет, что политика именно `createOutboxTable`. Inbox — без RLS.
+
+**Модуль**:
+
+```ts
+// сервис с outbox и inbox
+KitMessagingModule.forRoot({
+    service: 'platform',
+    outbox: { table: schema.outbox, events: [CompanyCreated] },
+    subscriber: { inbox: schema.inbox },
+});
+// BFF: подписчик без БД
+KitMessagingModule.forRoot({ service: 'bff-app', subscriber: { dedupe: 'none' } });
+```
+
+`outbox.events` — все события, которые сервис публикует. `tenantNullable` берётся из таблицы: событие `'none'` при NOT NULL `tenant` — отказ запуска `MESSAGING_TENANT_NOT_NULLABLE`. `subscriber` не задан — подписчика нет; `dedupe` по умолчанию `'inbox'` (требует `inbox`). Окружение — `envBase` и `envMessaging`; outbox и inbox — вместе с `KitDatabaseModule`.
+
+**Запись** — `OutboxStore.add(tx, Event, {subjectId, data})` в `Db.transaction`: `tenant`, `actor`, `traceId` — из `DbContext`, id — `evt_` + ULID. `data` не по схеме, нарушение признака `tenant`, событие вне `outbox.events` или транзакция `Db.read` — исключение до записи, транзакция откатывается. Публикация мимо outbox невозможна, SQL-триггеров нет.
+
+**Relay** — после `COMMIT` сразу (без ожидания опроса), иначе опрос раз в 1 с; пачка ≤ 100 по `seq` (`FOR UPDATE SKIP LOCKED` — реплики не делят строку), публикация с подтверждением брокера, срок пачки 5 с; первая неудача прерывает пачку (порядок сохраняется), паузы 1 с → 2 → 4 … 5 мин; строка, не опубликованная 5 раз, — `error` и событие GlitchTip с `id` и `type` (без `data`). Без соединения outbox не опрашивается, `verdeect_outbox_lag_seconds` растёт. Метрики — `verdeect_outbox_pending`, `verdeect_outbox_lag_seconds`.
+
+**Подписчик** — `KitSubscriber` внедряется в провайдер сервиса, обработчики регистрируются в `onModuleInit`:
+
+```ts
+@Injectable()
+export class CompanyEvents implements OnModuleInit {
+    constructor(private readonly subscriber: KitSubscriber) {}
+
+    onModuleInit(): void {
+        this.subscriber.on(CompanyCreated, async (event, tx) => {
+            // tx — транзакция Db с DbContext события; inbox уже занят в ней
+        });
+    }
+}
+```
+
+Топологию объявляет подписчик: `<svc>` (DLX → `<svc>.retry`), `<svc>.retry` (TTL `RABBITMQ_RETRY_SECONDS` → `<svc>`), `<svc>.dlq`; привязки — по типам `on`. `prefetch` 10. inbox занимается в транзакции обработчика: повтор `id` → `duplicate` без вызова. `ExpectedMessageError` — `warn` и повтор через `.retry`, до 5 раз по `x-death`, затем DLQ без события GlitchTip; прочие ошибки — `warn` и повтор, после 5 — DLQ и ровно одно событие GlitchTip; `InvalidMessageError` — сразу DLQ без события GlitchTip; ошибки разбора (`not-json`, `envelope`, `unsubscribed`, `tenant`, `data`) — `captureThrottled`. Порядок по `occurredAt` — `ifNewer` из `/database`. `dedupe: 'none'` — без БД, `tx = null`. `onReplica(Event, handler)` — очередь реплики `<svc>.replica.<REPLICA_ID>` (exclusive, auto-delete) без inbox, повторов и DLQ: неразобранное сообщение или ошибка обработчика — `error`-лог, событие `captureThrottled`, `verdeect_events_consumed_total{result="dlq"}`; у очередей реплики (`<svc>.replica.*`) сообщение не сохраняется — смотрите лог и GlitchTip. Метрика — `verdeect_events_consumed_total{type, result}` (`handled`, `duplicate`, `retry`, `dlq`).
+
+| `x-dlq-reason`                | Когда                                  |
+| ----------------------------- | -------------------------------------- |
+| `not-json`                    | тело не JSON                           |
+| `envelope`                    | конверт не по `01` §7.1                |
+| `unsubscribed`                | тип без обработчика                    |
+| `tenant`                      | признак `tenant` события нарушен       |
+| `data`                        | `data` не по схеме события             |
+| причина `InvalidMessageError` | обработчик отклонил сообщение навсегда |
+| код `ExpectedMessageError`    | ожидаемый отказ после 5 повторов       |
+| `retries-exhausted`           | непредвиденная ошибка после 5 повторов |
+
+Другой TTL уже объявленной `<svc>.retry` — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь» без цикла переподключений (порядок смены — «Развёртывание»). Exchange `verdeect.events` сервис только проверяет пассивно; нет exchange — `/health` `rabbitmq` down.
+
+**Очистка** — опубликованный outbox и inbox старше 7 дней, при старте и раз в час, одной репликой (`runExclusive`), пачками по 1000, до 100 за проход, на соединении блокировки (работает при `DB_POOL_MAX = 1`). Метрика `verdeect_cleanup_runs_total{table: outbox|inbox, result}`, число строк — `info`-лог «очистка сообщений: проход».
+
+**Остановка**: relay, подписчик (снять потребителей → дождаться доставок → закрыть канал) и очистка — шаг 3, соединение RabbitMQ — шаг 4, в общем сроке `SHUTDOWN_TIMEOUT_MS`. Проба `/health` `rabbitmq` — некритичная.
+
 ## Тесты сервиса
 
 Подпуть `/testing` разрешается только с условием `development` (NFR-4): в production-сборке сервиса его нет. Vitest включает это условие сам; для `node` — `node --conditions=development`.
@@ -341,27 +423,34 @@ export default startTestStack({
 
 Контейнеры `TEST_IMAGES` стартуют раз на прогон, адреса доходят до тестов через `inject`:
 
-| Ключ `inject`         | Флаг       | Значение                                                  |
-| --------------------- | ---------- | --------------------------------------------------------- |
-| `kitPostgresUrl`      | `postgres` | `postgres://postgres:<пароль>@<host>:<port>/postgres`     |
-| `kitDatabaseUrl`      | `postgres` | роль `<svc>_app` к БД `<svc>` — `DATABASE_URL` тестов     |
-| `kitDatabaseOwnerUrl` | `postgres` | роль `<svc>_owner` к БД `<svc>` — `DATABASE_MIGRATOR_URL` |
-| `kitDatabaseAdminUrl` | `postgres` | суперпользователь к БД `<svc>`                            |
-| `kitDatabaseService`  | `postgres` | имя сервиса: схема и роли                                 |
-| `kitDatabaseTemplate` | `postgres` | шаблонная БД `<svc>_template`                             |
-| `kitSmtpUrl`          | `mailpit`  | `smtp://<host>:<port>`                                    |
-| `kitMailpitUrl`       | `mailpit`  | `http://<host>:<port>` — HTTP API mailpit                 |
-| `kitS3Endpoint`       | `minio`    | `http://<host>:<port>`                                    |
-| `kitS3AccessKey`      | `minio`    | пользователь MinIO                                        |
-| `kitS3SecretKey`      | `minio`    | пароль MinIO, случайный на прогон                         |
+| Ключ `inject`              | Флаг           | Значение                                                  |
+| -------------------------- | -------------- | --------------------------------------------------------- |
+| `kitPostgresUrl`           | `postgres`     | `postgres://postgres:<пароль>@<host>:<port>/postgres`     |
+| `kitDatabaseUrl`           | `postgres`     | роль `<svc>_app` к БД `<svc>` — `DATABASE_URL` тестов     |
+| `kitDatabaseOwnerUrl`      | `postgres`     | роль `<svc>_owner` к БД `<svc>` — `DATABASE_MIGRATOR_URL` |
+| `kitDatabaseAdminUrl`      | `postgres`     | суперпользователь к БД `<svc>`                            |
+| `kitDatabaseService`       | `postgres`     | имя сервиса: схема и роли                                 |
+| `kitDatabaseTemplate`      | `postgres`     | шаблонная БД `<svc>_template`                             |
+| `kitSmtpUrl`               | `mailpit`      | `smtp://<host>:<port>`                                    |
+| `kitMailpitUrl`            | `mailpit`      | `http://<host>:<port>` — HTTP API mailpit                 |
+| `kitS3Endpoint`            | `minio`        | `http://<host>:<port>`                                    |
+| `kitS3AccessKey`           | `minio`        | пользователь MinIO                                        |
+| `kitS3SecretKey`           | `minio`        | пароль MinIO, случайный на прогон                         |
+| `kitRabbitmqUrl`           | `rabbitmq`     | `amqp://<администратор>@<host>:<port>` — vhost `/`        |
+| `kitRabbitmqManagementUrl` | `rabbitmq`     | `http://<host>:<port>` — management API                   |
+| `kitRabbitmqWorkers`       | `rabbitmq`     | vhost воркеров `{vhost, url, adminUrl}`                   |
+| `kitOutboxCoverageDir`     | `outboxEvents` | каталог покрытия outbox прогона                           |
 
-При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. RabbitMQ и Redis появятся в E5 и E8.
+При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. При `rabbitmq: true` — RabbitMQ с `definitions.json` сервиса (тот же `buildDefinitions`, что CLI) и vhost с пользователем по правам сервиса на каждый воркер Vitest (`<svc>-test-<run>-w<N>`); teardown удаляет их, остатки прошлых прогонов удаляются при старте. Redis появится в E8.
 
 - `createScratchDatabase()` — пустая мигрированная БД из шаблона за доли секунды (`{name, url, ownerUrl, adminUrl, drop()}`); тест сам вызывает `drop()`.
+- `workerScope().rabbitmq` — `{vhost, url}` vhost воркера: `url` — значение `RABBITMQ_URL` тестов.
 - `workerScope().tenant` — слаг компании воркера (`w<VITEST_POOL_ID>-<8 hex>`, формат claim `tenant`): то же значение в `DbContext.tenant` и в токене; `tenantId` и строку компании создаёт фабрика сервиса.
-- `countQueries(pool, fn)` — `{result, count, queries}`: все запросы пула за время `fn` (транзакция `Db` с одним запросом — 4: `begin`, `set_config`, запрос, `commit`).
-- `assertStrictTenantIsolation(pool, {schema, except?})` — один тест сервиса под ролью приложения после вставки данных фабриками: каждая таблица с колонкой `tenant` — RLS, `FORCE`, строгая политика, 0 строк под пустым тенантом; `idempotency_key` и `outbox` — исключения строгой модели; функция `idempotency_purge` — `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
+- `countQueries(pool, fn, {onQuery?})` — `{result, count, queries}`: все запросы пула за время `fn` (транзакция `Db` с одним запросом — 4: `begin`, `set_config`, запрос, `commit`); `onQuery(text)` — синхронный сигнал на каждый запрос (например, «первая пачка началась») вместо паузы.
+- `assertStrictTenantIsolation(pool, {schema, except?})` — один тест сервиса под ролью приложения после вставки данных фабриками: каждая таблица с колонкой `tenant` — RLS, `FORCE`, строгая политика, 0 строк под пустым тенантом; `idempotency_key` и `outbox` (политика `createOutboxTable`) — исключения строгой модели; функция `idempotency_purge` — `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
 - `assertAppRoleIsNotOwner(db)` — роль соединения не суперпользователь, без `BYPASSRLS`, не владеет схемами и таблицами, без `CREATE` на базе и схемах.
+- `expectOutbox(tx, Event, {subjectId?, data?})` — строка события в текущей транзакции use-case (строки других транзакций не считаются), `data` по схеме события; успешная проверка пишет покрытие `<type>.v<version>`. `startTestStack({outboxEvents})` + `KIT_OUTBOX_COVERAGE=1` (в `make test-integration` и CI) — teardown падает со списком событий без успешного `expectOutbox` (`assertOutboxCoverage`); без переменной проверка не выполняется.
+- `publishTestEvent(Event, data, opts?)` — конверт `01` §7.1 в `verdeect.events` vhost воркера (тенант воркера для `'required'`, `null` для `'none'`; `opts.tenant` может нарушать признак); `waitForInbox(id, {timeoutMs})` — ожидание строки `<svc>.inbox` без `sleep` в тесте (подписчик с `dedupe: 'inbox'`).
 
 `TEST_IMAGES`: `postgres:17.11-alpine3.24`, `redis:7.4.11-alpine`, `rabbitmq:4.3.6-management-alpine`, `axllent/mailpit:v1.31.6`, `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`. Мажорная смена образа — мажор пакета (G14).
 
@@ -399,23 +488,25 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - `stop_grace_period: 15s` при `SHUTDOWN_TIMEOUT_MS` 10000: срок Docker должен быть больше срока остановки сервиса.
 - Пул соединений PostgreSQL: сервис открывает до `2 × DB_POOL_MAX × реплики` соединений (основной пул и пул чтения) — `max_connections` считается по этой формуле.
 - БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>`.
-- DLQ разбирается в течение 7 дней.
+- RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `verdeect.events`, `amq.default` и свои очереди, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно.
+- DLQ — разбор в 7 дней: сообщения `<svc>.dlq` разбирает владелец сервиса не позже 7 дней (алерт `VerdeectEventsDlq`); причина — заголовок `x-dlq-reason`; повторная отправка — перекладкой в `<svc>` после исправления.
 - Смена ключа шифра (UC-10): новый секрет `verdeect-kit crypto generate-secret` (с E7) → новая версия первой в `ENCRYPTION_KEYS` → перезапуск → перешифровка → удаление старой версии.
-- Смена TTL `.retry` (`RABBITMQ_RETRY_SECONDS`): очередь `<svc>.retry` удалить и пересоздать, иначе отказ запуска (prd.md §3.4).
+- Смена TTL `.retry` (`RABBITMQ_RETRY_SECONDS`): 1) остановить все реплики сервиса; 2) дождаться опустошения `<svc>.retry` (или переложить сообщения в `<svc>`); 3) удалить очередь `<svc>.retry`; 4) задать новый `RABBITMQ_RETRY_SECONDS` и запустить реплики — очередь объявится с новым TTL. Иначе — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь».
 
 ## Реестр префиксов id
 
 Формат префикса `^[a-z]{2,5}$`, id — `<prefix>_<ulid>`; id создаёт `newId(prefix)` из `/database`. Новый префикс добавляется строкой в этот реестр в плане сервиса.
 
-| Префикс | Сущность                | Сервис       |
-| ------- | ----------------------- | ------------ |
-| `evt`   | событие outbox          | все (kit)    |
-| `trn`   | ход (turn)              | orchestrator |
-| `msg`   | сообщение хода          | orchestrator |
-| `lse`   | аренда (lease) рантайма | orchestrator |
-| `jup`   | загрузка журнала        | orchestrator |
-| `chm`   | сообщение канала        | orchestrator |
-| `chr`   | запрос канала           | orchestrator |
+| Префикс | Сущность                   | Сервис       |
+| ------- | -------------------------- | ------------ |
+| `evt`   | событие outbox             | все (kit)    |
+| `tst`   | субъект `publishTestEvent` | kit (тесты)  |
+| `trn`   | ход (turn)                 | orchestrator |
+| `msg`   | сообщение хода             | orchestrator |
+| `lse`   | аренда (lease) рантайма    | orchestrator |
+| `jup`   | загрузка журнала           | orchestrator |
+| `chm`   | сообщение канала           | orchestrator |
+| `chr`   | запрос канала              | orchestrator |
 
 ## API
 
@@ -543,6 +634,28 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitIdempotencyTable` — тип таблицы идемпотентности.
 - `idempotencyPurgeSql` — `idempotencyPurgeSql(schema)`: текст SQL функции очистки для миграции сервиса.
 
+### @verdeect/kit/messaging
+
+- `defineEvent` — `defineEvent({type, version, subject, tenant?, data})`: определение события с признаком тенанта.
+- `KitEvent` — тип определения события.
+- `KitEventTenant` — `'required' | 'none'`.
+- `EnvelopeSchema` — схема zod конверта `01` §7.1.
+- `Envelope` — `Envelope<E>`: конверт события, `tenant` по признаку, `data` — выход схемы.
+- `createOutboxTable` — `createOutboxTable(schema, {tenantNullable?})`: таблица outbox.
+- `createInboxTable` — `createInboxTable(schema)`: таблица inbox.
+- `KitOutboxTable` — тип таблицы outbox.
+- `KitInboxTable` — тип таблицы inbox.
+- `KitOutboxTableOptions` — `{tenantNullable?}`.
+- `KitMessagingModule` — `KitMessagingModule.forRoot({service, outbox?, subscriber?})`: соединение, relay, подписчик, очистка.
+- `KitMessagingModuleOptions` — тип опций модуля.
+- `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции.
+- `KitSubscriber` — `on(Event, handler)`, `onReplica(Event, handler)`.
+- `KitEventHandler` — `(event, tx) => Promise<void>`; `tx = null` при `dedupe: 'none'`.
+- `KitReplicaHandler` — `(event) => Promise<void>`.
+- `ExpectedMessageError` — ожидаемый отказ: повтор, затем DLQ с кодом, без GlitchTip.
+- `InvalidMessageError` — сообщение не обработать никогда: сразу DLQ с причиной.
+- `MessagingStartupError` — отказ запуска `/messaging` с кодом `MESSAGING_TENANT_NOT_NULLABLE` или `MESSAGING_RETRY_TTL_MISMATCH` (`startupCode`, `startupDetails()`).
+
 ### @verdeect/kit/testing
 
 - `createTestApp` — `createTestApp({module, service, overrides?, bodyLimit?})`: приложение сервиса для тестов.
@@ -563,12 +676,17 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitScratchDatabase` — `{name, url, ownerUrl, adminUrl, drop()}`.
 - `workerScope` — `workerScope()`: область воркера Vitest.
 - `KitWorkerScope` — `{tenant}`: слаг компании воркера.
-- `countQueries` — `countQueries(pool, fn)`: `{result, count, queries}`.
+- `countQueries` — `countQueries(pool, fn, {onQuery?})`: `{result, count, queries}`.
 - `KitCountablePool` — тип пула с событием `acquire`.
+- `KitCountQueriesOptions` — `{onQuery?}`: колбэк на каждый запрос пула.
 - `assertStrictTenantIsolation` — `assertStrictTenantIsolation(db, {schema, except?})`: строгий RLS схемы под ролью приложения.
 - `KitTenantIsolationOptions` — тип опций `assertStrictTenantIsolation`.
 - `assertAppRoleIsNotOwner` — `assertAppRoleIsNotOwner(db)`: роль приложения не владелец.
 - `KitQueryable` — тип соединения с `query` (`pg.Pool`, `pg.Client`).
+- `expectOutbox` — `expectOutbox(tx, Event, {subjectId?, data?})`: строка события в текущей транзакции; успешная проверка пишет покрытие.
+- `assertOutboxCoverage` — `assertOutboxCoverage(events)`: события без успешного `expectOutbox` (teardown `startTestStack` при `KIT_OUTBOX_COVERAGE=1`).
+- `publishTestEvent` — `publishTestEvent(Event, data, opts?)`: конверт `01` §7.1 в `verdeect.events` vhost воркера.
+- `waitForInbox` — `waitForInbox(id, {timeoutMs})`: ожидание строки `<svc>.inbox` без `sleep`.
 
 ## Документация
 

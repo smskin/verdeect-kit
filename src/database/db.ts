@@ -5,6 +5,7 @@
 import { Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { isConnectionError } from '../internal/pg-errors.js';
+import { bindTxContext } from '../internal/tx-context.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError } from '../observability/sentry.js';
 import type { DrizzleDriver, NodePgDatabase, Pool, PoolClient } from './pg.js';
@@ -267,6 +268,7 @@ export class Db {
                 async (tx) => {
                     current = tx;
                     this.transactions.add(tx);
+                    bindTxContext(tx, ctx);
                     if (readOnly) {
                         this.readOnly.add(tx);
                     }

@@ -97,7 +97,9 @@ verdeect-kit/
 │   │   ├── define-event.ts · envelope.ts · tables.ts
 │   │   ├── outbox-store.ts · outbox-relay.ts     # эталон O
 │   │   ├── rabbit-connection.ts       #   RabbitConnection, ManagedChannel (эталон O)
-│   │   ├── subscriber.ts · topology.ts · inbox.ts · cleanup.ts
+│   │   ├── subscriber.ts · topology.ts · redelivery.ts · inbox.ts · cleanup.ts
+│   │   ├── peer.ts · errors.ts        #   requirePeer amqplib/acm; ExpectedMessageError, InvalidMessageError, MessagingStartupError
+│   │   ├── config.ts                  #   внутренние токены и опции модуля (типы database — вне публичного .d.ts)
 │   │   └── kit-messaging.module.ts    #   pg — динамически только при outbox или dedupe: 'inbox'
 │   ├── crypto/                        # "./crypto" — E7 (§3.6); только node:crypto
 │   │   └── cipher.ts                  #   createCipher, DecryptError, generateSecret (эталон B + HKDF из O)

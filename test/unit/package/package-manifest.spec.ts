@@ -49,19 +49,27 @@ const OPTIONAL_PEERS: Record<string, string> = {
     '@nestjs/testing': '^12.1.0',
 };
 
-describe('AC-1.1: точки входа пакета (E1–E4)', () => {
-    it('AC-1.1: exports — ровно ./config, ./database, ./http, ./idempotency, ./observability, ./testing, ./package.json', () => {
+describe('AC-1.1: точки входа пакета (E1–E5)', () => {
+    it('AC-1.1: exports — ровно ./config, ./database, ./http, ./idempotency, ./messaging, ./observability, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
             [
                 './config',
                 './database',
                 './http',
                 './idempotency',
+                './messaging',
                 './observability',
                 './package.json',
                 './testing',
             ].sort(),
         );
+    });
+
+    it('AC-1.1: ./messaging — {types, default} на dist/messaging/index.*', () => {
+        expect(manifest.exports['./messaging']).toEqual({
+            types: './dist/messaging/index.d.ts',
+            default: './dist/messaging/index.js',
+        });
     });
 
     it('AC-1.1: ./idempotency — {types, default} на dist/idempotency/index.*', () => {
@@ -157,6 +165,11 @@ describe('NFR-3: зависимости', () => {
         for (const [name, version] of Object.entries(manifest.devDependencies)) {
             expect(semver.valid(version), name).not.toBeNull();
         }
+    });
+
+    it('NFR-3: драйвер AMQP в devDependencies — amqplib 2.2.0 и amqp-connection-manager 5.0.1 (§11 п. 4)', () => {
+        expect(manifest.devDependencies['amqplib']).toBe('2.2.0');
+        expect(manifest.devDependencies['amqp-connection-manager']).toBe('5.0.1');
     });
 });
 

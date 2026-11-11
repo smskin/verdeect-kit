@@ -36,6 +36,20 @@
       "when": 1794381517256,
       "tag": "0004_thin_microchip",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794400166733,
+      "tag": "0005_dazzling_bedlam",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794400172251,
+      "tag": "0006_messaging_grants",
+      "breakpoints": true
     }
   ]
 }

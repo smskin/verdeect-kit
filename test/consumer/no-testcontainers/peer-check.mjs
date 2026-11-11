@@ -1,7 +1,7 @@
-// AC-1.2 (C): без опциональных peer /config, /http и /observability импортируются; /database, /idempotency (без pg) и
-// /testing (без testcontainers) падают с текстом AC-1.2.
+// AC-1.2 (C): без опциональных peer /config, /http и /observability импортируются; /messaging (с amqplib, без pg)
+// импортируется; /database, /idempotency (без pg) и /testing (без testcontainers) падают с текстом AC-1.2.
 const results = [];
-for (const subpath of ['config', 'http', 'observability']) {
+for (const subpath of ['config', 'http', 'messaging', 'observability']) {
     try {
         await import(`@verdeect/kit/${subpath}`);
         results.push(`${subpath}:ok`);

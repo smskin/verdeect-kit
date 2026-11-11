@@ -50,7 +50,7 @@ tests:
               summary: 'События x.created сервиса a уходят в DLQ'
               description: >-
                 За 15 минут события x.created сервиса a попали в DLQ (verdeect_events_consumed_total,
-                result="dlq"). Разберите сообщения очереди DLQ по журналу подписчика.
+                result="dlq"). Разберите сообщения очереди <svc>.dlq по заголовку x-dlq-reason и журналу подписчика; у очередей реплики (<svc>.replica.*) сообщение не сохраняется — смотрите лог и GlitchTip.
           - exp_labels:
               service: a
               type: x.deleted
@@ -59,7 +59,7 @@ tests:
               summary: 'События x.deleted сервиса a уходят в DLQ'
               description: >-
                 За 15 минут события x.deleted сервиса a попали в DLQ (verdeect_events_consumed_total,
-                result="dlq"). Разберите сообщения очереди DLQ по журналу подписчика.
+                result="dlq"). Разберите сообщения очереди <svc>.dlq по заголовку x-dlq-reason и журналу подписчика; у очередей реплики (<svc>.replica.*) сообщение не сохраняется — смотрите лог и GlitchTip.
       - eval_time: 5m
         groupname: verdeect-kit
         alertname: VerdeectDbPoolWaitTimeouts

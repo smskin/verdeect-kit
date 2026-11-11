@@ -1,5 +1,7 @@
 // assertAppRoleIsNotOwner, assertStrictTenantIsolation (prd.md §3.8, AC-4.6, AC-4.8). Проверки — по каталогу PostgreSQL
-// под ролью приложения; pg не импортируется: db — объект с query.
+// под ролью приложения; pg не импортируется: db — объект с query. E5: политика outbox по OUTBOX_POLICY_SQL
+// (createOutboxTable), имена — internal/outbox-policy (/testing не грузит /messaging).
+import { OUTBOX_POLICY, OUTBOX_TABLE } from '../internal/outbox-policy.js';
 
 /** Соединение с методом `query` (`pg.Pool`, `pg.Client`, `PoolClient`). */
 export interface KitQueryable {
@@ -85,7 +87,9 @@ const TENANT_POLICY = "(tenant = current_setting('app.tenant'::text, true))";
 const IDEMPOTENCY_POLICY =
     "(NOT (tenant IS DISTINCT FROM NULLIF(current_setting('app.tenant'::text, true), ''::text)))";
 const IDEMPOTENCY_TABLE = 'idempotency_key';
-const OUTBOX_TABLE = 'outbox';
+/** Печатная форма PostgreSQL 17 выражения OUTBOX_POLICY_SQL (`createOutboxTable`). */
+const OUTBOX_POLICY_PG =
+    "((COALESCE(current_setting('app.tenant'::text, true), ''::text) = ''::text) OR (tenant = current_setting('app.tenant'::text, true)))";
 
 /** Без внешних скобок и пробелов, в нижнем регистре. */
 function normalize(expression: string | null): string {
@@ -115,6 +119,7 @@ function quote(name: string): string {
 
 interface PolicyRow {
     readonly policyname: string;
+    readonly roles: string[] | string;
     readonly permissive: string;
     readonly cmd: string;
     readonly qual: string | null;
@@ -147,7 +152,7 @@ async function policyViolations(
 ): Promise<string[]> {
     const policies = (
         await db.query(
-            'select policyname, permissive, cmd, qual, with_check from pg_policies where schemaname = $1 and tablename = $2',
+            'select policyname, roles, permissive, cmd, qual, with_check from pg_policies where schemaname = $1 and tablename = $2',
             [schema, table],
         )
     ).rows as PolicyRow[];
@@ -155,7 +160,7 @@ async function policyViolations(
         return [`${table}: нет политики`];
     }
     if (table === OUTBOX_TABLE) {
-        return [];
+        return outboxPolicyViolations(policies);
     }
     const expected = normalize(table === IDEMPOTENCY_TABLE ? IDEMPOTENCY_POLICY : TENANT_POLICY);
 
@@ -168,6 +173,25 @@ async function policyViolations(
                 normalize(policy.with_check) !== expected,
         )
         .map((policy) => `${table}.${policy.policyname}: нестрогая политика`);
+}
+
+/** Исключение строгой модели — ровно политика `createOutboxTable`: другое выражение не проходит. */
+function outboxPolicyViolations(policies: readonly PolicyRow[]): string[] {
+    const expected = normalize(OUTBOX_POLICY_PG);
+    const [policy] = policies;
+    const roles = Array.isArray(policy?.roles)
+        ? policy.roles.join(',')
+        : String(policy?.roles ?? '');
+    const valid =
+        policies.length === 1 &&
+        policy?.policyname === OUTBOX_POLICY &&
+        policy.permissive === 'PERMISSIVE' &&
+        policy.cmd === 'ALL' &&
+        roles.replace(/[{}]/g, '') === 'public' &&
+        normalize(policy.qual) === expected &&
+        normalize(policy.with_check) === expected;
+
+    return valid ? [] : [`${OUTBOX_TABLE}: политика не по createOutboxTable (${OUTBOX_POLICY})`];
 }
 
 async function visibleRows(db: KitQueryable, schema: string, table: string): Promise<string[]> {
@@ -235,8 +259,8 @@ async function purgeViolations(db: KitQueryable, schema: string): Promise<string
 
 /**
  * Строгий RLS схемы сервиса (§3.8, AC-4.8) — соединение **роли приложения**: каждая таблица с колонкой `tenant` — RLS,
- * `FORCE`, строгая политика (`tenantPolicy`; `idempotency_key` — `createIdempotencyTable`; `outbox` — только наличие
- * политики до E5); под пустым тенантом 0 строк (вызывать после вставки данных фабриками); при таблице идемпотентности —
+ * `FORCE`, строгая политика (`tenantPolicy`; `idempotency_key` — `createIdempotencyTable`); `outbox` — исключение строгой
+ * модели: политика `createOutboxTable` (пустой тенант — все строки), RLS и FORCE обязательны; под пустым тенантом 0 строк (вызывать после вставки данных фабриками); при таблице идемпотентности —
  * функция `idempotency_purge` `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
  * @throws {Error} «assertStrictTenantIsolation(<схема>): <нарушения через «; »>».
  */

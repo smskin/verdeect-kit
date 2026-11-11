@@ -45,8 +45,9 @@ export function runInConsumer(
     dir: string,
     command: string,
     args: readonly string[],
+    env: Readonly<Record<string, string>> = {},
 ): Promise<CommandResult> {
-    return runCommand(command, args, dir);
+    return runCommand(command, args, dir, env);
 }
 
 /** Удаляет временный проект. */
