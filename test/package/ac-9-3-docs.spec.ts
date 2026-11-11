@@ -15,6 +15,7 @@ const ENTRY_POINTS = [
     'src/idempotency/index.ts',
     'src/messaging/index.ts',
     'src/observability/index.ts',
+    'src/redis/index.ts',
     'src/testing/index.ts',
 ];
 const PREFIXES = ['evt', 'trn', 'msg', 'lse', 'jup', 'chm', 'chr'];
@@ -140,6 +141,10 @@ describe('UC-16: документация пакета', () => {
             'jq -r .secret',
             'needsReencrypt',
             'первой',
+            'redis acl',
+            'REDIS_PASSWORD_HASH_',
+            'user default off',
+            'Redis ≥ 7.0',
         ]) {
             expect(deploy, fragment).toContain(fragment);
         }

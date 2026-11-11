@@ -53,6 +53,10 @@
       "types": "./dist/observability/index.d.ts",
       "default": "./dist/observability/index.js"
     },
+    "./redis": {
+      "types": "./dist/redis/index.d.ts",
+      "default": "./dist/redis/index.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "development": "./dist/testing/index.js"
@@ -156,6 +160,7 @@
     "eslint-plugin-jsdoc": "65.4.0",
     "fastify": "5.12.5",
     "globals": "17.13.0",
+    "ioredis": "6.0.0",
     "nestjs-pino": "5.3.1",
     "pg": "8.23.1",
     "pino": "10.4.0",

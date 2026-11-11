@@ -36,6 +36,13 @@ describe('UC-10: отказы расшифровки', () => {
         expect(reasonOf(() => otherVersion.decrypt(sameSecret, AAD))).toBe('unknown_version');
     });
 
+    it("AC-7.2: неизвестная версия с испорченным тегом → unknown_version, не 'auth'", () => {
+        const value = cipherOf([{ version: 2, secret: secret() }]).encrypt('text', AAD);
+        const reader = cipherOf([{ version: 1, secret: secret() }]);
+
+        expect(reasonOf(() => reader.decrypt(flipByte(value, 'tag'), AAD))).toBe('unknown_version');
+    });
+
     it.each([
         ['мусор', 'garbage'],
         ['3 части', `v1:${B64(12)}:${B64(4)}`],
@@ -49,10 +56,11 @@ describe('UC-10: отказы расшифровки', () => {
         ['IV 16 байт', `v1:${B64(16)}:${B64(4)}:${B64(16)}`],
         ['тег 12 байт', `v1:${B64(12)}:${B64(4)}:${B64(12)}`],
         ['пустой IV', `v1::${B64(4)}:${B64(16)}`],
-    ])('AC-7.2: неверный формат (%s) → format', (_name, value) => {
+    ])('AC-7.2: неверный формат (%s) → format (decrypt и needsReencrypt)', (_name, value) => {
         const cipher = cipherOf([{ version: 1, secret: secret() }]);
 
         expect(reasonOf(() => cipher.decrypt(value, AAD))).toBe('format');
+        expect(reasonOf(() => cipher.needsReencrypt(value))).toBe('format');
     });
 
     describe('AC-7.2: неканоничный base64url (KT-26 п. 2, KT-27 п. 1)', () => {

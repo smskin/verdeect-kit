@@ -1,10 +1,11 @@
 // startTestStack — globalSetup Vitest: контейнеры TEST_IMAGES раз на прогон, адреса через provide (prd.md §3.8, E1;
 // AC-1.12, AC-1.13). Эталоны — O test/support/global-setup.ts (minio, provide, teardown), I global-setup.ts (mailpit),
 // O setup-error.ts (текст ошибки в stderr до throw: Vite теряет текст ошибок globalSetup).
-// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии; redis (E8) — позже.
+// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии.
 // Код БД — динамический import() (без pg /testing импортируется).
 // E5: rabbitmq — definitions.json (internal/rabbitmq-definitions, как CLI), vhost и пользователь на воркер (эталон B
 // test/support/broker.ts), удаление по префиксу <svc>-test-.
+// E8: redis — aclfile из internal/redis-acl (как CLI redis acl) + администратор теста; пользователей на воркер нет.
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
@@ -15,6 +16,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import type { TestProject } from 'vitest/node';
 import { loadPeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
+import { buildRedisAclFile, redisPasswordHash } from '../internal/redis-acl.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import type { KitEvent } from '../messaging/define-event.js';
 import { TEST_IMAGES } from './images.js';
@@ -33,6 +35,8 @@ const { GenericContainer, Wait } = await loadPeer<typeof Testcontainers>(
 
 const MINIO_USER = 'kit-test';
 const RABBIT_ADMIN = 'kit-admin';
+const REDIS_ADMIN = 'kit-test-admin';
+const REDIS_ACL_PATH = '/usr/local/etc/redis/users.acl';
 
 /** Параметры startTestStack в E1 (§3.8). */
 export interface TestStackOptions {
@@ -55,6 +59,12 @@ export interface TestStackOptions {
      * vhost и пользователей с префиксом `<svc>-test-` (AC-5.18).
      */
     readonly rabbitmq?: boolean;
+    /**
+     * Redis TEST_IMAGES.redis с aclfile (тот же генератор, что `verdeect-kit redis acl`): пользователь сервиса
+     * `~<svc>:* &<svc>:*` — kitRedisUrl, администратор теста — kitRedisAdminUrl, имя сервиса — kitRedisService. Пользователей
+     * на воркер нет: префикс воркера `<svc>:w<N>:` лежит внутри прав сервиса (AC-8.5).
+     */
+    readonly redis?: boolean;
     /**
      * События, которые публикует сервис: каталог покрытия прогона (`kitOutboxCoverageDir`); при `KIT_OUTBOX_COVERAGE=1`
      * teardown падает со списком событий без успешного `expectOutbox` (GAP-2, AC-5.13).
@@ -95,6 +105,12 @@ declare module 'vitest' {
          * администратор того же vhost (флаг rabbitmq).
          */
         readonly kitRabbitmqWorkers?: readonly KitRabbitWorker[];
+        /** redis://<svc>:<пароль>@<host>:<port> — пользователь сервиса из aclfile, `REDIS_URL` тестов (флаг redis). */
+        readonly kitRedisUrl?: string;
+        /** redis://kit-test-admin:<пароль>@<host>:<port> — администратор теста: CLIENT LIST, ACL LOG, очистка (флаг redis). */
+        readonly kitRedisAdminUrl?: string;
+        /** Имя сервиса — пользователь Redis и префикс `workerScope().redisPrefix` (флаг redis). */
+        readonly kitRedisService?: string;
         /** Каталог покрытия outbox прогона: файлы воркеров `w<N>.txt` (флаг outboxEvents). */
         readonly kitOutboxCoverageDir?: string;
     }
@@ -364,6 +380,47 @@ function rabbitmqPart(labels: Record<string, string>, service: string): StackPar
     };
 }
 
+function redisPart(labels: Record<string, string>, service: string): StackPart {
+    const password = randomBytes(16).toString('hex');
+    const adminPassword = randomBytes(16).toString('hex');
+    const aclfile = buildRedisAclFile({
+        users: [{ service, passwordHash: redisPasswordHash(password) }],
+        extra: [`user ${REDIS_ADMIN} on #${redisPasswordHash(adminPassword)} ~* &* +@all`],
+    });
+
+    return {
+        name: 'redis',
+        start: () =>
+            new GenericContainer(TEST_IMAGES.redis)
+                .withLabels(labels)
+                .withCopyContentToContainer([
+                    { content: aclfile, target: REDIS_ACL_PATH, mode: 0o644 },
+                ])
+                .withCommand([
+                    'redis-server',
+                    '--aclfile',
+                    REDIS_ACL_PATH,
+                    '--save',
+                    '',
+                    '--appendonly',
+                    'no',
+                ])
+                .withExposedPorts(6379)
+                .withWaitStrategy(Wait.forLogMessage(/Ready to accept connections/))
+                .withStartupTimeout(120_000)
+                .start(),
+        provide: (container, project) => {
+            const address = `${container.getHost()}:${container.getMappedPort(6379)}`;
+            project.provide('kitRedisUrl', `redis://${service}:${password}@${address}`);
+            project.provide(
+                'kitRedisAdminUrl',
+                `redis://${REDIS_ADMIN}:${adminPassword}@${address}`,
+            );
+            project.provide('kitRedisService', service);
+        },
+    };
+}
+
 function errorMessage(reason: unknown): string {
     return reason instanceof Error ? reason.message : String(reason);
 }
@@ -386,6 +443,7 @@ export function startTestStack(
             ...(options.mailpit === true ? [mailpitPart(labels)] : []),
             ...(options.minio === true ? [minioPart(labels)] : []),
             ...(options.rabbitmq === true ? [rabbitmqPart(labels, options.service)] : []),
+            ...(options.redis === true ? [redisPart(labels, options.service)] : []),
         ];
         const results = await Promise.allSettled(parts.map((part) => part.start()));
         const started = results.flatMap((result) =>

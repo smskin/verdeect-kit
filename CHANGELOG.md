@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14), `/messaging` и CLI `rabbitmq` (этап E5, PRD v1.14), `/crypto` и CLI `crypto` (этап E7, PRD v1.16).
+Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14), `/messaging` и CLI `rabbitmq` (этап E5, PRD v1.14), `/crypto` и CLI `crypto` (этап E7, PRD v1.16), `/redis` и CLI `redis` (этап E8, PRD v1.17).
 
 ### Added
 
@@ -91,9 +91,16 @@
 - `/crypto`: `DecryptError` и тип `DecryptErrorReason` — `'format' | 'unknown_version' | 'auth'` без открытого текста и ключей.
 - `/crypto`: `generateSecret(bytes = 32)` — секрет base64url без `=` (не меньше 32 байт).
 - CLI `verdeect-kit crypto generate-secret [--bytes N]` — `{"secret":"…"}` в stdout; код ошибки `USAGE`.
+- `/redis`: `KitRedisModule.forRoot({service, subscriber?: true})` и `KitRedisModuleOptions` — `keyPrefix <svc>:`, подписочное соединение по `subscriber`, проба `redis` (некритичная), закрытие на шаге 4.
+- `/redis`: `KIT_REDIS`, `KitRedisChannels` — основное соединение и каналы с префиксом `<svc>:`.
+- `/redis`: `RateLimiter.hit/peek`, `RateLimitOptions`, `RateLimitResult` — фиксированное окно (`PEXPIRE … NX`, Redis ≥ 7.0), fail-open и `verdeect_rate_limit_unavailable_total`.
+- `/redis`: `throwRateLimited` — 429 `RATE_LIMITED` + `Retry-After` (секунды вверх).
+- `/testing`: `startTestStack({redis})` с aclfile пользователя сервиса и администратором теста, `workerScope().redisPrefix`, `redisWorkerOverride`, ключи `provide` `kitRedisUrl`, `kitRedisAdminUrl`, `kitRedisService`.
+- CLI `verdeect-kit redis acl --services <svc,…> --out <файл>` — aclfile (`user default off`, хеши sha256 из `REDIS_PASSWORD_HASH_<SVC>`); коды ошибок `USAGE`, `INVALID_ENVIRONMENT`.
 
 ### Changed
 
+- `/http`: `KitExceptionFilter` ставит `Retry-After` для `RATE_LIMITED` по `details.retryAfterSec` (E8).
 - `/testing`: `countQueries(pool, fn, {onQuery})` и тип `KitCountQueriesOptions` — колбэк на каждый запрос пула (сигнал без пауз в тесте).
 - `/database`: `Db` связывает транзакцию с её `DbContext` (для `OutboxStore.add`) — без изменения API.
 - `/testing`: `assertStrictTenantIsolation` проверяет политику `outbox` по `createOutboxTable` (раньше — только наличие политики).

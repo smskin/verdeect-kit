@@ -1,14 +1,14 @@
-// workerScope (prd.md §3.8 v1.14): в типе tenant (E4) и rabbitmq (E5); redisPrefix (E8) — позже.
+// workerScope (prd.md §3.8 v1.14, AC-8.5): в типе tenant (E4), rabbitmq (E5) и redisPrefix (E8).
 import { describe, expectTypeOf, it } from 'vitest';
 import type { KitWorkerScope } from '../../../src/testing/worker-scope.js';
 
 describe('UC-14: workerScope', () => {
-    it('§3.8: в типе tenant и rabbitmq, нет redisPrefix (E8)', () => {
+    it('AC-8.5: в типе tenant, rabbitmq и redisPrefix: string', () => {
         expectTypeOf<KitWorkerScope>().toEqualTypeOf<{
             readonly tenant: string;
             readonly rabbitmq: { readonly vhost: string; readonly url: string };
+            readonly redisPrefix: string;
         }>();
-        expectTypeOf<KitWorkerScope>().toHaveProperty('rabbitmq');
-        expectTypeOf<KitWorkerScope>().not.toHaveProperty('redisPrefix');
+        expectTypeOf<KitWorkerScope['redisPrefix']>().toEqualTypeOf<string>();
     });
 });

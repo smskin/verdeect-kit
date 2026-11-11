@@ -1,6 +1,8 @@
 // AC-4.5 (UC-4): срок пула учитывает пул /database — verdeect_db_pool_wait_timeouts_total{pool: main|read}, метка
 // poolTimeoutOf, одно событие GlitchTip (captureThrottled); фильтр /http отвечает 503 + Retry-After: 1 без своей метрики
 // (prd.md §3.3, KT-19 п. 3). Перенос O or-119-db-pool. Проект isolated: initFakeSentry — процесс-глобальный Sentry.
+// Срок пула pg-pool покрывает и установку нового соединения: holding() открывает первое соединение холодного пула под
+// тем же сроком, поэтому срок — с запасом × TEST_TIMEOUT_SCALE, а не 100 мс (под нагрузкой TCP + SCRAM дольше; KT-30).
 import { Controller, Get, Inject, Module } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { sql } from 'drizzle-orm';
@@ -15,11 +17,15 @@ import { isPoolTimeout, poolTimeoutOf } from '../../../src/internal/pg-errors.js
 import { KIT_METRICS } from '../../../src/internal/tokens.js';
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
 import type { KitMetrics } from '../../../src/observability/metrics.js';
+import { TEST_TIMEOUT_SCALE } from '../../../src/testing/timeout-scale.js';
 import * as fixtureSchema from '../../fixtures/database/schema.js';
 import { appUrl, createDbApp, createTestDb, ctx, type TestDb } from '../../support/database.js';
 import { initFakeSentry, type DeliveredEvent } from '../../support/fake-sentry.js';
 
 const envSchema = defineEnv({ ...envBase, ...envDatabase });
+
+/** Срок ожидания клиента пула: и для запроса к занятому пулу, и для первого соединения холодного пула в holding(). */
+const ACQUIRE_TIMEOUT_MS = 1000 * TEST_TIMEOUT_SCALE;
 
 @Controller('pool')
 class PoolController {
@@ -91,7 +97,7 @@ describe('UC-4: срок пула через HTTP', () => {
             env: {
                 DATABASE_URL: appUrl(),
                 DB_POOL_MAX: '1',
-                DB_POOL_ACQUIRE_TIMEOUT_MS: '100',
+                DB_POOL_ACQUIRE_TIMEOUT_MS: String(ACQUIRE_TIMEOUT_MS),
                 LOG_LEVEL: 'silent',
             },
         });
@@ -139,7 +145,7 @@ describe('UC-4: срок пула Db и DRIZZLE', () => {
     let test: TestDb;
 
     beforeAll(async () => {
-        test = await createTestDb({ poolMax: 1, acquireTimeoutMs: 100 });
+        test = await createTestDb({ poolMax: 1, acquireTimeoutMs: ACQUIRE_TIMEOUT_MS });
     });
 
     afterAll(async () => {

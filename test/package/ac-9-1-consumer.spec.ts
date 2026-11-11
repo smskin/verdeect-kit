@@ -1,4 +1,4 @@
-// AC-9.1 (UC-1, UC-16; E4 — БД и идемпотентность, drizzle-kit; E5 — сообщения; E7 — шифр и CLI crypto), AC-1.1 (условие development), AC-1.2
+// AC-9.1 (UC-1, UC-16; E4 — БД и идемпотентность, drizzle-kit; E5 — сообщения; E7 — шифр и CLI crypto; E8 — Redis, лимитер), AC-1.1 (условие development), AC-1.2
 // (уровень C), AC-3.8, AC-5.13 (покрытие outbox), AC-5.18 (vhost воркера)
 // (снимок OpenAPI): проекты-потребители на упакованном архиве (prd.md §3.5, §3.8, NFR-3, NFR-4). Нужны Docker (startTestStack) и сеть до реестра npm.
 import { existsSync } from 'node:fs';
@@ -95,7 +95,7 @@ describe('UC-1: проекты-потребители', () => {
         const result = await runInConsumer(dir(minimal), 'node', ['import-check.mjs']);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
+            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok redis:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
         );
     });
 
@@ -106,7 +106,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ok',
+            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok redis:ok testing:ok',
         );
     });
 
@@ -121,7 +121,7 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.code, describeResult(result)).toBe(0);
     });
 
-    it('AC-1.2: без pg и testcontainers /config, /crypto, /http, /messaging, /observability импортируются; /database — «@verdeect/kit/database требует pg — добавьте в зависимости сервиса»; /idempotency — «@verdeect/kit/idempotency требует pg — …»; /testing — «… требует testcontainers …»', async () => {
+    it('AC-1.2: без pg и testcontainers /config, /crypto, /http, /messaging, /observability импортируются; /database — «@verdeect/kit/database требует pg — добавьте в зависимости сервиса»; /idempotency — «@verdeect/kit/idempotency требует pg — …»; /redis — «@verdeect/kit/redis требует ioredis — …»; /testing — «… требует testcontainers …»', async () => {
         const project = dir(noTestcontainers);
         expect(existsSync(join(project, 'node_modules', 'pg'))).toBe(false);
         expect(existsSync(join(project, 'node_modules', 'testcontainers'))).toBe(false);
@@ -140,6 +140,9 @@ describe('UC-1: проекты-потребители', () => {
         );
         expect(result.stdout, describeResult(result)).toContain(
             'idempotency:@verdeect/kit/idempotency требует pg — добавьте в зависимости сервиса',
+        );
+        expect(result.stdout, describeResult(result)).toContain(
+            'redis:@verdeect/kit/redis требует ioredis — добавьте в зависимости сервиса',
         );
         expect(result.stdout, describeResult(result)).toContain(
             'testing:@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса',

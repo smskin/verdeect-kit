@@ -66,11 +66,18 @@ describe('UC-6: inbox', () => {
         );
         const consumer = app.get(TestConsumer);
         const before = consumer.count();
+        consumer.visibleNotes = undefined;
         publishEnvelope(
             broker,
             testEnvelope({ tenant: 'acme', data: { noteId: 'n1', title: 'rls' } }),
         );
-        await waitUntil(() => consumer.count() === before + 1, 'обработчик rls');
+        // Счётчик растёт при входе в обработчик, visibleNotes — после select в его транзакции: ждём второе (KT-30).
+        await waitUntil(
+            () => consumer.visibleNotes !== undefined,
+            'обработчик rls посчитал строки',
+        );
+
+        expect(consumer.count()).toBe(before + 1);
 
         expect(consumer.visibleNotes).toBe(2);
         expect(consumer.received.at(-1)?.tenant).toBe('acme');

@@ -92,13 +92,13 @@ describe('UC-10: секреты ENCRYPTION_KEYS', () => {
         expect(cipher.decrypt(cipher.encrypt('text', aad), aad)).toBe('text');
     });
 
-    it("§3.6: generateSecret(48) — 48 байт base64url без '='; generateSecret(31), (0) и (32.5) — RangeError", () => {
+    it("AC-7.5: generateSecret(48) — 48 байт base64url без '='; generateSecret(16), (31), (0) и (32.5) — RangeError", () => {
         const value = generateSecret(48);
 
         expect(value).toMatch(/^[A-Za-z0-9_-]+$/);
         expect(Buffer.from(value, 'base64url')).toHaveLength(48);
         expect(Buffer.from(generateSecret(), 'base64url')).toHaveLength(32);
-        for (const bytes of [31, 0, 32.5]) {
+        for (const bytes of [16, 31, 0, 32.5]) {
             expect(() => generateSecret(bytes)).toThrow(RangeError);
         }
     });

@@ -210,6 +210,24 @@ export default [
         ]),
     },
     {
+        files: ['src/redis/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '../database/*',
+                    '../idempotency/*',
+                    '../messaging/*',
+                    '../crypto/*',
+                    '../testing/*',
+                    '../cli/*',
+                    'shell-quote',
+                ],
+                message:
+                    'redis импортирует только http, observability, config и internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
         files: ['src/observability/**/*.ts'],
         rules: restrictedImports([
             {

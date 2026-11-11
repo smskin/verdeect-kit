@@ -1,4 +1,4 @@
-// Точка входа @verdeect/kit/testing (prd.md §3.8, E1 → E5): явный список экспортов; только условие development (NFR-4).
+// Точка входа @verdeect/kit/testing (prd.md §3.8, E1 → E8): явный список экспортов; только условие development (NFR-4).
 export { createTestApp } from './create-test-app.js';
 export type { KitTestAppOptions, KitTestOverride } from './create-test-app.js';
 export { expectMatchesApi } from './expect-matches-api.js';
@@ -13,6 +13,7 @@ export { assertRepoConventions } from './repo-conventions.js';
 export { timingGuard } from './timing-guard.js';
 export { createScratchDatabase } from './scratch-database.js';
 export type { KitScratchDatabase } from './scratch-database.js';
+export { redisWorkerOverride } from './redis-worker.js';
 export { workerScope } from './worker-scope.js';
 export type { KitWorkerScope } from './worker-scope.js';
 export { countQueries } from './count-queries.js';

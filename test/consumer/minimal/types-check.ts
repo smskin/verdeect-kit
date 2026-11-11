@@ -1,5 +1,5 @@
 // AC-1.1, AC-1.6: типы пакета (.d.ts архива) проверяются tsc потребителя; /observability — §3.2; /http — §3.5;
-// /database — §3.3, /idempotency — §3.3а, /testing — §3.8 (E4); /crypto — §3.6 (E7).
+// /database — §3.3, /idempotency — §3.3а, /testing — §3.8 (E4); /crypto — §3.6 (E7); /redis — §3.7 (E8).
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { defineEnv, envBase, parseEnv } from '@verdeect/kit/config';
 import {
@@ -18,7 +18,15 @@ import {
 } from '@verdeect/kit/observability';
 import type { DbContext } from '@verdeect/kit/database';
 import type { KitIdempotentOptions } from '@verdeect/kit/idempotency';
-import type { KitWorkerScope } from '@verdeect/kit/testing';
+import {
+    KIT_REDIS,
+    KitRedisChannels,
+    KitRedisModule,
+    RateLimiter,
+    throwRateLimited,
+    type RateLimitResult,
+} from '@verdeect/kit/redis';
+import { redisWorkerOverride, type KitWorkerScope } from '@verdeect/kit/testing';
 import {
     defineEvent,
     type Envelope,
@@ -69,7 +77,7 @@ export const bootstrapOptions: KitBootstrapOptions<typeof schema> = {
 export const page: Page<{ id: string }> = { items: [{ id: 'a' }], nextCursor: null };
 export const status: number = new DomainError('FORBIDDEN').status;
 
-// /database, /idempotency, /testing (E4, E5): типы контекста, опций @Idempotent и области воркера (rabbitmq — E5).
+// /database, /idempotency, /testing (E4, E5): типы контекста, опций @Idempotent и области воркера (rabbitmq — E5, redisPrefix — E8).
 export const dbContext: DbContext = { tenant: null, traceId: 't', actor: { channel: 'system' } };
 export const idempotentOptions: KitIdempotentOptions = { required: true, tenantFromBody: 'tenant' };
 export const scope: KitWorkerScope = {
@@ -78,6 +86,7 @@ export const scope: KitWorkerScope = {
         vhost: 'svc-test-00000000-w1',
         url: 'amqp://u:p@localhost:5672/svc-test-00000000-w1',
     },
+    redisPrefix: 'svc:w1:',
 };
 
 // /messaging (E5): определение события, конверт по признаку tenant, опции модуля.
@@ -106,3 +115,13 @@ export const encrypted: string = cipher.encrypt('x', { aad: 'client-secret:cli_1
 export function reasonOf(error: unknown): DecryptErrorReason | null {
     return error instanceof DecryptError ? error.reason : null;
 }
+
+// /redis (§3.7): модуль, токен, каналы, лимитер; subscriber — только true.
+export const redisModule = KitRedisModule.forRoot({ service: 'consumer', subscriber: true });
+// @ts-expect-error subscriber — только true (второе соединение по явному флагу)
+KitRedisModule.forRoot({ service: 'consumer', subscriber: false });
+export const redisToken: symbol = KIT_REDIS;
+export const redisClasses = [KitRedisChannels, RateLimiter] as const;
+export const limited: RateLimitResult = { allowed: false, remaining: 0, retryAfterMs: 1000 };
+export const raise: (result: RateLimitResult) => never = throwRateLimited;
+export const override = redisWorkerOverride;

@@ -1,4 +1,5 @@
-// workerScope (prd.md §3.8 v1.14, UC-14, AC-5.18): tenant — слаг компании воркера, rabbitmq — vhost воркера;
+// workerScope (prd.md §3.8 v1.14, UC-14, AC-5.18, AC-8.5): tenant — слаг компании воркера, rabbitmq — vhost воркера,
+// redisPrefix — <svc>:w<N>:;
 // src/testing/worker-scope.ts.
 import { describe, expect, it } from 'vitest';
 import { workerScope, workerScopeWith } from '../../../src/testing/worker-scope.js';
@@ -42,5 +43,26 @@ describe('UC-14: workerScope', () => {
             vhost: `kit-test-r-w${pool}`,
             url: `amqp://u@h/w${pool}`,
         });
+    });
+
+    it('AC-8.5: redisPrefix — <svc>:w<VITEST_POOL_ID>:', () => {
+        const pool = process.env.VITEST_POOL_ID ?? '1';
+
+        expect(
+            workerScopeWith(
+                () => undefined,
+                () => 'kit',
+            ).redisPrefix,
+        ).toBe(`kit:w${pool}:`);
+    });
+
+    it('AC-8.5: стек без redis — TypeError при обращении к redisPrefix, tenant доступен', () => {
+        const scope = workerScopeWith(
+            () => undefined,
+            () => undefined,
+        );
+
+        expect(() => scope.redisPrefix).toThrow(/startTestStack запущен без redis: true/);
+        expect(scope.tenant).toMatch(/^w/);
     });
 });

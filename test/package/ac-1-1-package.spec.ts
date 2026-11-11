@@ -81,6 +81,8 @@ const DATABASE_ENTRIES = ['database', 'idempotency'].map((dir) =>
 
 const MESSAGING_ENTRIES = [join(REPO_ROOT, 'dist', 'messaging', 'index.js')];
 
+const REDIS_ENTRY = join(REPO_ROOT, 'dist', 'redis', 'index.js');
+
 describe('UC-16: архив пакета', () => {
     it('AC-1.1: publint --strict без замечаний', async () => {
         const result = await runCommand('pnpm', ['exec', 'publint', '--strict'], REPO_ROOT);
@@ -118,6 +120,9 @@ describe('UC-16: архив пакета', () => {
         expect(entries).toContain('package/dist/crypto/index.js');
         expect(entries).toContain('package/dist/cli/commands/crypto.js');
         expect(entries).toContain('package/dist/internal/rabbitmq-definitions.js');
+        expect(entries).toContain('package/dist/redis/index.js');
+        expect(entries).toContain('package/dist/cli/commands/redis.js');
+        expect(entries).toContain('package/dist/internal/redis-acl.js');
         expect(entries).toContain('package/dist/cli/main.js');
         expect(entries).toContain('package/alerts/verdeect-kit.rules.yml');
         for (const forbidden of [
@@ -147,6 +152,7 @@ describe('UC-16: архив пакета', () => {
             'idempotency',
             'messaging',
             'crypto',
+            'redis',
         ]
             .flatMap((dir) => filesUnder(join(REPO_ROOT, 'dist', dir)))
             .filter((file) => file.endsWith('.js'));
@@ -262,6 +268,27 @@ describe('UC-16: архив пакета', () => {
         const first = text.split('\n').find((line) => /^(import|export) /.test(line));
 
         expect(first).toBe("import './peer.js';");
+    });
+
+    it('AC-1.2: dist/redis — первая строка import ./peer.js, нет статического ioredis, нет top-level await', () => {
+        const text = readFileSync(REDIS_ENTRY, 'utf8');
+        const first = text.split('\n').find((line) => /^(import|export) /.test(line));
+        const { seen, specifiers } = staticGraph(REDIS_ENTRY);
+        const files = [...seen].map((file) => relative(join(REPO_ROOT, 'dist'), file));
+
+        expect(first).toBe("import './peer.js';");
+        expect(seen.size).toBeGreaterThan(3);
+        expect(
+            specifiers.filter((specifier) => /^(ioredis|pg|amqplib)(\/.*)?$/.test(specifier)),
+        ).toEqual([]);
+        expect(files.filter((file) => /^(database|messaging|testing)\//.test(file))).toEqual([]);
+        expect(
+            [...seen]
+                .filter((file) =>
+                    /^(export )?(const [^=]+= )?await /m.test(readFileSync(file, 'utf8')),
+                )
+                .map((file) => relative(REPO_ROOT, file)),
+        ).toEqual([]);
     });
 
     it('AC-1.1: dist/testing не импортирует amqplib и messaging/index статически', () => {

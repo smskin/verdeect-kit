@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI verdeect-kit (prd.md §3.5, AC-3.7; ARCHITECTURE.md «CLI»): разбор команды и динамическая загрузка только её
-// обработчика (openapi, db, rabbitmq, crypto). Результат — JSON в stdout, ошибка — JSON и код выхода 1. process.exit не вызывается: его вызывают только
+// обработчика (openapi, db, rabbitmq, crypto, redis). Результат — JSON в stdout, ошибка — JSON и код выхода 1. process.exit не вызывается: его вызывают только
 // failStartup и сторож KitLifecycle; код выхода — process.exitCode.
 import 'reflect-metadata';
 import { parseArgs } from 'node:util';
@@ -13,6 +13,7 @@ const COMMANDS: Readonly<Record<string, () => Promise<CommandHandler>>> = {
     db: async () => (await import('./commands/db.js')).dbCommand,
     rabbitmq: async () => (await import('./commands/rabbitmq.js')).rabbitmqCommand,
     crypto: async () => (await import('./commands/crypto.js')).cryptoCommand,
+    redis: async () => (await import('./commands/redis.js')).redisCommand,
 };
 
 /** Точка входа: `verdeect-kit <команда> [опции]`. */
