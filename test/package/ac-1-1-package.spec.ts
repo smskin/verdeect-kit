@@ -79,6 +79,8 @@ const DATABASE_ENTRIES = ['database', 'idempotency'].map((dir) =>
     join(REPO_ROOT, 'dist', dir, 'index.js'),
 );
 
+const MESSAGING_ENTRIES = [join(REPO_ROOT, 'dist', 'messaging', 'index.js')];
+
 describe('UC-16: архив пакета', () => {
     it('AC-1.1: publint --strict без замечаний', async () => {
         const result = await runCommand('pnpm', ['exec', 'publint', '--strict'], REPO_ROOT);
@@ -111,6 +113,9 @@ describe('UC-16: архив пакета', () => {
         expect(entries).toContain('package/dist/http/index.js');
         expect(entries).toContain('package/dist/database/index.js');
         expect(entries).toContain('package/dist/idempotency/index.js');
+        expect(entries).toContain('package/dist/messaging/index.js');
+        expect(entries).toContain('package/dist/cli/commands/rabbitmq.js');
+        expect(entries).toContain('package/dist/internal/rabbitmq-definitions.js');
         expect(entries).toContain('package/dist/cli/main.js');
         expect(entries).toContain('package/alerts/verdeect-kit.rules.yml');
         for (const forbidden of [
@@ -138,6 +143,7 @@ describe('UC-16: архив пакета', () => {
             'cli',
             'database',
             'idempotency',
+            'messaging',
         ]
             .flatMap((dir) => filesUnder(join(REPO_ROOT, 'dist', dir)))
             .filter((file) => file.endsWith('.js'));
@@ -200,6 +206,50 @@ describe('UC-16: архив пакета', () => {
 
     it('AC-1.2: в статическом графе dist/database/index.js и dist/idempotency/index.js нет top-level await', () => {
         for (const entry of DATABASE_ENTRIES) {
+            const offending = [...staticGraph(entry).seen].filter((file) =>
+                /^(export )?(const [^=]+= )?await /m.test(readFileSync(file, 'utf8')),
+            );
+
+            expect(offending.map((file) => relative(REPO_ROOT, file))).toEqual([]);
+        }
+    });
+
+    it('AC-1.2: dist/messaging статически не импортирует pg, amqplib, amqp-connection-manager, драйвер Drizzle и dist/database', () => {
+        for (const entry of MESSAGING_ENTRIES) {
+            const { seen, specifiers } = staticGraph(entry);
+            const files = [...seen].map((file) => relative(join(REPO_ROOT, 'dist'), file));
+
+            expect(seen.size, entry).toBeGreaterThan(3);
+            expect(
+                specifiers.filter((specifier) =>
+                    /^(pg|pg\/.*|amqplib(\/.*)?|amqp-connection-manager(\/.*)?|drizzle-orm\/node-postgres(\/.*)?)$/.test(
+                        specifier,
+                    ),
+                ),
+                entry,
+            ).toEqual([]);
+            expect(files.filter((file) => file.startsWith('database/'))).toEqual([]);
+        }
+    });
+
+    it('AC-1.2: dist/messaging/index.js — первый импорт ./peer.js', () => {
+        const text = readFileSync(join(REPO_ROOT, 'dist', 'messaging', 'index.js'), 'utf8');
+        const first = text.split('\n').find((line) => /^(import|export) /.test(line));
+
+        expect(first).toBe("import './peer.js';");
+    });
+
+    it('AC-1.1: dist/testing не импортирует amqplib и messaging/index статически', () => {
+        const { seen, specifiers } = staticGraph(join(REPO_ROOT, 'dist', 'testing', 'index.js'));
+        const files = [...seen].map((file) => relative(join(REPO_ROOT, 'dist'), file));
+
+        expect(specifiers.filter((specifier) => /^amqplib(\/.*)?$/.test(specifier))).toEqual([]);
+        expect(files).not.toContain(join('messaging', 'index.js'));
+        expect(files).not.toContain(join('messaging', 'peer.js'));
+    });
+
+    it('AC-1.2: в статическом графе dist/messaging/index.js нет top-level await', () => {
+        for (const entry of MESSAGING_ENTRIES) {
             const offending = [...staticGraph(entry).seen].filter((file) =>
                 /^(export )?(const [^=]+= )?await /m.test(readFileSync(file, 'utf8')),
             );

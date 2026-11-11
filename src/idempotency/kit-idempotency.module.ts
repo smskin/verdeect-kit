@@ -20,6 +20,7 @@ import type { Logger as PinoLogger } from 'pino';
 import { deleteInBatches } from '../database/batches.js';
 import { Db } from '../database/db.js';
 import { runExclusive } from '../database/run-exclusive.js';
+import { resultOf } from '../internal/cleanup-result.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import { KIT_LOGGER, KIT_METRICS } from '../internal/tokens.js';
@@ -42,22 +43,6 @@ const KIT_IDEMPOTENCY_SCHEMA = Symbol('KIT_IDEMPOTENCY_SCHEMA');
 export interface KitIdempotencyModuleOptions {
     /** Таблица `createIdempotencyTable(pgSchema(…))` схемы сервиса. */
     readonly table: KitIdempotencyTable;
-}
-
-/**
- * Итог прохода (AC-9.5, KT-22 п. 5): `ok` — удалять больше нечего; `partial` — упёрся в `maxBatches`, записи старше
- * срока остались; `interrupted` — остановлен (выкат), алерт `VerdeectCleanupFailing` его не учитывает.
- */
-function resultOf(
-    complete: boolean,
-    batches: number,
-    maxBatches: number,
-): 'ok' | 'partial' | 'interrupted' {
-    if (complete) {
-        return 'ok';
-    }
-
-    return batches === maxBatches ? 'partial' : 'interrupted';
 }
 
 /** Логгер прохода: pino экземпляра (`service`, `replica` в `base`) или логгер Nest. */

@@ -41,6 +41,10 @@
       "types": "./dist/idempotency/index.d.ts",
       "default": "./dist/idempotency/index.js"
     },
+    "./messaging": {
+      "types": "./dist/messaging/index.d.ts",
+      "default": "./dist/messaging/index.js"
+    },
     "./observability": {
       "types": "./dist/observability/index.d.ts",
       "default": "./dist/observability/index.js"
@@ -139,6 +143,8 @@
     "@types/semver": "7.8.0",
     "@types/shell-quote": "1.7.5",
     "@verdeect/auth": "1.0.1",
+    "amqp-connection-manager": "5.0.1",
+    "amqplib": "2.2.0",
     "drizzle-kit": "0.31.11",
     "drizzle-orm": "0.45.4",
     "eslint": "10.12.0",

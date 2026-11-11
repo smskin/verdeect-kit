@@ -29,7 +29,7 @@ const COMMON_PATTERNS = [
         ],
         allowTypeImports: true,
         message:
-            'Опциональный peer — только через loadPeer из src/internal/peer.ts, либо requirePeer + ленивый import() в src/database/pg.ts (AC-1.2); import type разрешён',
+            'Опциональный peer — только через loadPeer из src/internal/peer.ts, либо requirePeer + import() при вызове (src/database/pg.ts, src/messaging/peer.ts) (AC-1.2); import type разрешён',
     },
     {
         group: ['drizzle-orm/node-postgres'],
@@ -266,6 +266,30 @@ export default [
                 ],
                 message:
                     'idempotency импортирует database, http, observability, config, internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
+        files: ['src/messaging/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '../testing/*',
+                    '../http/*',
+                    '../idempotency/*',
+                    '../redis/*',
+                    '../crypto/*',
+                    '../cli/*',
+                    'shell-quote',
+                ],
+                message:
+                    'messaging импортирует только observability, config, internal (ARCHITECTURE.md).',
+            },
+            {
+                group: ['../database/*'],
+                allowTypeImports: true,
+                message:
+                    'значения database — только динамическим import() в KitMessagingModule.forRoot (pg — только при outbox или inbox, AC-1.2)',
             },
         ]),
     },

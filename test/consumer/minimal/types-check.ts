@@ -12,6 +12,12 @@ import {
 import type { DbContext } from '@verdeect/kit/database';
 import type { KitIdempotentOptions } from '@verdeect/kit/idempotency';
 import type { KitWorkerScope } from '@verdeect/kit/testing';
+import {
+    defineEvent,
+    type Envelope,
+    type KitEvent,
+    type KitMessagingModuleOptions,
+} from '@verdeect/kit/messaging';
 import { pino } from 'pino';
 import { z } from 'zod';
 
@@ -56,7 +62,27 @@ export const bootstrapOptions: KitBootstrapOptions<typeof schema> = {
 export const page: Page<{ id: string }> = { items: [{ id: 'a' }], nextCursor: null };
 export const status: number = new DomainError('FORBIDDEN').status;
 
-// /database, /idempotency, /testing (E4): типы контекста, опций @Idempotent и области воркера.
+// /database, /idempotency, /testing (E4, E5): типы контекста, опций @Idempotent и области воркера (rabbitmq — E5).
 export const dbContext: DbContext = { tenant: null, traceId: 't', actor: { channel: 'system' } };
 export const idempotentOptions: KitIdempotentOptions = { required: true, tenantFromBody: 'tenant' };
-export const scope: KitWorkerScope = { tenant: 'w0-00000000' };
+export const scope: KitWorkerScope = {
+    tenant: 'w0-00000000',
+    rabbitmq: {
+        vhost: 'svc-test-00000000-w1',
+        url: 'amqp://u:p@localhost:5672/svc-test-00000000-w1',
+    },
+};
+
+// /messaging (E5): определение события, конверт по признаку tenant, опции модуля.
+const Created = defineEvent({
+    type: 'consumer.company.created',
+    version: 1,
+    subject: 'company',
+    data: z.object({ companyId: z.string() }),
+});
+export const event: KitEvent = Created;
+export const envelopeTenant: Envelope<typeof Created>['tenant'] = 'acme';
+export const messagingOptionsCheck: KitMessagingModuleOptions = {
+    service: 'consumer',
+    subscriber: { dedupe: 'none' },
+};

@@ -11,6 +11,8 @@
     "@sentry/nestjs": "11.7.0",
     "@verdeect/auth": "1.0.1",
     "@verdeect/kit": "file:__TARBALL__",
+    "amqp-connection-manager": "5.0.1",
+    "amqplib": "2.2.0",
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.5",
     "nestjs-pino": "5.3.1",

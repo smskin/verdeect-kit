@@ -26,7 +26,9 @@ export interface KitDeleteInBatchesOptions {
     readonly shouldContinue?: () => boolean;
     /**
      * Соединение для пачек — обычно соединение блокировки из `runExclusive(db, key, (connection) => …)`: второе
-     * соединение пула не берётся. Без него — транзакция `Db` на соединении основного пула.
+     * соединение пула не берётся. Без него — транзакция `Db` на соединении основного пула. Транзакции `Db`
+     * (`db.transaction`, `db.read`) внутри `fn` `runExclusive` идут на других соединениях пула: на соединении
+     * блокировки работают только пачки этого вызова.
      */
     readonly connection?: PoolClient;
 }

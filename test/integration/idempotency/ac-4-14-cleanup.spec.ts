@@ -3,7 +3,7 @@
 // остановка во время прохода → interrupted, DB_POOL_MAX=1 (prd.md §3.3а v1.14; KT-22 п. 4, 5). Перенос O idempotency-cleanup.int-spec.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
-import type { Pool, PoolClient } from '../../../src/database/pg.js';
+import { countQueries } from '../../../src/testing/count-queries.js';
 import { createScratchDatabase } from '../../../src/testing/scratch-database.js';
 import { adminQuery as adminAt } from '../../support/postgres.js';
 import { adminQuery } from '../../support/database.js';
@@ -16,51 +16,6 @@ import {
 } from './support.js';
 
 const LOCK_KEY = 'verdeect-kit:idempotency-cleanup:kit';
-
-/** Сигнал первого запроса с фрагментом текста на клиентах пула и счёт таких запросов (без пауз). */
-function watchQueries(
-    pool: Pool,
-    fragment: string,
-): { first: Promise<void>; count: () => number; stop: () => void } {
-    let count = 0;
-    let signal = (): void => undefined;
-    const first = new Promise<void>((resolve) => {
-        signal = resolve;
-    });
-    const wrapped: PoolClient[] = [];
-    const onAcquire = (client: PoolClient): void => {
-        if (wrapped.includes(client)) {
-            return;
-        }
-        wrapped.push(client);
-        const original = client.query;
-        // boundary: обёртка сохраняет перегрузки query pg.
-        client.query = ((...args: Parameters<PoolClient['query']>) => {
-            const text =
-                typeof args[0] === 'string'
-                    ? args[0]
-                    : String((args[0] as { text?: unknown }).text);
-            if (text.includes(fragment)) {
-                count += 1;
-                signal();
-            }
-
-            return (original as (...a: unknown[]) => unknown).apply(client, args);
-        }) as PoolClient['query'];
-    };
-    pool.on('acquire', onAcquire);
-
-    return {
-        first,
-        count: () => count,
-        stop: () => {
-            pool.off('acquire', onAcquire);
-            for (const client of wrapped) {
-                delete (client as Partial<PoolClient>).query;
-            }
-        },
-    };
-}
 
 async function seed(rows: readonly (readonly [string | null, string, number])[]): Promise<void> {
     for (const [tenant, key, hours] of rows) {
@@ -183,18 +138,29 @@ describe('UC-9: очистка идемпотентности', () => {
                 );
             }
             const before = await cleanupRuns(stand.metrics, 'interrupted');
-            const purge = watchQueries(mainPoolOf(stand.app.get(Db)), 'idempotency_purge');
-            try {
-                const run = stand.cleanup.run({ batchSize: 2, maxBatches: 100 });
-                // Сигнал — отправка первой пачки; остановка ставится раньше, чем пачка вернётся с сервера.
-                await purge.first;
-                await stand.cleanup.beforeApplicationShutdown();
-                await run;
-            } finally {
-                purge.stop();
-            }
+            let signal = (): void => undefined;
+            const firstBatch = new Promise<void>((resolve) => {
+                signal = resolve;
+            });
+            const { queries } = await countQueries(
+                mainPoolOf(stand.app.get(Db)),
+                async () => {
+                    const run = stand.cleanup.run({ batchSize: 2, maxBatches: 100 });
+                    // Сигнал — отправка первой пачки; остановка ставится раньше, чем пачка вернётся с сервера.
+                    await firstBatch;
+                    await stand.cleanup.beforeApplicationShutdown();
+                    await run;
+                },
+                {
+                    onQuery: (text) => {
+                        if (text.includes('idempotency_purge')) {
+                            signal();
+                        }
+                    },
+                },
+            );
 
-            expect(purge.count()).toBe(1);
+            expect(queries.filter((text) => text.includes('idempotency_purge'))).toHaveLength(1);
             const [left] = await adminAt<{ count: number }>(
                 scratch.adminUrl,
                 'select count(*)::int as count from kit.idempotency_key',

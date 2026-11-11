@@ -1,7 +1,8 @@
 // AC-4.8 (UC-1): assertStrictTenantIsolation — строгий RLS схемы сервиса под ролью приложения: политика, FORCE, 0 строк
 // под пустым тенантом, исключения outbox и idempotency_key, функция idempotency_purge (prd.md §3.8 v1.14). Перенос
 // приёмов O ac-10-2-rls и fr-21-roles; нестрогая модель I («пустой тенант видит всё») должна падать. Каждое нарушение —
-// своя БД createScratchDatabase(), изменения — администратором, проверка — под kit_app.
+// своя БД createScratchDatabase(), изменения — администратором, проверка — под kit_app. E5: outbox — настоящая
+// createOutboxTable фикстуры, политика сверяется с OUTBOX_POLICY_SQL.
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import {
@@ -126,21 +127,6 @@ describe('UC-1: строгий RLS', () => {
         );
     });
 
-    it('AC-4.8: таблица outbox с политикой и FORCE проходит (исключение строгой модели)', async () => {
-        await withScratch(
-            [
-                'CREATE TABLE kit.outbox (id text primary key, tenant text)',
-                'ALTER TABLE kit.outbox ENABLE ROW LEVEL SECURITY',
-                'ALTER TABLE kit.outbox FORCE ROW LEVEL SECURITY',
-                'CREATE POLICY outbox_all ON kit.outbox USING (true) WITH CHECK (true)',
-                "insert into kit.outbox values ('m1', 'acme')",
-            ],
-            async (run) => {
-                await run();
-            },
-        );
-    });
-
     it('AC-4.8: idempotency_key с записью без компании и записью acme проходит', async () => {
         await withScratch(
             [
@@ -200,6 +186,55 @@ describe('UC-1: строгий RLS', () => {
                 );
             },
         );
+    });
+
+    it('AC-4.8: outbox из createOutboxTable (схема kit) — проходит', async () => {
+        await withScratch(
+            [
+                "insert into kit.outbox (id, tenant, type, version, subject_id, actor, trace_id, data) values ('evt_1', 'acme', 'kit.a.b', 1, 's', '{}', 't', '{}')",
+            ],
+            async (run) => {
+                await run();
+            },
+        );
+    });
+
+    it('AC-4.8: outbox с политикой tenantPolicy вместо исключения → нарушение «outbox: политика не по createOutboxTable»', async () => {
+        await withScratch(
+            [
+                'DROP POLICY outbox_tenant_isolation ON kit.outbox',
+                "CREATE POLICY tenant_isolation ON kit.outbox USING (tenant = current_setting('app.tenant', true)) WITH CHECK (tenant = current_setting('app.tenant', true))",
+            ],
+            async (run) => {
+                await expect(run()).rejects.toThrow(
+                    'outbox: политика не по createOutboxTable (outbox_tenant_isolation)',
+                );
+            },
+        );
+    });
+
+    it('AC-4.8: outbox с политикой USING (true) (имя outbox_all) → нарушение «outbox: политика не по createOutboxTable»', async () => {
+        await withScratch(
+            [
+                'DROP POLICY outbox_tenant_isolation ON kit.outbox',
+                'CREATE POLICY outbox_all ON kit.outbox USING (true) WITH CHECK (true)',
+            ],
+            async (run) => {
+                await expect(run()).rejects.toThrow('outbox: политика не по createOutboxTable');
+            },
+        );
+    });
+
+    it('AC-4.8: outbox без FORCE → нарушение', async () => {
+        await withScratch(['ALTER TABLE kit.outbox NO FORCE ROW LEVEL SECURITY'], async (run) => {
+            await expect(run()).rejects.toThrow('outbox: нет FORCE ROW LEVEL SECURITY');
+        });
+    });
+
+    it('AC-4.8: outbox без политики → нарушение', async () => {
+        await withScratch(['DROP POLICY outbox_tenant_isolation ON kit.outbox'], async (run) => {
+            await expect(run()).rejects.toThrow('outbox: нет политики');
+        });
     });
 
     it('AC-4.8: except пропускает таблицу', async () => {

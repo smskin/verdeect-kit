@@ -1,4 +1,5 @@
-// AC-9.1 (UC-1, UC-16; E4 — БД и идемпотентность, drizzle-kit), AC-1.1 (условие development), AC-1.2 (уровень C), AC-3.8
+// AC-9.1 (UC-1, UC-16; E4 — БД и идемпотентность, drizzle-kit; E5 — сообщения), AC-1.1 (условие development), AC-1.2
+// (уровень C), AC-3.8, AC-5.13 (покрытие outbox), AC-5.18 (vhost воркера)
 // (снимок OpenAPI): проекты-потребители на упакованном архиве (prd.md §3.5, §3.8, NFR-3, NFR-4). Нужны Docker (startTestStack) и сеть до реестра npm.
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -40,8 +41,52 @@ function dir(path: string | undefined): string {
 }
 
 describe('UC-1: проекты-потребители', () => {
-    it('AC-9.1: проект-потребитель проходит свои тесты на упакованном архиве (startTestStack, defineEnv, assertRepoConventions, /health, /metrics, остановка)', async () => {
-        const result = await runInConsumer(dir(minimal), 'pnpm', ['exec', 'vitest', 'run']);
+    let mainRun: CommandResult | undefined;
+
+    it('AC-9.1: проект-потребитель проходит свои тесты на упакованном архиве (startTestStack, defineEnv, assertRepoConventions, /health, /metrics, остановка, сообщения) с KIT_OUTBOX_COVERAGE=1', async () => {
+        const result = await runInConsumer(dir(minimal), 'pnpm', ['exec', 'vitest', 'run'], {
+            KIT_OUTBOX_COVERAGE: '1',
+        });
+        mainRun = result;
+
+        expect(result.code, describeResult(result)).toBe(0);
+    });
+
+    it('AC-5.18: после прогона потребителя vhost и пользователи с префиксом consumer-test- удалены', () => {
+        const output = `${mainRun?.stdout ?? ''}${mainRun?.stderr ?? ''}`;
+        const match = /\[startTestStack\] RabbitMQ: удалено vhost (\d+), пользователей (\d+)/.exec(
+            output,
+        );
+
+        expect(match, output.slice(-2000)).not.toBeNull();
+        expect(Number(match?.[1])).toBeGreaterThanOrEqual(1);
+        expect(Number(match?.[2])).toBeGreaterThanOrEqual(1);
+    });
+
+    it('AC-5.13: при KIT_OUTBOX_COVERAGE=1 событие без успешного expectOutbox роняет teardown со списком типов', async () => {
+        const result = await runInConsumer(
+            dir(minimal),
+            'pnpm',
+            ['exec', 'vitest', 'run', '-c', 'outbox-coverage/vitest.config.ts'],
+            { KIT_OUTBOX_COVERAGE: '1' },
+        );
+        const output = result.stdout + result.stderr;
+        const line = output
+            .split('\n')
+            .find((item) => item.includes('assertOutboxCoverage: события'));
+
+        expect(result.code, describeResult(result)).not.toBe(0);
+        expect(line, describeResult(result)).toContain('consumer.company.archived.v1');
+        expect(line).not.toContain('consumer.company.created.v1');
+    });
+
+    it('AC-5.13: без KIT_OUTBOX_COVERAGE тот же прогон не падает', async () => {
+        const result = await runInConsumer(
+            dir(minimal),
+            'pnpm',
+            ['exec', 'vitest', 'run', '-c', 'outbox-coverage/vitest.config.ts'],
+            { KIT_OUTBOX_COVERAGE: '' },
+        );
 
         expect(result.code, describeResult(result)).toBe(0);
     });
@@ -50,7 +95,7 @@ describe('UC-1: проекты-потребители', () => {
         const result = await runInConsumer(dir(minimal), 'node', ['import-check.mjs']);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok database:ok http:ok idempotency:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
+            'config:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
         );
     });
 
@@ -61,7 +106,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok database:ok http:ok idempotency:ok observability:ok testing:ok',
+            'config:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ok',
         );
     });
 
@@ -76,7 +121,7 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.code, describeResult(result)).toBe(0);
     });
 
-    it('AC-1.2: без pg и testcontainers /config, /http, /observability импортируются; /database — «@verdeect/kit/database требует pg — добавьте в зависимости сервиса»; /idempotency — «@verdeect/kit/idempotency требует pg — …»; /testing — «… требует testcontainers …»', async () => {
+    it('AC-1.2: без pg и testcontainers /config, /http, /messaging, /observability импортируются; /database — «@verdeect/kit/database требует pg — добавьте в зависимости сервиса»; /idempotency — «@verdeect/kit/idempotency требует pg — …»; /testing — «… требует testcontainers …»', async () => {
         const project = dir(noTestcontainers);
         expect(existsSync(join(project, 'node_modules', 'pg'))).toBe(false);
         expect(existsSync(join(project, 'node_modules', 'testcontainers'))).toBe(false);
@@ -98,6 +143,18 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.stdout, describeResult(result)).toContain(
             'testing:@verdeect/kit/testing требует testcontainers — добавьте в зависимости сервиса',
         );
+        expect(result.stdout, describeResult(result)).toContain('messaging:ok');
+    });
+
+    it("AC-1.2: /messaging без pg — forRoot с subscriber {dedupe: 'none'} собирается, с outbox — «@verdeect/kit/messaging требует pg …»", async () => {
+        const result = await runInConsumer(dir(noTestcontainers), 'node', [
+            'messaging-forroot.mjs',
+        ]);
+
+        expect(result.stdout.trim().split('\n'), describeResult(result)).toEqual([
+            'dedupe-none:ok',
+            'outbox:@verdeect/kit/messaging требует pg — добавьте в зависимости сервиса',
+        ]);
     });
 
     it('AC-9.1: drizzle-kit загружает схему потребителя с @verdeect/kit/database и /idempotency — «No schema changes»', async () => {

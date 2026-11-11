@@ -8,7 +8,7 @@
 | ------- | ---------------------------- | -------------------------------------------------------------------- | ----------------------- | ----------- |
 | U       | `test/unit/<подпуть>`        | без сети и Docker; типы — `*.test-d.ts`                              | `make test`             | нет         |
 | I       | `test/integration/<подпуть>` | Testcontainers на `TEST_IMAGES` через собственный `startTestStack`   | `make test-integration` | да          |
-| T       | `test/timing/<подпуть>`      | замеры времени, `globalSetup` — `timingGuard`                        | `make test-timing`      | нет         |
+| T       | `test/timing/<подпуть>`      | замеры времени, `globalSetup` — `timingGuard` и стек (E5)            | `make test-timing`      | нет         |
 | R       | `test/package`               | архив, publint, attw, `publish.mjs`, правила lint, документы, алерты | `make pack-check`       | да (алерты) |
 | C       | `test/consumer`              | проекты-потребители на упакованном архиве                            | `make pack-check`       | да          |
 
@@ -44,16 +44,27 @@
 
 В `isolated` (список `ISOLATED`) файл попадает, только если пишет `process.env` или `vi.stubEnv`, использует `vi.mock`, патчит прототипы или инициализирует процесс-глобальное состояние. Каждая строка списка — с комментарием-причиной. Пустой список — проект `isolated` не создаётся.
 
-Файлы `isolated` (E4):
+Файлы `isolated` (E4, E5):
 
 | Файл                                                                  | Причина                                                  |
 | --------------------------------------------------------------------- | -------------------------------------------------------- |
 | `test/integration/database/ac-4-5-pool-timeout.spec.ts`               | `initFakeSentry` — процесс-глобальный Sentry             |
 | `test/integration/idempotency/ac-4-14-idempotency.spec.ts`            | `initFakeSentry` — процесс-глобальный Sentry             |
 | `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` | `vi.stubEnv` и `process.exit` — стенд `bootstrapService` |
+| `test/integration/messaging/ac-5-7-dlq-retry.spec.ts`                 | `initFakeSentry` — процесс-глобальный Sentry             |
+| `test/integration/messaging/ac-5-9-replica-errors.spec.ts`            | `initFakeSentry` — процесс-глобальный Sentry             |
+| `test/integration/messaging/ac-5-19-broker-down.spec.ts`              | `initFakeSentry` — процесс-глобальный Sentry             |
 
 Прочие файлы уровня I передают окружение приложения через `setPreparsedEnv` (`test/support/database.ts`, `createDbApp`) — без `vi.stubEnv`, проект `shared`.
 
-`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
+`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, rabbitmq: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`, `outbox` с `tenantNullable: true`, `inbox`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
 
 Контейнеры стартуют один раз на прогон в `test/integration/global-setup.ts`, файлы идут последовательно (`fileParallelism: false`).
+
+## Сообщения (E5)
+
+- RabbitMQ поднимается в `globalSetup` уровней I и T (`rabbitmq: true`; уровень T — `timingGuard`, затем тот же стек). `definitions.json` vhost — тот же `buildDefinitions`, что CLI `rabbitmq definitions`.
+- vhost и пользователь на каждый воркер Vitest: `kit-test-<run>-w<N>`, права M3 сервиса `kit`; администратору — полные права на vhost. Teardown удаляет всё с префиксом `kit-test-` (stderr `[startTestStack] RabbitMQ: удалено vhost N, пользователей N`), остатки прошлых прогонов удаляются при старте. Тесты берут `workerScope().rabbitmq.url` (пользователь воркера) и `test/support/broker.ts` (администратор vhost).
+- Очереди `kit`, `kit.retry`, `kit.dlq` durable и живут весь прогон: файл со стендом подписчика вызывает `resetQueues()` (`test/support/messaging.ts`) до создания стенда. `RABBITMQ_RETRY_SECONDS = 1`.
+- `KIT_OUTBOX_COVERAGE=1` задаёт `make test-integration` (и CI): `startTestStack({outboxEvents})` сервиса падает в teardown со списком событий без успешного `expectOutbox`. У пакета событий нет — `outboxEvents` в `globalSetup` пакета не передаётся; покрытие проверяют U-тест `outbox-coverage.spec.ts` и проект-потребитель (`test/consumer/minimal/outbox-coverage`).
+- Без реальных пауз: сигналы (`countQueries(…, {onQuery})`, барьеры `TestConsumer`, опрос брокера и management API), подменённые часы relay (AC-5.16), исчерпание повторов — заголовком `x-death`. Реальное время — только длительности PRD: недоступность брокера 10 с (AC-5.4), TTL 1 с (AC-5.7), срок пачки 5 с.

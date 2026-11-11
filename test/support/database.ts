@@ -67,7 +67,7 @@ export function adminQuery<T extends object = Record<string, unknown>>(
 
 /** Очищает таблицы фикстуры. */
 export async function truncateFixtures(): Promise<void> {
-    await adminQuery('TRUNCATE kit.note, kit.setting');
+    await adminQuery('TRUNCATE kit.note, kit.setting, kit.outbox, kit.inbox RESTART IDENTITY');
 }
 
 /** Адрес роли приложения `kit_app` к БД `kit`. */

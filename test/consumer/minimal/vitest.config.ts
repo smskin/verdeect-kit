@@ -7,5 +7,7 @@ export default defineConfig({
         globalSetup: ['./global-setup.ts'],
         testTimeout: 120_000,
         hookTimeout: 180_000,
+        // relay messaging.spec.ts и процесса observability.spec.ts опрашивают один consumer.outbox.
+        fileParallelism: false,
     },
 });

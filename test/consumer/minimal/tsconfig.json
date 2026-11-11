@@ -10,5 +10,12 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true
   },
-  "include": ["src", "global-setup.ts", "vitest.config.ts", "types-check.ts"]
+  "include": [
+    "src",
+    "global-setup.ts",
+    "build-service.ts",
+    "vitest.config.ts",
+    "types-check.ts",
+    "outbox-coverage"
+  ]
 }

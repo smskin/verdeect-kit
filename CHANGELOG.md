@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14).
+Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14), `/messaging` и CLI `rabbitmq` (этап E5, PRD v1.14).
 
 ### Added
 
@@ -64,6 +64,7 @@
 - `/idempotency`: `Idempotent` и тип `KitIdempotentOptions` — `@Idempotent({required?, tenantFromBody?})`: повтор — сохранённый ответ и `Idempotent-Replayed: true`, коды `IDEMPOTENCY_*`; только с `VerdeectAuthGuard` (без принципала — 500).
 - `/idempotency`: `createIdempotencyTable` и тип `KitIdempotencyTable` — таблица `idempotency_key` под RLS `IS NOT DISTINCT FROM`.
 - `/idempotency`: `idempotencyPurgeSql` — текст функции очистки `SECURITY DEFINER` для миграции сервиса.
+- `/observability`: аннотация алерта `VerdeectEventsDlq` — разбор `<svc>.dlq` по `x-dlq-reason`; у очередей реплики сообщение не сохраняется.
 - `/observability`: метрика `verdeect_cleanup_runs_total{table, result}` в `kitMetrics` и правило алерта `VerdeectCleanupFailing` (порог `verdeect_kit_threshold:cleanup_runs`).
 - `/http`: OpenAPI — `Idempotency-Key`, `Idempotent-Replayed` и ошибки 409/422/400 по метаданным `@Idempotent`.
 - `/testing`: `createScratchDatabase` и тип `KitScratchDatabase` — пустая мигрированная БД из шаблона.
@@ -71,16 +72,30 @@
 - `/testing`: `countQueries` и тип `KitCountablePool` — запросы пула за время функции.
 - `/testing`: `assertStrictTenantIsolation` и тип `KitTenantIsolationOptions` — строгий RLS схемы сервиса и функция очистки.
 - `/testing`: `assertAppRoleIsNotOwner` и тип `KitQueryable` — роль приложения не владелец, без `CREATE`.
+- `/messaging`: `defineEvent` и типы `KitEvent`, `KitEventTenant` — определение события каталога с признаком тенанта (`'required'` по умолчанию, `'none'`), `data` без `.strict()`.
+- `/messaging`: `EnvelopeSchema` и тип `Envelope` — конверт `01` §7.1; `tenant` в типе — по признаку события.
+- `/messaging`: `createOutboxTable` (тип `KitOutboxTable`, опции `KitOutboxTableOptions` — `tenantNullable`) и `createInboxTable` (тип `KitInboxTable`) — таблицы outbox (политика-исключение строгой модели) и inbox.
+- `/messaging`: `KitMessagingModule.forRoot({service, outbox?, subscriber?})` и тип `KitMessagingModuleOptions` — соединение RabbitMQ (пассивная проверка `verdeect.events`), relay, подписчик, очистка, проба `rabbitmq`; отказ запуска `MESSAGING_TENANT_NOT_NULLABLE` (событие `'none'` при NOT NULL `tenant`) и `MESSAGING_RETRY_TTL_MISMATCH` (другой TTL `<svc>.retry`); `pg` — только при outbox или `dedupe: 'inbox'`.
+- `/messaging`: `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции `Db` из кода (без триггеров), проверка `data` и признака тенанта; relay с подтверждениями брокера, пачкой ≤ 100 по `seq`, паузами 1 с → 5 мин, `error` + GlitchTip после 5 неудач строки.
+- `/messaging`: `KitSubscriber` и типы `KitEventHandler`, `KitReplicaHandler` — `on(Event, (event, tx) => …)` с inbox в транзакции обработчика, повторами через `<svc>.retry` (5 по `x-death`), DLQ `<svc>.dlq` с `x-dlq-reason`, `prefetch` 10; `onReplica` — очередь реплики без inbox, повтора и DLQ (ошибка — `error`-лог, `captureThrottled`, `result="dlq"`); метрика `verdeect_events_consumed_total{type, result}`.
+- `/messaging`: `ExpectedMessageError` (повтор, затем DLQ с кодом, без GlitchTip), `InvalidMessageError` (сразу DLQ с причиной, без GlitchTip) и `MessagingStartupError` — отказ запуска с кодом `MESSAGING_TENANT_NOT_NULLABLE` или `MESSAGING_RETRY_TTL_MISMATCH`.
+- `/messaging`: очистка опубликованного outbox и inbox старше 7 дней раз в час одной репликой — метрика `verdeect_cleanup_runs_total{table: outbox|inbox}`.
+- `/testing`: `startTestStack({rabbitmq: true})` — RabbitMQ с `definitions.json`, vhost и пользователь на воркер, удаление в teardown; ключи `inject` `kitRabbitmqUrl`, `kitRabbitmqManagementUrl`, `kitRabbitmqWorkers`; `workerScope().rabbitmq` — `{vhost, url}`.
+- `/testing`: `startTestStack({outboxEvents})` и ключ `inject` `kitOutboxCoverageDir` — покрытие outbox прогона.
+- CLI `verdeect-kit rabbitmq definitions --services <svc,…> [--out <файл>]` — `definitions.json` с хешами паролей из `RABBITMQ_PASSWORD_HASH_<SVC>`; коды ошибок `USAGE`, `INVALID_ENVIRONMENT`.
+- `/testing`: `expectOutbox`, `assertOutboxCoverage` — проверка записи события в транзакции и покрытие событий за прогон (`startTestStack({outboxEvents})`, `KIT_OUTBOX_COVERAGE=1`).
+- `/testing`: `publishTestEvent`, `waitForInbox` — публикация конверта в vhost воркера и ожидание обработки подписчиком без `sleep`.
 - `/testing`: ключи `inject` `kitDatabaseUrl`, `kitDatabaseOwnerUrl`, `kitDatabaseAdminUrl`, `kitDatabaseService`, `kitDatabaseTemplate`.
 - CLI `verdeect-kit db`: `prepare --service <svc>`, `migrate --folder <путь> --schema <svc>`, `move-journal --from <схема> --to <svc>`; коды ошибок `USAGE`, `INVALID_ENVIRONMENT`, `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED`.
 
 ### Changed
 
+- `/testing`: `countQueries(pool, fn, {onQuery})` и тип `KitCountQueriesOptions` — колбэк на каждый запрос пула (сигнал без пауз в тесте).
+- `/database`: `Db` связывает транзакцию с её `DbContext` (для `OutboxStore.add`) — без изменения API.
+- `/testing`: `assertStrictTenantIsolation` проверяет политику `outbox` по `createOutboxTable` (раньше — только наличие политики).
 - `/testing`: `startTestStack({postgres: true})` готовит БД — `prepareDatabase`, шаблон `<svc>_template`, миграции опции `migrations` (без `postgres` — `TypeError`).
 - `/http`: `KitExceptionFilter` больше не считает срок пула — `pool: 'unknown'` удалён; метрику и событие пишет пул `/database` с меткой `main`/`read`, фильтр отвечает 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1`.
-
 - `KitConfigModule.forRoot({schema})` разбирает окружение при сборке контекста, а не при импорте `AppModule`: неверное окружение отклоняет сборку контекста, сам `forRoot` не отклоняется. Умолчания в `process.env` не дописываются, `ConfigService` читает только разобранные значения. При запуске через `bootstrapService` окружение не разбирается повторно.
-
 - Обязательный peer `prom-client` заменён на `@prometheus-io/client` `^0.16.1` (`prom-client` помечен deprecated, преемник — тот же API; PRD v1.12, NFR-3): `kitMetrics` и `MetricsServer` работают на `Registry`, `Counter`, `Gauge` из `@prometheus-io/client`. Сервис ставит `@prometheus-io/client` вместо `prom-client`.
 
 ### Fixed
@@ -93,7 +108,7 @@
 - CLI `db`: `sqlState` ищется по цепочке `cause` (до 10 уровней) — код pg внутри `DrizzleQueryError` больше не теряется; системные коды Node (`EPIPE`) в `sqlState` не попадают (KT-22 п. 6).
 - `/testing`: `assertStrictTenantIsolation` проверяет функцию очистки по точной сигнатуре `idempotency_purge(integer)`; другая перегрузка без нужной — «функции нет» (KT-22 п. 7).
 - Тесты `/database` и `/idempotency` уровня I — без реальных пауз: сигналы входа в обработчик, события `acquire` пула и шлагбаумы вместо `setTimeout` и опроса (KT-22 п. 8).
-
+- `/database`: `runExclusive` сбрасывает сеанс соединения блокировки (`RESET ALL`) перед возвратом в пул; TSDoc запрещает `SET` и `set_config(…, false)` внутри `fn`.
 - `/http`: OpenAPI — у маршрутов с `@RequireTenant()` ответ 409 `TENANT_REQUIRED` (тело guard'а `@verdeect/auth`); `expectMatchesApi` проверяет описанные статусы ошибок по схеме `ErrorResponse` и падает на неописанном статусе.
 - `/http`: `bootstrapService` — `SENTRY_NOT_PRELOADED` только при верной конфигурации Sentry (верный `SENTRY_DSN`, `NODE_ENV = production`); при неверном `SENTRY_*` предупреждения нет — `initSentry` выключил Sentry намеренно.
 - `/testing`: `expectMatchesApi` — скомпилированная схема Ajv кэшируется по маршруту и статусу.

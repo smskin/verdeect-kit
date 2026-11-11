@@ -14,6 +14,15 @@ export interface KitCountablePool {
     off(event: 'acquire', listener: (client: CountableClient) => void): unknown;
 }
 
+/** Опции `countQueries`. */
+export interface KitCountQueriesOptions {
+    /**
+     * Вызывается синхронно до отправки каждого запроса пула за время `fn` с текстом SQL без параметров. Исключение
+     * колбэка не прерывает запрос, а пробрасывается из `countQueries` после `fn`.
+     */
+    readonly onQuery?: (text: string) => void;
+}
+
 function textOf(query: unknown): string {
     if (typeof query === 'string') {
         return query;
@@ -25,13 +34,16 @@ function textOf(query: unknown): string {
 
 /**
  * Считает все запросы пула за время `fn` (по порядку, текст SQL без параметров). Параллельная нагрузка на тот же пул
- * попадёт в счёт; запросы, начатые до вызова, — нет. Методы клиентов восстанавливаются после.
+ * попадёт в счёт; запросы, начатые до вызова, — нет. Методы клиентов восстанавливаются после. `options.onQuery` —
+ * сигнал на каждый запрос (например, «первая пачка началась») без пауз в тесте.
  */
 export async function countQueries<T>(
     pool: KitCountablePool,
     fn: () => Promise<T>,
+    options: KitCountQueriesOptions = {},
 ): Promise<{ readonly result: T; readonly count: number; readonly queries: readonly string[] }> {
     const queries: string[] = [];
+    let callbackError: { readonly error: unknown } | undefined;
     // undefined — query был методом прототипа: восстановление снимает собственное свойство.
     const wrapped = new Map<CountableClient, CountableClient['query'] | undefined>();
     const onAcquire = (client: CountableClient): void => {
@@ -42,7 +54,13 @@ export async function countQueries<T>(
         wrapped.set(client, Object.hasOwn(client, 'query') ? original : undefined);
         // boundary: обёртка сохраняет все перегрузки query pg (текст, конфиг, обратный вызов).
         client.query = ((...args: never[]) => {
-            queries.push(textOf(args[0]));
+            const text = textOf(args[0]);
+            queries.push(text);
+            try {
+                options.onQuery?.(text);
+            } catch (error) {
+                callbackError ??= { error };
+            }
 
             return original.apply(client, args);
         }) as CountableClient['query'];
@@ -50,6 +68,9 @@ export async function countQueries<T>(
     pool.on('acquire', onAcquire);
     try {
         const result = await fn();
+        if (callbackError !== undefined) {
+            throw callbackError.error;
+        }
 
         return { result, count: queries.length, queries: [...queries] };
     } finally {

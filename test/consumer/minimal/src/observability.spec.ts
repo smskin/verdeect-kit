@@ -1,10 +1,14 @@
 // AC-9.1 (C; UC-3, UC-8, UC-13; NFR-4, NFR-8): процесс сервиса-потребителя по форме production
 // (node --import ./dist/service/instrument.js dist/service/main.js) на упакованном архиве через bootstrapService — /ok,
 // /health (пробы KitDatabaseModule), /metrics, очистка идемпотентности (AC-9.5), остановка по SIGTERM с выходом 0 (пулы —
-// шаг 4, очистка — шаг 3), отказ запуска при неверном окружении (prd.md §3.2, §3.5).
+// шаг 4, очистка — шаг 3), отказ запуска при неверном окружении (prd.md §3.2, §3.5). E5: relay и подписчик процесса
+// публикуют и потребляют строку outbox другого процесса (AC-9.1), логи и метрики сообщений (AC-9.5), проба rabbitmq.
 // Логи bootstrapService (entry http) — JSON в stdout; порты — из строки «сервис слушает». Сборка dist — globalSetup.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { newId } from '@verdeect/kit/database';
+import { waitForInbox, workerScope } from '@verdeect/kit/testing';
+import pg from 'pg';
 import { afterEach, describe, expect, inject, it } from 'vitest';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -44,6 +48,8 @@ function startService(overrides: Record<string, string> = {}): Service {
             cwd: ROOT,
             env: {
                 DATABASE_URL: databaseUrl ?? '',
+                RABBITMQ_URL: workerScope().rabbitmq.url,
+                RABBITMQ_RETRY_SECONDS: '1',
                 AUTH_ISSUER: 'https://id.verdeect.ru',
                 AUTH_JWKS_URI: 'http://127.0.0.1:9/jwks',
                 AUTH_RESOURCE: 'https://api.verdeect.ru',
@@ -103,6 +109,38 @@ function startService(overrides: Record<string, string> = {}): Service {
     };
 }
 
+/** Строка outbox «другого процесса» под ролью consumer_app (пустой тенант — исключение политики outbox). */
+async function insertOutboxRow(): Promise<string> {
+    const id = newId('evt');
+    const client = new pg.Client({ connectionString: inject('kitDatabaseUrl') });
+    await client.connect();
+    try {
+        await client.query(
+            `insert into consumer.outbox (id, tenant, type, version, subject_id, actor, trace_id, data)
+             values ($1, 'acme', 'consumer.company.created', 1, 'cmp_p', '{"channel":"system"}', 'trace-p',
+                     '{"companyId":"cmp_p","name":"Process"}')`,
+            [id],
+        );
+    } finally {
+        await client.end();
+    }
+
+    return id;
+}
+
+/** Опрос /health до rabbitmq up (сигнал, не пауза): проба сразу после старта может быть down. */
+async function healthWithRabbit(port: number): Promise<{ status: number; body: unknown }> {
+    const deadline = Date.now() + 10_000 * Number(process.env.TEST_TIMEOUT_SCALE ?? '1');
+    for (;;) {
+        const response = await fetch(`http://127.0.0.1:${port}/health`);
+        const body = (await response.json()) as { checks?: Record<string, string> };
+        if (body.checks?.['rabbitmq'] === 'up' || Date.now() > deadline) {
+            return { status: response.status, body };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+}
+
 function logLines(text: string): Record<string, unknown>[] {
     return text
         .split('\n')
@@ -121,17 +159,67 @@ describe('UC-13: процесс сервиса-потребителя', () => {
         expect(await response.json()).toEqual({ status: 'ok' });
     });
 
-    it('AC-9.1: /health — database и database-read up', async () => {
+    it('AC-9.1: /health — database, database-read и rabbitmq up', async () => {
         const service = startService();
         const { metricsPort: port } = await service.ports;
 
-        const response = await fetch(`http://127.0.0.1:${port}/health`);
+        const { status, body } = await healthWithRabbit(port);
 
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({
+        expect(status).toBe(200);
+        expect(body).toEqual({
             status: 'ok',
-            checks: { database: 'up', 'database-read': 'up' },
+            checks: { database: 'up', 'database-read': 'up', rabbitmq: 'up' },
         });
+    });
+
+    it('AC-9.1: строка outbox, вставленная тестом, — процесс публикует её не позже опроса 1 с и сам потребляет — строка inbox', async () => {
+        const service = startService();
+        await service.ports;
+
+        const id = await insertOutboxRow();
+
+        await waitForInbox(id, { timeoutMs: 5_000 });
+    });
+
+    it('AC-9.5: relay, подписчик и очистка сообщений — строки лога с service=consumer и replica=consumer-1', async () => {
+        const service = startService({ LOG_LEVEL: 'debug' });
+        await service.ports;
+        const id = await insertOutboxRow();
+        await waitForInbox(id, { timeoutMs: 5_000 });
+
+        for (const msg of [
+            'очистка сообщений: проход',
+            'messaging: доставка',
+            'outbox: пачка опубликована',
+        ]) {
+            expect(await service.line(msg), msg).toMatchObject({
+                service: 'consumer',
+                replica: 'consumer-1',
+            });
+        }
+    });
+
+    it('AC-9.5: /metrics — verdeect_events_consumed_total, verdeect_cleanup_runs_total (outbox, inbox), verdeect_outbox_lag_seconds с service="consumer"', async () => {
+        const service = startService();
+        const { metricsPort: port } = await service.ports;
+        const id = await insertOutboxRow();
+        await waitForInbox(id, { timeoutMs: 5_000 });
+        await service.line('очистка сообщений: проход');
+
+        const lines = (await (await fetch(`http://127.0.0.1:${port}/metrics`)).text()).split('\n');
+        const has = (...parts: string[]): boolean =>
+            lines.some((line) => parts.every((part) => line.includes(part)));
+
+        expect(
+            has('verdeect_events_consumed_total{', 'service="consumer"', 'result="handled"'),
+        ).toBe(true);
+        expect(has('verdeect_cleanup_runs_total{', 'service="consumer"', 'table="outbox"')).toBe(
+            true,
+        );
+        expect(has('verdeect_cleanup_runs_total{', 'service="consumer"', 'table="inbox"')).toBe(
+            true,
+        );
+        expect(has('verdeect_outbox_lag_seconds{service="consumer"}')).toBe(true);
     });
 
     it('AC-9.5: после старта — лог «очистка идемпотентности: проход» с service consumer и replica consumer-1; /metrics — verdeect_cleanup_runs_total с метками table="idempotency_key", result="ok", service="consumer" ≥ 1', async () => {

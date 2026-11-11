@@ -9,5 +9,5 @@ async function probe(specifier, name) {
 }
 
 console.log(
-    `config:${await probe('@verdeect/kit/config', 'defineEnv')} database:${await probe('@verdeect/kit/database', 'newId')} http:${await probe('@verdeect/kit/http', 'createHttpApp')} idempotency:${await probe('@verdeect/kit/idempotency', 'Idempotent')} observability:${await probe('@verdeect/kit/observability', 'createLoggerOptions')} testing:${await probe('@verdeect/kit/testing', 'startTestStack')}`,
+    `config:${await probe('@verdeect/kit/config', 'defineEnv')} database:${await probe('@verdeect/kit/database', 'newId')} http:${await probe('@verdeect/kit/http', 'createHttpApp')} idempotency:${await probe('@verdeect/kit/idempotency', 'Idempotent')} messaging:${await probe('@verdeect/kit/messaging', 'defineEvent')} observability:${await probe('@verdeect/kit/observability', 'createLoggerOptions')} testing:${await probe('@verdeect/kit/testing', 'startTestStack')}`,
 );

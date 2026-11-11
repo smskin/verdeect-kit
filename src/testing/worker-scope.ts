@@ -1,6 +1,11 @@
-// workerScope (prd.md §3.8 v1.14, UC-14): E4 — tenant; rabbitmq (E5), redisPrefix (E8) — позже. Записей в таблицы не
-// создаёт (N2, CE-4).
+// workerScope (prd.md §3.8 v1.14, UC-14): E4 — tenant; E5 — rabbitmq (vhost воркера из startTestStack, AC-5.18);
+// redisPrefix (E8) — позже. Записей в таблицы не создаёт (N2, CE-4).
 import { randomBytes } from 'node:crypto';
+import { missingPeerMessage } from '../internal/peer.js';
+import type { KitRabbitWorker } from './rabbitmq-admin.js';
+
+// Без vitest /testing импортируется; геттер rabbitmq синхронный и не может ждать loadPeer.
+const vitest = await import('vitest').catch(() => undefined);
 
 /** Слаг компании: формат claim `tenant` (01 §5.2; TENANT_SLUG O без ведущего `_` служебных компаний). */
 const TENANT_SLUG = /^[a-z0-9][a-z0-9-]{0,48}$/;
@@ -12,20 +17,64 @@ export interface KitWorkerScope {
      * компании, если нужна, создаёт фабрика сервиса; `tenantId` — фабрика сервиса.
      */
     readonly tenant: string;
+    /**
+     * vhost воркера с пользователем по правам M3 сервиса из `startTestStack({rabbitmq: true})`: `url` — значение
+     * `RABBITMQ_URL` тестов. Удаляется в teardown прогона (AC-5.18).
+     * @throws {TypeError} стек без `rabbitmq: true` или нет записи для воркера (при обращении).
+     */
+    readonly rabbitmq: { readonly vhost: string; readonly url: string };
 }
 
 let scope: KitWorkerScope | undefined;
 
-/** Область текущего воркера: одно значение на воркер, разные воркеры — разные. */
-export function workerScope(): KitWorkerScope {
-    if (scope !== undefined) {
-        return scope;
+type ReadWorkers = () => readonly KitRabbitWorker[] | undefined;
+
+function readProvided(): readonly KitRabbitWorker[] | undefined {
+    if (vitest === undefined) {
+        throw new Error(missingPeerMessage('vitest', 'testing'));
     }
+
+    return vitest.inject('kitRabbitmqWorkers');
+}
+
+/** `workerScope` с источником списка vhost (внутренняя: тесты подменяют `inject`). */
+export function workerScopeWith(readWorkers: ReadWorkers): KitWorkerScope {
     const tenant = `w${process.env.VITEST_POOL_ID ?? '0'}-${randomBytes(4).toString('hex')}`;
     if (!TENANT_SLUG.test(tenant)) {
         throw new Error(`workerScope: tenant «${tenant}» вне формата ${TENANT_SLUG.source}`);
     }
-    scope = { tenant };
+    let rabbitmq: KitWorkerScope['rabbitmq'] | undefined;
+    const result = { tenant } as KitWorkerScope;
+    Object.defineProperty(result, 'rabbitmq', {
+        enumerable: true,
+        get: (): KitWorkerScope['rabbitmq'] => {
+            rabbitmq ??= rabbitmqOf(readWorkers());
+
+            return rabbitmq;
+        },
+    });
+
+    return result;
+}
+
+function rabbitmqOf(workers: readonly KitRabbitWorker[] | undefined): KitWorkerScope['rabbitmq'] {
+    if (workers === undefined) {
+        throw new TypeError('workerScope().rabbitmq: startTestStack запущен без rabbitmq: true');
+    }
+    const pool = Number(process.env.VITEST_POOL_ID ?? '1');
+    const worker = workers[pool - 1];
+    if (worker === undefined) {
+        throw new TypeError(
+            `workerScope().rabbitmq: нет vhost для воркера ${pool} (vhost в стеке: ${workers.length})`,
+        );
+    }
+
+    return { vhost: worker.vhost, url: worker.url };
+}
+
+/** Область текущего воркера: одно значение на воркер, разные воркеры — разные. */
+export function workerScope(): KitWorkerScope {
+    scope ??= workerScopeWith(readProvided);
 
     return scope;
 }

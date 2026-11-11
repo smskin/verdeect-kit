@@ -73,8 +73,9 @@ groups:
           summary: 'События {{ $labels.type }} сервиса {{ $labels.service }} уходят в DLQ'
           description: >-
             За 15 минут события {{ $labels.type }} сервиса {{ $labels.service }} попали в DLQ
-            (verdeect_events_consumed_total, result="dlq"). Разберите сообщения очереди DLQ по журналу
-            подписчика.
+            (verdeect_events_consumed_total, result="dlq"). Разберите сообщения очереди <svc>.dlq по
+            заголовку x-dlq-reason и журналу подписчика; у очередей реплики (<svc>.replica.*) сообщение не
+            сохраняется — смотрите лог и GlitchTip.
 
       - alert: VerdeectDbPoolWaitTimeouts
         # Порог по умолчанию — 0: любой срок ожидания пула за 5 минут.

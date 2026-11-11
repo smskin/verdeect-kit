@@ -22,6 +22,20 @@
       "when": 1794381760122,
       "tag": "0002_needy_black_crow",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794406911556,
+      "tag": "0003_odd_karma",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794406914982,
+      "tag": "0004_messaging_grants",
+      "breakpoints": true
     }
   ]
 }
