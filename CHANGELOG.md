@@ -111,6 +111,8 @@
 
 ### Fixed
 
+- CLI `verdeect-kit`: команды грузят для логгера только `config/fragments` и `observability/logger-options`, а не точки входа `/config` и `/observability` (без `@nestjs/*`, `nestjs-pino`, `@sentry/nestjs`): холодный запуск команды ~0,3 с вместо ~2,5 с; поведение и вывод не меняются (KT-31).
+- `/redis`: `KitRedisChannels.subscribe` — после отказа `SUBSCRIBE` (NOPERM, срок, обрыв) обработчик не остаётся в подписке, повторный `subscribe` снова шлёт `SUBSCRIBE`; одновременные `subscribe` на канал ждут одного подтверждения и вместе отклоняются при его ошибке (KT-31).
 - `/database`: `Db.setLocal` отвергает служебную `app.tenant` (`TypeError`) — тенант задаётся только `DbContext` в `transaction`/`read` (KT-22 п. 1).
 - `/database`: `Db.afterCommit` с транзакцией другого `Db` или вложенной — `AfterCommitOutsideTransactionError` вместо молчаливой потери задачи (KT-22 п. 2).
 - `/idempotency`: ответ пишет только попытка, захватившая строку, — колонка `attempt` в `createIdempotencyTable`; долгий первый запрос не затирает ответ перехватившего повтора, `warn` без ключа и тела (KT-22 п. 3). Сервису — миграция `drizzle-kit` с новой колонкой.
