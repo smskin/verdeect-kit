@@ -1,14 +1,16 @@
 // AC-5.19 (UC-6): брокер недоступен при старте → сервис запущен, /health rabbitmq: down; TTL .retry расходится при
 // подключении после старта → error + GlitchTip, канал подписчика закрыт, новых попыток объявить топологию нет, relay
-// продолжает работу (prd.md §3.4 v1.15; П8). Брокер «недоступен» — tcpProxy; initFakeSentry — проект isolated.
+// продолжает работу (prd.md §3.4 v1.15; П8). Брокер «недоступен» — tcpProxy. Проект isolated: initFakeSentry и шпион
+// на прототипе Channel amqplib (объявления очередей подписчика).
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Db } from '../../../src/database/db.js';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Db, mainPoolOf } from '../../../src/database/db.js';
 import { KIT_LOGGER } from '../../../src/internal/tokens.js';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
+import { countQueries } from '../../../src/testing/count-queries.js';
 import { tcpProxy, type TcpProxy } from '../../../src/testing/tcp-proxy.js';
 import { workerScope } from '../../../src/testing/worker-scope.js';
 import * as fixtureSchema from '../../fixtures/database/schema.js';
@@ -71,6 +73,13 @@ describe('UC-6: брокер при старте и TTL после старта'
             deadLetterRoutingKey: 'kit',
         });
         sentry.delivered.length = 0;
+        // Шпион на прототипе Channel (его наследует ConfirmChannel подписчика): считаются объявления kit.retry.
+        const channelProto = Object.getPrototypeOf(broker.channel) as {
+            assertQueue: (queue: string, ...rest: unknown[]) => Promise<unknown>;
+        };
+        const assertQueue = vi.spyOn(channelProto, 'assertQueue');
+        const retryDeclarations = (): number =>
+            assertQueue.mock.calls.filter(([queue]) => queue === 'kit.retry').length;
 
         await proxy.restore();
         await waitUntil(
@@ -85,8 +94,7 @@ describe('UC-6: брокер при старте и TTL после старта'
             1,
         );
         expect(connection.isChannelReady('subscriber')).toBe(false);
-        // Повтор настройки не запланирован: таймер повторов соединения не взведён.
-        expect((connection as unknown as { retryTimer?: unknown }).retryTimer).toBeUndefined();
+        expect(retryDeclarations()).toBe(1);
 
         // relay продолжает работу: событие публикуется, топология подписчика не объявляется заново.
         const captured = await broker.capture('kit.#');
@@ -97,6 +105,22 @@ describe('UC-6: брокер при старте и TTL после старта'
             }),
         );
         await waitUntil(() => captured.length === 1, 'relay опубликовал');
+        // Окно — сигнал системы: два тика метрик relay (раз в RELAY_POLL_MS = 1 с) длиннее паузы повтора настройки
+        // RABBITMQ_RETRY_SECONDS = 1 с; за окно kit.retry не объявлялась снова.
+        let ticks = 0;
+        await countQueries(
+            mainPoolOf(app.get(Db)),
+            () => waitUntil(() => ticks >= 2, 'два тика метрик relay'),
+            {
+                onQuery: (text) => {
+                    if (text.includes('as pending')) {
+                        ticks += 1;
+                    }
+                },
+            },
+        );
+        expect(retryDeclarations()).toBe(1);
+        assertQueue.mockRestore();
         expect(lines.filter((line) => line['msg'] === FATAL)).toHaveLength(1);
         expect(
             lines.filter((line) => line['msg'] === 'rabbitmq: канал открывается заново'),

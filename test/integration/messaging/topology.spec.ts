@@ -11,6 +11,7 @@ import {
     publishEnvelope,
     resetQueues,
     testEnvelope,
+    waitUntil,
 } from '../../support/messaging.js';
 
 describe('UC-6: топология подписчика', () => {
@@ -58,9 +59,10 @@ describe('UC-6: топология подписчика', () => {
         const captured = await broker.capture('kit.other.#');
         publishEnvelope(broker, testEnvelope({ type: 'kit.other.created' }));
         // Сигнал маршрутизации: копию получила временная очередь теста — exchange обработал сообщение.
-        while (captured.length === 0) {
-            await new Promise((resolve) => setImmediate(resolve));
-        }
+        await waitUntil(
+            () => captured.length > 0,
+            'копия kit.other.created во временной очереди теста',
+        );
 
         expect((await broker.queueInfo('kit'))?.messageCount).toBe(0);
         expect((await broker.queueInfo('kit.dlq'))?.messageCount).toBe(0);

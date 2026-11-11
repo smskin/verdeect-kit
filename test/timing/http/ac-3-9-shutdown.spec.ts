@@ -66,20 +66,36 @@ function start(mode: 'plain' | 'sse'): Promise<Started> {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Итог пробника: `code` — ошибка соединения (null — ответ получен); `handshake` — TCP-соединение было установлено. */
+interface Probe {
+    readonly code: string | null;
+    readonly handshake: boolean;
+}
+
 /**
  * GET /ok по новому TCP-соединению (agent: false, без пула keep-alive): AC-3.9 проверяет отказ нового соединения.
  * Запрос по соединению из пула fetch мог попасть на сокет, который сервер закрывает на шаге 2, — ECONNRESET вместо
- * ECONNREFUSED (CI main, прогон №6). Результат — код ошибки соединения или null при ответе.
+ * ECONNREFUSED (CI main, прогон №6). Граница шага 2: рукопожатие завершилось в очереди listen ядра, а сервер ещё не
+ * принял соединение (цикл событий занят остановкой) — server.close() закрывает слушающий сокет вместе с очередью, ядро
+ * сбрасывает такое соединение (ECONNRESET с handshake). Это тоже отказ: соединение не обслужено.
  */
-function probeNewConnection(port: number): Promise<string | null> {
+function probeNewConnection(port: number): Promise<Probe> {
     return new Promise((resolve) => {
+        let handshake = false;
         const req = request({ host: '127.0.0.1', port, path: '/ok', agent: false }, (res) => {
             res.resume();
             // Ответ получен: соединение принято. close — и после end, и при обрыве ответа (без зависания опроса).
-            res.once('error', () => resolve(null));
-            res.once('close', () => resolve(null));
+            res.once('error', () => resolve({ code: null, handshake }));
+            res.once('close', () => resolve({ code: null, handshake }));
         });
-        req.once('error', (error: NodeJS.ErrnoException) => resolve(error.code ?? error.message));
+        req.once('socket', (socket) => {
+            socket.once('connect', () => {
+                handshake = true;
+            });
+        });
+        req.once('error', (error: NodeJS.ErrnoException) =>
+            resolve({ code: error.code ?? error.message, handshake }),
+        );
         req.end();
     });
 }
@@ -88,7 +104,7 @@ function probeNewConnection(port: number): Promise<string | null> {
 async function poll(app: Started, until: Promise<unknown>) {
     let healthDown: number | null = null;
     let okRefused: number | null = null;
-    let refusalCode: unknown = null;
+    let refusal: Probe | null = null;
     let done = false;
     void until.then(() => {
         done = true;
@@ -103,16 +119,16 @@ async function poll(app: Started, until: Promise<unknown>) {
             await res?.text();
         }
         if (okRefused === null) {
-            const code = await probeNewConnection(app.port);
-            if (code !== null) {
+            const probe = await probeNewConnection(app.port);
+            if (probe.code !== null) {
                 okRefused = now;
-                refusalCode = code;
+                refusal = probe;
             }
         }
         await sleep(POLL_MS);
     }
 
-    return { healthDown, okRefused, refusalCode };
+    return { healthDown, okRefused, refusal };
 }
 
 beforeAll(() => {
@@ -133,7 +149,7 @@ describe('UC-8: остановка HTTP под нагрузкой', () => {
     let result: {
         healthDown: number | null;
         okRefused: number | null;
-        refusalCode: unknown;
+        refusal: Probe | null;
         slowStatus: number;
         exit: { code: number | null; at: number };
         signalledAt: number;
@@ -171,8 +187,15 @@ describe('UC-8: остановка HTTP под нагрузкой', () => {
         expect(result.slowStatus).toBe(200);
     });
 
-    it('AC-3.9: новый запрос после шага 2 — отказ соединения (ECONNREFUSED)', () => {
-        expect(result.refusalCode).toBe('ECONNREFUSED');
+    it('AC-3.9: новый запрос после шага 2 — отказ соединения (ECONNREFUSED; на границе закрытия слушателя — сброс из очереди ядра)', () => {
+        const refusal = result.refusal;
+        // ECONNREFUSED — слушатель закрыт; ECONNRESET допустим только после рукопожатия в очереди ядра (граница шага 2),
+        // не после ответа и не по сокету keep-alive (agent: false).
+        expect(
+            refusal?.code === 'ECONNREFUSED' ||
+                (refusal?.code === 'ECONNRESET' && refusal.handshake),
+            JSON.stringify(refusal),
+        ).toBe(true);
     });
 
     it('AC-3.9: выход 0 в пределах SHUTDOWN_TIMEOUT_MS', () => {

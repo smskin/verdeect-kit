@@ -108,6 +108,7 @@
 - CLI `db`: `sqlState` ищется по цепочке `cause` (до 10 уровней) — код pg внутри `DrizzleQueryError` больше не теряется; системные коды Node (`EPIPE`) в `sqlState` не попадают (KT-22 п. 6).
 - `/testing`: `assertStrictTenantIsolation` проверяет функцию очистки по точной сигнатуре `idempotency_purge(integer)`; другая перегрузка без нужной — «функции нет» (KT-22 п. 7).
 - Тесты `/database` и `/idempotency` уровня I — без реальных пауз: сигналы входа в обработчик, события `acquire` пула и шлагбаумы вместо `setTimeout` и опроса (KT-22 п. 8).
+- `/testing`: `publishTestEvent` после обрыва соединения или закрытия канала открывает новое соединение при следующем вызове (раньше переиспользовал закрытый канал); неудачное подключение не запоминается.
 - `/database`: `runExclusive` сбрасывает сеанс соединения блокировки (`RESET ALL`) перед возвратом в пул; TSDoc запрещает `SET` и `set_config(…, false)` внутри `fn`.
 - `/http`: OpenAPI — у маршрутов с `@RequireTenant()` ответ 409 `TENANT_REQUIRED` (тело guard'а `@verdeect/auth`); `expectMatchesApi` проверяет описанные статусы ошибок по схеме `ErrorResponse` и падает на неописанном статусе.
 - `/http`: `bootstrapService` — `SENTRY_NOT_PRELOADED` только при верной конфигурации Sentry (верный `SENTRY_DSN`, `NODE_ENV = production`); при неверном `SENTRY_*` предупреждения нет — `initSentry` выключил Sentry намеренно.
