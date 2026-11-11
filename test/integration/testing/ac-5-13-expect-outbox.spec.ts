@@ -10,9 +10,15 @@ import { Db } from '../../../src/database/db.js';
 import { EnvelopeSchema } from '../../../src/messaging/envelope.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import { expectOutbox, setWorkerCoverageDir } from '../../../src/testing/outbox-coverage.js';
-import { publishTestEvent, waitForInbox } from '../../../src/testing/test-events.js';
+import {
+    publishTestEvent,
+    setTestEventsUrl,
+    testEventsClosed,
+    waitForInbox,
+} from '../../../src/testing/test-events.js';
+import { tcpProxy } from '../../../src/testing/tcp-proxy.js';
 import { workerScope } from '../../../src/testing/worker-scope.js';
-import { BrokerClient } from '../../support/broker.js';
+import { BrokerClient, workerBroker } from '../../support/broker.js';
 import { ctx, truncateFixtures } from '../../support/database.js';
 import {
     TestAccountTouched,
@@ -21,6 +27,7 @@ import {
     createOutboxApp,
     initReady,
     resetQueues,
+    waitUntil,
 } from '../../support/messaging.js';
 import * as fixtureSchema from '../../fixtures/database/schema.js';
 
@@ -114,9 +121,10 @@ describe('UC-14: помощники outbox', () => {
             expect(required.tenant).toBe(workerScope().tenant);
             expect(none.tenant).toBeNull();
             expect(EnvelopeSchema.parse(required)).toEqual(required);
-            while (captured.length < 2) {
-                await new Promise((resolve) => setImmediate(resolve));
-            }
+            await waitUntil(
+                () => captured.length >= 2,
+                'два опубликованных конверта во временной очереди теста',
+            );
             expect(captured.map((message) => message.body['id'])).toEqual([required.id, none.id]);
         } finally {
             await broker.close();
@@ -127,5 +135,25 @@ describe('UC-14: помощники outbox', () => {
         await expect(waitForInbox('evt_never', { timeoutMs: 50 })).rejects.toThrow(
             'waitForInbox: событие evt_never не обработано за 50 мс',
         );
+    });
+
+    it('UC-14: publishTestEvent после обрыва соединения (tcpProxy) пересоздаёт канал — событие доходит до waitForInbox', async () => {
+        const proxy = await tcpProxy(workerBroker().adminUrl);
+        setTestEventsUrl(proxy.url);
+        try {
+            const first = await publishTestEvent(TestNoteCreated, { noteId: 'p1', title: 'ok' });
+            await waitForInbox(first.id, { timeoutMs: 5_000 });
+            const closed = testEventsClosed();
+
+            await proxy.break();
+            await closed;
+            await proxy.restore();
+
+            const second = await publishTestEvent(TestNoteCreated, { noteId: 'p2', title: 'ok' });
+            await waitForInbox(second.id, { timeoutMs: 5_000 });
+        } finally {
+            setTestEventsUrl(undefined);
+            await proxy.close();
+        }
     });
 });

@@ -32,24 +32,75 @@ export interface KitPublishTestEventOptions {
 }
 
 let channel: Promise<Amqp.ConfirmChannel> | undefined;
+let closed: Promise<void> | undefined;
+let model: Amqp.ChannelModel | undefined;
+let urlOverride: string | undefined;
 
-/** Confirm-канал администратора vhost воркера, один на воркер (закрывается с процессом воркера). */
-function workerChannel(): Promise<Amqp.ConfirmChannel> {
-    channel ??= (async () => {
-        const [amqp, { inject }] = await Promise.all([
-            loadPeer<typeof Amqp>('amqplib', 'testing'),
-            loadPeer<typeof Vitest>('vitest', 'testing'),
-        ]);
-        const pool = Number(process.env.VITEST_POOL_ID ?? '1');
-        const worker = inject('kitRabbitmqWorkers')?.[pool - 1];
-        if (worker === undefined) {
-            throw new TypeError('publishTestEvent: startTestStack запущен без rabbitmq: true');
+/** @internal Адрес вместо `adminUrl` воркера (тест пакета: обрыв через tcpProxy); `undefined` — сброс. */
+export function setTestEventsUrl(url: string | undefined): void {
+    urlOverride = url;
+    // Другой адрес — другое соединение: прежнее закрывается, следующий вызов откроет новое.
+    channel = undefined;
+    void model?.close().catch(() => undefined);
+    model = undefined;
+}
+
+/** @internal Закрытие текущего соединения `publishTestEvent` (сигнал теста пакета); нет соединения — `undefined`. */
+export function testEventsClosed(): Promise<void> | undefined {
+    return closed;
+}
+
+async function adminUrl(): Promise<string> {
+    if (urlOverride !== undefined) {
+        return urlOverride;
+    }
+    const { inject } = await loadPeer<typeof Vitest>('vitest', 'testing');
+    const pool = Number(process.env.VITEST_POOL_ID ?? '1');
+    const worker = inject('kitRabbitmqWorkers')?.[pool - 1];
+    if (worker === undefined) {
+        throw new TypeError('publishTestEvent: startTestStack запущен без rabbitmq: true');
+    }
+
+    return worker.adminUrl;
+}
+
+async function openChannel(): Promise<Amqp.ConfirmChannel> {
+    const amqp = await loadPeer<typeof Amqp>('amqplib', 'testing');
+    const connection = await amqp.connect(await adminUrl());
+    model = connection;
+    const created = await connection.createConfirmChannel();
+    const current = channel;
+    // Обрыв соединения или закрытие канала — следующий вызов открывает новое соединение.
+    const forget = (): void => {
+        if (channel === current) {
+            channel = undefined;
         }
-        const connection = await amqp.connect(worker.adminUrl);
-        connection.on('error', () => undefined);
+    };
+    closed = new Promise((resolve) => {
+        connection.once('close', () => {
+            forget();
+            resolve();
+        });
+    });
+    connection.on('error', forget);
+    created.on('error', forget);
+    created.once('close', forget);
 
-        return connection.createConfirmChannel();
-    })();
+    return created;
+}
+
+/** Confirm-канал администратора vhost воркера, один на воркер; после обрыва пересоздаётся при следующем вызове. */
+function workerChannel(): Promise<Amqp.ConfirmChannel> {
+    if (channel === undefined) {
+        const opening = openChannel();
+        channel = opening;
+        // Неудачное подключение не запоминается: следующий вызов пробует снова.
+        opening.catch(() => {
+            if (channel === opening) {
+                channel = undefined;
+            }
+        });
+    }
 
     return channel;
 }

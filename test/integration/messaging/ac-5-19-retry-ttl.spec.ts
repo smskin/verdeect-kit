@@ -25,14 +25,19 @@ describe('UC-6: TTL очереди повтора', () => {
         });
         const { logger, lines } = memoryLogger();
         try {
-            const t0 = performance.now();
             // createTestApp вызывает init(): отказ onApplicationBootstrap отклоняет сборку стенда (до listen).
             const error: unknown = await createSubscriberApp({
                 overrides: [{ provide: KIT_LOGGER, useValue: logger }],
             }).catch((reason: unknown) => reason);
+            const refusedAt = Date.now();
 
-            // Срок отказа — RABBITMQ_RETRY_SECONDS × 1000 + 1000 × scale; 5000 — сборка приложения Nest.
-            expect(performance.now() - t0).toBeLessThan(1000 + 1000 * TEST_TIMEOUT_SCALE + 5000);
+            // Отсчёт — от события «соединение установлено» (время строки pino), не от сборки приложения Nest: отказ —
+            // в пределах одной паузы RABBITMQ_RETRY_SECONDS = 1 с × scale, без цикла переподключений.
+            const connected = lines.find(
+                (line) => line['msg'] === 'rabbitmq: соединение установлено',
+            );
+            expect(connected, 'соединение с брокером установлено').toBeDefined();
+            expect(refusedAt - Number(connected?.['time'])).toBeLessThan(1000 * TEST_TIMEOUT_SCALE);
             expect(error).toBeInstanceOf(MessagingStartupError);
             expect((error as MessagingStartupError).startupCode).toBe(
                 'MESSAGING_RETRY_TTL_MISMATCH',
