@@ -105,6 +105,7 @@ async function poll(app: Started, until: Promise<unknown>) {
     let healthDown: number | null = null;
     let okRefused: number | null = null;
     let refusal: Probe | null = null;
+    let afterReset: Probe | null = null;
     let done = false;
     void until.then(() => {
         done = true;
@@ -123,12 +124,16 @@ async function poll(app: Started, until: Promise<unknown>) {
             if (probe.code !== null) {
                 okRefused = now;
                 refusal = probe;
+                if (probe.code === 'ECONNRESET') {
+                    // Сразу, без паузы: слушатель к этому моменту уже закрыт — новое соединение получает ECONNREFUSED.
+                    afterReset = await probeNewConnection(app.port);
+                }
             }
         }
         await sleep(POLL_MS);
     }
 
-    return { healthDown, okRefused, refusal };
+    return { healthDown, okRefused, refusal, afterReset };
 }
 
 beforeAll(() => {
@@ -150,6 +155,7 @@ describe('UC-8: остановка HTTP под нагрузкой', () => {
         healthDown: number | null;
         okRefused: number | null;
         refusal: Probe | null;
+        afterReset: Probe | null;
         slowStatus: number;
         exit: { code: number | null; at: number };
         signalledAt: number;
@@ -188,13 +194,17 @@ describe('UC-8: остановка HTTP под нагрузкой', () => {
     });
 
     it('AC-3.9: новый запрос после шага 2 — отказ соединения (ECONNREFUSED; на границе закрытия слушателя — сброс из очереди ядра)', () => {
-        const refusal = result.refusal;
+        const { refusal, afterReset } = result;
         // ECONNREFUSED — слушатель закрыт; ECONNRESET допустим только после рукопожатия в очереди ядра (граница шага 2),
-        // не после ответа и не по сокету keep-alive (agent: false).
+        // не после ответа и не по сокету keep-alive (agent: false). Второй пробник идёт сразу, без паузы: если сброс дал
+        // закрытый слушатель, новое соединение уже отклоняется (ECONNREFUSED); если сброшен принятый сокет, а слушатель
+        // жив, — второй пробник получает ответ, и проверка падает.
         expect(
             refusal?.code === 'ECONNREFUSED' ||
-                (refusal?.code === 'ECONNRESET' && refusal.handshake),
-            JSON.stringify(refusal),
+                (refusal?.code === 'ECONNRESET' &&
+                    refusal.handshake &&
+                    afterReset?.code === 'ECONNREFUSED'),
+            JSON.stringify({ refusal, afterReset }),
         ).toBe(true);
     });
 

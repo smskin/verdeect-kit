@@ -2,13 +2,13 @@
 
 Общий инфраструктурный npm-пакет сервисов Вердикт 2.0: конфигурация, наблюдаемость и запуск, HTTP-каркас, БД с RLS, идемпотентность, outbox/inbox и RabbitMQ, шифр секретов, Redis, тестовый контур. Код переносится из копий в Identity, BFF, Platform, Orchestrator (эталон — `files/inventory.md`).
 
-> Режим: INIT · Ревизия: r10 · 2026-11-11 · PRD v1.15 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
+> Режим: INIT · Ревизия: r11 · 2026-11-11 · PRD v1.16 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
 
 ## Файлы
 
 | Файл | Что внутри |
 |---|---|
-| `prd.md` | PRD v1.15 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
+| `prd.md` | PRD v1.16 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
 | `files/inventory.md` | Инвентаризация копий в сервисах: модуль × сервис, столбец «Эталон», тесты эквивалентности, точные версии зависимостей и образов. §4 — расхождения на момент инвентаризации; решения по ним — в `prd.md` (при расхождении действует `prd.md`) |
 
 UI нет, макетов нет. Пакет `@verdeect/events` — отдельный PRD и отдельный репозиторий (`verdeect2/verdeect-events`), не входит сюда.
@@ -60,3 +60,4 @@ UI нет, макетов нет. Пакет `@verdeect/events` — отдель
 - r8 — 2026-11-10: вопросы планирования E3 — опциональный peer @nestjs/testing (createTestApp с overrides), CLI openapi --module, defineErrors регистрирует словарь на процесс, KitConfigModule разбирает окружение при сборке контекста; PRD v1.13.
 - r9 — 2026-11-10: вопросы планирования E4 — функция очистки идемпотентности idempotency_purge (SECURITY DEFINER) и помощник idempotencyPurgeSql, проверка функции в assertStrictTenantIsolation, workerScope().tenant — слаг компании, db prepare --service, @Idempotent без принципала — 500; PRD v1.14.
 - r10 — 2026-11-11: вопросы планирования E5 — KitMessagingModule.forRoot({service, outbox: {table, events}, subscriber}), vhost на воркер до teardown прогона, хеш пароля RabbitMQ из RABBITMQ_PASSWORD_HASH_<SVC>, обработчик (event, tx), значения x-dlq-reason, отказ запуска при другом TTL .retry, срок остановки обработчиков, onReplica без повтора и DLQ; PRD v1.15.
+- r11 — 2026-11-11: уточнения после E5 — типы в экспорте /messaging, AC-5.19 (отказ в onApplicationBootstrap), seq outbox — bigint GENERATED ALWAYS AS IDENTITY; вопросы планирования E7 — IKM HKDF из декодированных байт секрета, CLI crypto generate-secret печатает JSON {"secret"} (--bytes ≥ 32, иначе USAGE), AC-7.3 (ключ из UTF-8 строки не подходит, контрольный вектор), AC-7.5 (secret из JSON CLI, --bytes 16 → USAGE); PRD v1.16.

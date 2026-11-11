@@ -67,8 +67,15 @@ async function adminUrl(): Promise<string> {
 async function openChannel(): Promise<Amqp.ConfirmChannel> {
     const amqp = await loadPeer<typeof Amqp>('amqplib', 'testing');
     const connection = await amqp.connect(await adminUrl());
+    let created: Amqp.ConfirmChannel;
+    try {
+        created = await connection.createConfirmChannel();
+    } catch (error) {
+        // Канал не открылся — соединение закрывается: повторные вызовы не копят открытые соединения.
+        await connection.close().catch(() => undefined);
+        throw error;
+    }
     model = connection;
-    const created = await connection.createConfirmChannel();
     const current = channel;
     // Обрыв соединения или закрытие канала — следующий вызов открывает новое соединение.
     const forget = (): void => {
