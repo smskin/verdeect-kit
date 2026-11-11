@@ -18,22 +18,27 @@
 
 ## Структура проекта
 
-Состояние после E3 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/testing` и CLI `verdeect-kit openapi`. Следующие подпути появляются по этапам E4–E8 (`requirements/0000-kit/README.md`).
+Состояние после E4 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/testing` и CLI `verdeect-kit openapi`, `db`. Следующие подпути появляются по этапам E5–E8 (`requirements/0000-kit/README.md`).
 
 ```
 verdeect-kit/
 ├── src/
-│   ├── internal/                 # без точки входа: peer.ts (loadPeer, AC-1.2), service-name.ts, pg-errors.ts,
-│                                 #   preparsed-env.ts, tokens.ts
+│   ├── internal/                 # без точки входа: peer.ts (loadPeer, requirePeer, AC-1.2), service-name.ts, pg-errors.ts,
+│                                 #   preparsed-env.ts, tokens.ts, ids.ts, metadata.ts, sql-identifier.ts
 │   ├── config/                   # ./config — §3.1: fragments, helpers, define-env, parse-env, cli-schemas, kit-config.module
 │   ├── observability/            # ./observability — §3.2: redaction, sanitize-error, logger-options, sentry, fail-startup,
 │                                 #   health-registry, metrics, metrics-server, lifecycle
 │   ├── http/                     # ./http — §3.5: bootstrap-service, create-http-app, kit-http-core.module, errors,
 │                                 #   zod-validation.pipe, kit-exception.filter, pagination, api/ (@Api, OpenAPI)
-│   ├── testing/                  # ./testing (только development) — §3.8 E1, E3: images, start-test-stack, repo-files,
+│   ├── database/                 # ./database — §3.3: pg (requirePeer, ленивый драйвер), tenant, prepare-database,
+│                                 #   migrations, db, kit-database.module, batches, run-exclusive, if-newer
+│   ├── idempotency/              # ./idempotency — §3.3а: peer, table, idempotent.decorator, idempotency.interceptor,
+│                                 #   kit-idempotency.module
+│   ├── testing/                  # ./testing (только development) — §3.8 E1, E3, E4: images, start-test-stack, repo-files,
 │                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale, create-test-app,
-│                                 #   expect-problem, expect-matches-api
-│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts
+│                                 #   expect-problem, expect-matches-api, scratch-database, worker-scope,
+│                                 #   tenant-isolation, count-queries
+│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts, commands/db.ts
 ├── alerts/verdeect-kit.rules.yml # шаблон правил vmalert (alertRulesTemplate, §3.2), входит в архив
 ├── test/
 │   ├── unit/<подпуть>/           # U: без сети и Docker (+ *.test-d.ts)
@@ -42,8 +47,10 @@ verdeect-kit/
 │   ├── package/                  # R и C: архив, потребители, publish.mjs, lint AC-9.4, документы
 │   ├── consumer/                 # шаблоны проектов-потребителей: minimal, no-testcontainers
 │   ├── fixtures/                 # repo-conventions/valid (AC-1.8), lint (AC-9.4), alerts (AC-2.11), observability/shutdown-child.mjs (AC-2.10),
-│                                 #   http/api-app.module.ts (AC-3.7), http/shutdown-app.mjs (AC-3.9)
-│   └── support/                  # общие помощники: docker.ts, fake-sentry.ts (поддельный транспорт GlitchTip)
+│                                 #   http/api-app.module.ts (AC-3.7), http/shutdown-app.mjs (AC-3.9),
+│                                 #   database/ (схема kit и миграции drizzle-kit, pnpm db:fixtures — E4)
+│   └── support/                  # общие помощники: docker.ts, fake-sentry.ts (поддельный транспорт GlitchTip),
+│                                 #   postgres.ts, database.ts (Db и приложение уровня I)
 ├── .github/workflows/ci.yml      # CI: lint, test (Node 22, 24: U + I), timing, package, publish по тегу v*
 ├── Makefile                      # единая точка входа: make help
 ├── scripts/publish.mjs           # публикация из CI: тег = version, версии нет в npm (AC-1.10)

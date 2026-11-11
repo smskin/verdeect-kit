@@ -1,5 +1,5 @@
 # Unittest vmalert-tool шаблона алертов (prd.md §3.2, AC-2.11): порог по умолчанию, переопределение по service и DLQ с
-# двумя type у одного сервиса (без ошибки many-to-many). Пути — внутри контейнера (каталог /rules).
+# двумя type у одного сервиса (без ошибки many-to-many); очистка (AC-9.5): error и partial — алерт, ok — нет. Пути — внутри контейнера (каталог /rules).
 rule_files:
   - /rules/verdeect-kit.rules.yml
 evaluation_interval: 1m
@@ -20,7 +20,7 @@ tests:
       - series: 'verdeect_events_consumed_total{service="a",type="x.deleted",result="dlq"}'
         values: '0+2x10'
       # Пул БД: сервис c со своим порогом 100 — 9 < 100, алерта нет.
-      - series: 'verdeect_db_pool_wait_timeouts_total{service="c",pool="write"}'
+      - series: 'verdeect_db_pool_wait_timeouts_total{service="c",pool="main"}'
         values: '0+1x10'
       - series: 'verdeect_kit_threshold:db_pool_wait_timeouts{service="c"}'
         values: '100x10'
@@ -64,3 +64,46 @@ tests:
         groupname: verdeect-kit
         alertname: VerdeectDbPoolWaitTimeouts
         exp_alerts: []
+  - interval: 1m
+    input_series:
+      # Очистка: d — проходы с ошибкой, e — неполные проходы, f — только ok (алерта нет).
+      - series: 'verdeect_cleanup_runs_total{service="d",table="idempotency_key",result="error"}'
+        values: '0+1x10'
+      - series: 'verdeect_cleanup_runs_total{service="e",table="idempotency_key",result="partial"}'
+        values: '0+1x10'
+      - series: 'verdeect_cleanup_runs_total{service="f",table="idempotency_key",result="ok"}'
+        values: '0+1x10'
+      # Сервис g — свой порог 5: прирост 4 за 5 минут не выше порога, алерта нет.
+      - series: 'verdeect_cleanup_runs_total{service="g",table="idempotency_key",result="error"}'
+        values: '0+1x10'
+      - series: 'verdeect_kit_threshold:cleanup_runs{service="g"}'
+        values: '5x10'
+    alert_rule_test:
+      - eval_time: 5m
+        groupname: verdeect-kit
+        alertname: VerdeectCleanupFailing
+        exp_alerts:
+          - exp_labels:
+              service: d
+              table: idempotency_key
+              result: error
+              severity: warning
+            exp_annotations:
+              summary: 'Очистка idempotency_key сервиса d: error'
+              description: >-
+                За 2 часа проход очистки таблицы idempotency_key сервиса d завершился с итогом error
+                (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса («очистка … :
+                ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка не
+                успевает за потоком записей.
+          - exp_labels:
+              service: e
+              table: idempotency_key
+              result: partial
+              severity: warning
+            exp_annotations:
+              summary: 'Очистка idempotency_key сервиса e: partial'
+              description: >-
+                За 2 часа проход очистки таблицы idempotency_key сервиса e завершился с итогом partial
+                (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса («очистка … :
+                ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка не
+                успевает за потоком записей.

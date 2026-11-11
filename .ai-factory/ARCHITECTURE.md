@@ -46,9 +46,12 @@
 verdeect-kit/
 ├── src/
 │   ├── internal/                      # без точки входа; только node:* и zod
-│   │   ├── peer.ts                    #   loadPeer(name, subpath): динамический import() + текст ошибки AC-1.2
+│   │   ├── peer.ts                    #   loadPeer(name, subpath): динамический import() + текст ошибки AC-1.2;
+│   │   │                              #   requirePeer — синхронная проверка без top-level await (П15)
 │   │   ├── service-name.ts            #   формат ^[a-z][a-z0-9-]{1,31}$ (bootstrapService, createCipher, модули)
-│   │   ├── pg-errors.ts               #   isUniqueViolation, isConnectionError, isPoolTimeout — по форме, без pg (эталон I)
+│   │   ├── pg-errors.ts               #   isUniqueViolation, isConnectionError, isPoolTimeout — по форме, без pg (эталон I);
+│   │   │                              #   tagPoolTimeout/poolTimeoutOf — метка пула main|read (E4)
+│   │   ├── sql-identifier.ts          #   quoteIdentifier — идентификаторы SQL без pg (KT-20)
 │   │   ├── preparsed-env.ts           #   окружение bootstrapService → KitConfigModule без повторного разбора (E3)
 │   │   ├── tokens.ts                  #   KIT_METRICS, KIT_LOGGER — токены ядра HTTP (E3)
 │   │   ├── ids.ts                     #   ulid, newId (эталон O); реэкспорт — /database

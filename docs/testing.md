@@ -42,6 +42,18 @@
 - `shared` — `isolate: false`, модули грузятся один раз на воркер;
 - `isolated` — `isolate: true`, свой кэш модулей на файл.
 
-В `isolated` (список `ISOLATED`) файл попадает, только если пишет `process.env` или `vi.stubEnv`, использует `vi.mock`, патчит прототипы или инициализирует процесс-глобальное состояние. Каждая строка списка — с комментарием-причиной. Пока список пуст, проект `isolated` не создаётся.
+В `isolated` (список `ISOLATED`) файл попадает, только если пишет `process.env` или `vi.stubEnv`, использует `vi.mock`, патчит прототипы или инициализирует процесс-глобальное состояние. Каждая строка списка — с комментарием-причиной. Пустой список — проект `isolated` не создаётся.
+
+Файлы `isolated` (E4):
+
+| Файл                                                                  | Причина                                                  |
+| --------------------------------------------------------------------- | -------------------------------------------------------- |
+| `test/integration/database/ac-4-5-pool-timeout.spec.ts`               | `initFakeSentry` — процесс-глобальный Sentry             |
+| `test/integration/idempotency/ac-4-14-idempotency.spec.ts`            | `initFakeSentry` — процесс-глобальный Sentry             |
+| `test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts` | `vi.stubEnv` и `process.exit` — стенд `bootstrapService` |
+
+Прочие файлы уровня I передают окружение приложения через `setPreparsedEnv` (`test/support/database.ts`, `createDbApp`) — без `vi.stubEnv`, проект `shared`.
+
+`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
 
 Контейнеры стартуют один раз на прогон в `test/integration/global-setup.ts`, файлы идут последовательно (`fileParallelism: false`).

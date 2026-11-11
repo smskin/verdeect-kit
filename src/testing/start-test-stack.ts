@@ -1,13 +1,17 @@
 // startTestStack — globalSetup Vitest: контейнеры TEST_IMAGES раз на прогон, адреса через provide (prd.md §3.8, E1;
 // AC-1.12, AC-1.13). Эталоны — O test/support/global-setup.ts (minio, provide, teardown), I global-setup.ts (mailpit),
 // O setup-error.ts (текст ошибки в stderr до throw: Vite теряет текст ошибок globalSetup).
-// E1: только postgres, mailpit, minio; без подготовки БД и миграций (E4), rabbitmq (E5), redis (E8).
+// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии; rabbitmq (E5), redis (E8)
+// — позже. Код БД — динамический import() (без pg /testing импортируется).
 import { randomBytes } from 'node:crypto';
+import { resolve } from 'node:path';
+import type Pg from 'pg';
 import type * as Testcontainers from 'testcontainers';
 import type { StartedTestContainer } from 'testcontainers';
 import type { TestProject } from 'vitest/node';
 import { loadPeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
+import { quoteIdentifier } from '../internal/sql-identifier.js';
 import { TEST_IMAGES } from './images.js';
 
 const { GenericContainer, Wait } = await loadPeer<typeof Testcontainers>(
@@ -21,8 +25,13 @@ const MINIO_USER = 'kit-test';
 export interface TestStackOptions {
     /** Имя экземпляра сервиса (^[a-z][a-z0-9-]{1,31}$); метка verdeect.kit.service контейнеров. */
     readonly service: string;
-    /** PostgreSQL TEST_IMAGES.postgres, суперпользователь — kitPostgresUrl. */
+    /** PostgreSQL TEST_IMAGES.postgres, суперпользователь — kitPostgresUrl; с E4 — prepareDatabase и шаблон БД. */
     readonly postgres?: boolean;
+    /**
+     * Папка миграций drizzle-kit относительно `process.cwd()`: применяется к шаблону под ролью `<svc>_owner`, журнал —
+     * `<svc>.__migrations`; без `postgres: true` — `TypeError` при вызове `startTestStack`.
+     */
+    readonly migrations?: string;
     /** mailpit — kitSmtpUrl, kitMailpitUrl. */
     readonly mailpit?: boolean;
     /** MinIO — kitS3Endpoint, kitS3AccessKey, kitS3SecretKey. */
@@ -33,6 +42,16 @@ declare module 'vitest' {
     interface ProvidedContext {
         /** postgres://postgres:<пароль>@<host>:<port>/postgres — суперпользователь (флаг postgres). */
         readonly kitPostgresUrl?: string;
+        /** Роль `<svc>_app` к БД `<svc>` — значение `DATABASE_URL` тестов (флаг postgres). */
+        readonly kitDatabaseUrl?: string;
+        /** Роль `<svc>_owner` к БД `<svc>` — `DATABASE_MIGRATOR_URL` (флаг postgres). */
+        readonly kitDatabaseOwnerUrl?: string;
+        /** Суперпользователь к БД `<svc>` (флаг postgres). */
+        readonly kitDatabaseAdminUrl?: string;
+        /** Имя сервиса: схема и роли БД (флаг postgres). */
+        readonly kitDatabaseService?: string;
+        /** Шаблонная БД `<svc>_template` для `createScratchDatabase` (флаг postgres). */
+        readonly kitDatabaseTemplate?: string;
         /** smtp://<host>:<port 1025> (флаг mailpit). */
         readonly kitSmtpUrl?: string;
         /** http://<host>:<port 8025> — HTTP API mailpit (флаг mailpit). */
@@ -50,10 +69,118 @@ declare module 'vitest' {
 interface StackPart {
     readonly name: string;
     readonly start: () => Promise<StartedTestContainer>;
-    readonly provide: (container: StartedTestContainer, project: TestProject) => void;
+    readonly provide: (
+        container: StartedTestContainer,
+        project: TestProject,
+    ) => Promise<void> | void;
 }
 
-function postgresPart(labels: Record<string, string>): StackPart {
+/** Ошибка шага подготовки БД: в stderr — имя шага и код, без текста pg (адрес, имя роли); у migrate — и текст SQL. */
+class PrepareStepError extends Error {
+    constructor(step: string, cause: unknown) {
+        const code = (cause as { code?: unknown } | null)?.code;
+        const detail = step === 'migrate' ? `: ${errorMessage(cause)}` : '';
+        super(`шаг ${step}, код ${typeof code === 'string' ? code : 'нет'}${detail}`, { cause });
+    }
+}
+
+async function step<T>(name: string, work: () => Promise<T>): Promise<T> {
+    try {
+        return await work();
+    } catch (error) {
+        throw new PrepareStepError(name, error);
+    }
+}
+
+function withDatabase(base: string, database: string, user?: string, password?: string): string {
+    const url = new URL(base);
+    url.pathname = `/${database}`;
+    if (user !== undefined && password !== undefined) {
+        url.username = user;
+        url.password = password;
+    }
+
+    return url.toString();
+}
+
+async function adminExec(pg: typeof Pg, url: string, sql: string): Promise<void> {
+    const client = new pg.Client({ connectionString: url });
+    client.on('error', () => undefined);
+    await client.connect();
+    try {
+        await client.query(sql);
+    } finally {
+        await client.end();
+    }
+}
+
+/**
+ * Подготовка БД стека (§3.8, AC-4.18): шаблон `<svc>_template` — prepareDatabase, миграции; копия `<svc>` — права
+ * уровня БД заново (при копировании не переносятся).
+ */
+async function prepareStackDatabase(
+    adminUrl: string,
+    service: string,
+    migrations: string | undefined,
+    project: TestProject,
+): Promise<void> {
+    const pg = (await loadPeer<{ default: typeof Pg }>('pg', 'testing')).default;
+    const [{ prepareDatabase, grantDatabaseAccess }, { runMigrations }] = await Promise.all([
+        import('../database/prepare-database.js'),
+        import('../database/migrations.js'),
+    ]);
+    const ownerPassword = randomBytes(16).toString('hex');
+    const appPassword = randomBytes(16).toString('hex');
+    const template = `${service}_template`;
+    const templateAdmin = withDatabase(adminUrl, template);
+    await step('create-template', () =>
+        adminExec(pg, adminUrl, `CREATE DATABASE ${quoteIdentifier(template)}`),
+    );
+    await step('prepare', () =>
+        prepareDatabase({ service, adminUrl: templateAdmin, ownerPassword, appPassword }),
+    );
+    if (migrations !== undefined) {
+        await step('migrate', () =>
+            runMigrations({
+                url: withDatabase(adminUrl, template, `${service}_owner`, ownerPassword),
+                folder: resolve(migrations),
+                schema: service,
+            }),
+        );
+    }
+    await step('copy', async () => {
+        await adminExec(
+            pg,
+            adminUrl,
+            `CREATE DATABASE ${quoteIdentifier(service)} TEMPLATE ${quoteIdentifier(template)}`,
+        );
+        const client = new pg.Client({ connectionString: adminUrl });
+        client.on('error', () => undefined);
+        await client.connect();
+        try {
+            await grantDatabaseAccess(client, service, service);
+        } finally {
+            await client.end();
+        }
+    });
+    project.provide(
+        'kitDatabaseUrl',
+        withDatabase(adminUrl, service, `${service}_app`, appPassword),
+    );
+    project.provide(
+        'kitDatabaseOwnerUrl',
+        withDatabase(adminUrl, service, `${service}_owner`, ownerPassword),
+    );
+    project.provide('kitDatabaseAdminUrl', withDatabase(adminUrl, service));
+    project.provide('kitDatabaseService', service);
+    project.provide('kitDatabaseTemplate', template);
+}
+
+function postgresPart(
+    labels: Record<string, string>,
+    service: string,
+    migrations: string | undefined,
+): StackPart {
     const password = randomBytes(16).toString('hex');
 
     return {
@@ -83,13 +210,12 @@ function postgresPart(labels: Record<string, string>): StackPart {
                 )
                 .withStartupTimeout(120_000)
                 .start(),
-        provide: (container, project) => {
+        provide: async (container, project) => {
             const host = container.getHost();
             const port = container.getMappedPort(5432);
-            project.provide(
-                'kitPostgresUrl',
-                `postgres://postgres:${password}@${host}:${port}/postgres`,
-            );
+            const url = `postgres://postgres:${password}@${host}:${port}/postgres`;
+            project.provide('kitPostgresUrl', url);
+            await prepareStackDatabase(url, service, migrations, project);
         },
     };
 }
@@ -146,11 +272,16 @@ export function startTestStack(
     options: TestStackOptions,
 ): (project: TestProject) => Promise<() => Promise<void>> {
     assertServiceName(options.service, 'startTestStack');
+    if (options.migrations !== undefined && options.postgres !== true) {
+        throw new TypeError('startTestStack: migrations требует postgres: true');
+    }
     const labels = { 'verdeect.kit.service': options.service };
 
     return async (project) => {
         const parts = [
-            ...(options.postgres === true ? [postgresPart(labels)] : []),
+            ...(options.postgres === true
+                ? [postgresPart(labels, options.service, options.migrations)]
+                : []),
             ...(options.mailpit === true ? [mailpitPart(labels)] : []),
             ...(options.minio === true ? [minioPart(labels)] : []),
         ];
@@ -167,12 +298,21 @@ export function startTestStack(
             process.stderr.write(`${message}\n`);
             throw new Error(message, { cause: firstFailure.reason });
         }
-        parts.forEach((part, index) => {
-            const container = started[index];
-            if (container !== undefined) {
-                part.provide(container, project);
+        try {
+            for (const [index, part] of parts.entries()) {
+                const container = started[index];
+                if (container !== undefined) {
+                    await part.provide(container, project);
+                }
             }
-        });
+        } catch (error) {
+            await Promise.allSettled(started.map((container) => container.stop()));
+            const message = `[startTestStack] не удалось подготовить БД: ${errorMessage(error)}`;
+            process.stderr.write(`${message}\n`);
+            throw new Error(message, {
+                cause: error,
+            });
+        }
 
         return async () => {
             await Promise.all(started.map((container) => container.stop()));

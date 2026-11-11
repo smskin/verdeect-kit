@@ -123,61 +123,61 @@ Authority (запрос пользователя, skill-context «Requirements P
 ## Tasks
 
 ### Фаза 1: Основа — манифест, lint, `internal`
-- [ ] Task 1: `drizzle-kit` в devDependencies, `db:fixtures`, lint границ `database`/`idempotency` и запрет `drizzle-orm/node-postgres` ([details](phase-01-foundation.md#task-1-манифест-и-lint-новых-подпутей))
-- [ ] Task 2: `newId`, `ulid` в `src/internal/ids.ts` + U AC-4.9 ([details](phase-01-foundation.md#task-2-newid-и-ulid-в-internal)) (depends on 1)
-- [ ] Task 3: `internal/metadata.ts`, метка пула `tagPoolTimeout`/`poolTimeoutOf`, `quoteIdentifier` ([details](phase-01-foundation.md#task-3-ключ-метаданных-idempotent-и-пометка-пула-в-ошибке)) (depends on 1)
+- [x] Task 1: `drizzle-kit` в devDependencies, `db:fixtures`, lint границ `database`/`idempotency` и запрет `drizzle-orm/node-postgres` ([details](phase-01-foundation.md#task-1-манифест-и-lint-новых-подпутей))
+- [x] Task 2: `newId`, `ulid` в `src/internal/ids.ts` + U AC-4.9 ([details](phase-01-foundation.md#task-2-newid-и-ulid-в-internal)) (depends on 1)
+- [x] Task 3: `internal/metadata.ts`, метка пула `tagPoolTimeout`/`poolTimeoutOf`, `quoteIdentifier` ([details](phase-01-foundation.md#task-3-ключ-метаданных-idempotent-и-пометка-пула-в-ошибке)) (depends on 1)
 
 ### Фаза 2: Схема, подготовка БД и миграции
-- [ ] Task 4: `requirePeer` и `src/database/pg.ts` — синхронная проверка `pg`, ленивый драйвер Drizzle ([details](phase-02-schema-migrations.md#task-4-загрузчик-pg-и-драйвера-drizzle)) (depends on 1)
-- [ ] Task 5: `DbContext`, `tenantColumn`, `tenantPolicy` ([details](phase-02-schema-migrations.md#task-5-dbcontext-tenantcolumn-tenantpolicy)) (depends on 1)
-- [ ] Task 6: `prepareDatabase` и `grantDatabaseAccess` ([details](phase-02-schema-migrations.md#task-6-preparedatabase)) (depends on 3, 4)
-- [ ] Task 7: `runMigrations` и `moveJournal` ([details](phase-02-schema-migrations.md#task-7-runmigrations-и-movejournal)) (depends on 3, 4)
-- [ ] Task 8: Фикстура схемы и миграций `test/fixtures/database` ([details](phase-02-schema-migrations.md#task-8-фикстура-схемы-и-миграций-пакета)) (depends on 1, 5)
-- [ ] Task 9: I AC-4.6 (роли, повтор) и AC-4.7 (журнал, дамп, перенос) ([details](phase-02-schema-migrations.md#task-9-тесты-ac-46-роли-и-ac-47-журнал)) (depends on 6, 7, 8)
+- [x] Task 4: `requirePeer` и `src/database/pg.ts` — синхронная проверка `pg`, ленивый драйвер Drizzle ([details](phase-02-schema-migrations.md#task-4-загрузчик-pg-и-драйвера-drizzle)) (depends on 1)
+- [x] Task 5: `DbContext`, `tenantColumn`, `tenantPolicy` ([details](phase-02-schema-migrations.md#task-5-dbcontext-tenantcolumn-tenantpolicy)) (depends on 1)
+- [x] Task 6: `prepareDatabase` и `grantDatabaseAccess` ([details](phase-02-schema-migrations.md#task-6-preparedatabase)) (depends on 3, 4)
+- [x] Task 7: `runMigrations` и `moveJournal` ([details](phase-02-schema-migrations.md#task-7-runmigrations-и-movejournal)) (depends on 3, 4)
+- [x] Task 8: Фикстура схемы и миграций `test/fixtures/database` ([details](phase-02-schema-migrations.md#task-8-фикстура-схемы-и-миграций-пакета)) (depends on 1, 5)
+- [x] Task 9: I AC-4.6 (роли, повтор) и AC-4.7 (журнал, дамп, перенос) ([details](phase-02-schema-migrations.md#task-9-тесты-ac-46-роли-и-ac-47-журнал)) (depends on 6, 7, 8)
 
 ### Фаза 3: CLI `verdeect-kit db`
-- [ ] Task 10: `src/cli/commands/db.ts` — `prepare --service`, `migrate`, `move-journal` ([details](phase-03-cli-db.md#task-10-команда-db)) (depends on 6, 7)
-- [ ] Task 11: I AC-4.17 ([details](phase-03-cli-db.md#task-11-тест-ac-417)) (depends on 8, 9, 10)
+- [x] Task 10: `src/cli/commands/db.ts` — `prepare --service`, `migrate`, `move-journal` ([details](phase-03-cli-db.md#task-10-команда-db)) (depends on 6, 7)
+- [x] Task 11: I AC-4.17 ([details](phase-03-cli-db.md#task-11-тест-ac-417)) (depends on 8, 9, 10)
 
 ### Фаза 4: Тестовый контур БД
-- [ ] Task 12: `startTestStack` — подготовка, `migrations`, шаблон, ключи `provide` ([details](phase-04-test-stack.md#task-12-подготовка-бд-в-startteststack)) (depends on 3, 4, 6, 7)
-- [ ] Task 13: `createScratchDatabase` ([details](phase-04-test-stack.md#task-13-createscratchdatabase)) (depends on 3, 6, 12)
-- [ ] Task 14: `workerScope` (`tenant` — слаг) ([details](phase-04-test-stack.md#task-14-workerscope))
-- [ ] Task 15: `assertAppRoleIsNotOwner` в `src/testing/tenant-isolation.ts` ([details](phase-04-test-stack.md#task-15-assertapproleisnotowner))
-- [ ] Task 16: экспорты `/testing`, `globalSetup` с миграциями, тесты AC-4.18, AC-1.13, AC-4.6, AC-4.7, `workerScope` ([details](phase-04-test-stack.md#task-16-экспорты-globalsetup-пакета-и-тесты-фазы)) (depends on 8, 9, 12, 13, 14, 15)
+- [x] Task 12: `startTestStack` — подготовка, `migrations`, шаблон, ключи `provide` ([details](phase-04-test-stack.md#task-12-подготовка-бд-в-startteststack)) (depends on 3, 4, 6, 7)
+- [x] Task 13: `createScratchDatabase` ([details](phase-04-test-stack.md#task-13-createscratchdatabase)) (depends on 3, 6, 12)
+- [x] Task 14: `workerScope` (`tenant` — слаг) ([details](phase-04-test-stack.md#task-14-workerscope))
+- [x] Task 15: `assertAppRoleIsNotOwner` в `src/testing/tenant-isolation.ts` ([details](phase-04-test-stack.md#task-15-assertapproleisnotowner))
+- [x] Task 16: экспорты `/testing`, `globalSetup` с миграциями, тесты AC-4.18, AC-1.13, AC-4.6, AC-4.7, `workerScope` ([details](phase-04-test-stack.md#task-16-экспорты-globalsetup-пакета-и-тесты-фазы)) (depends on 8, 9, 12, 13, 14, 15)
 
 ### Фаза 5: `Db`, `KitDatabaseModule` и подпуть `/database`
-- [ ] Task 17: `Db` — `transaction/read/readGlobal/afterCommit/setLocal`, `withPoolClient` ([details](phase-05-db-module.md#task-17-db)) (depends on 3, 4, 5)
-- [ ] Task 18: `KitDatabaseModule`, `DRIZZLE`, `DRIZZLE_READ`, учёт срока на уровне пула, пробы, шаг 4 ([details](phase-05-db-module.md#task-18-kitdatabasemodule)) (depends on 3, 4, 17)
-- [ ] Task 19: `deleteInBatches` ([details](phase-05-db-module.md#task-19-deleteinbatches)) (depends on 2, 17)
-- [ ] Task 20: `runExclusive` ([details](phase-05-db-module.md#task-20-runexclusive)) (depends on 17)
-- [ ] Task 21: `occurredAtColumn`, `ifNewer` ([details](phase-05-db-module.md#task-21-occurredatcolumn-и-ifnewer))
-- [ ] Task 22: `src/database/index.ts`, `exports["./database"]`, фильтр `/http` без `pool: 'unknown'`, U AC-1.2 ([details](phase-05-db-module.md#task-22-публичный-database-exports-фильтр-http)) (depends on 2, 3, 4, 5, 6, 7, 17, 18, 19, 20, 21)
-- [ ] Task 23: `countQueries` ([details](phase-05-db-module.md#task-23-countqueries)) (depends on 16)
-- [ ] Task 24: I AC-4.1–4.5, 4.10–4.13, 4.15, 4.16 ([details](phase-05-db-module.md#task-24-тесты-i-фазы)) (depends on 16, 17, 18, 19, 20, 21, 22, 23)
+- [x] Task 17: `Db` — `transaction/read/readGlobal/afterCommit/setLocal`, `withPoolClient` ([details](phase-05-db-module.md#task-17-db)) (depends on 3, 4, 5)
+- [x] Task 18: `KitDatabaseModule`, `DRIZZLE`, `DRIZZLE_READ`, учёт срока на уровне пула, пробы, шаг 4 ([details](phase-05-db-module.md#task-18-kitdatabasemodule)) (depends on 3, 4, 17)
+- [x] Task 19: `deleteInBatches` ([details](phase-05-db-module.md#task-19-deleteinbatches)) (depends on 2, 17)
+- [x] Task 20: `runExclusive` ([details](phase-05-db-module.md#task-20-runexclusive)) (depends on 17)
+- [x] Task 21: `occurredAtColumn`, `ifNewer` ([details](phase-05-db-module.md#task-21-occurredatcolumn-и-ifnewer))
+- [x] Task 22: `src/database/index.ts`, `exports["./database"]`, фильтр `/http` без `pool: 'unknown'`, U AC-1.2 ([details](phase-05-db-module.md#task-22-публичный-database-exports-фильтр-http)) (depends on 2, 3, 4, 5, 6, 7, 17, 18, 19, 20, 21)
+- [x] Task 23: `countQueries` ([details](phase-05-db-module.md#task-23-countqueries)) (depends on 16)
+- [x] Task 24: I AC-4.1–4.5, 4.10–4.13, 4.15, 4.16 ([details](phase-05-db-module.md#task-24-тесты-i-фазы)) (depends on 16, 17, 18, 19, 20, 21, 22, 23)
 
 ### Фаза 6: Подпуть `/idempotency`
-- [ ] Task 25: метрика `verdeect_cleanup_runs_total` и правило `VerdeectCleanupFailing` (AC-9.5, AC-2.11) ([details](phase-06-idempotency.md#task-25-метрика-очистки-и-правило-алерта-ac-95-ac-211))
-- [ ] Task 26: `createIdempotencyTable`, `idempotencyPurgeSql` ([details](phase-06-idempotency.md#task-26-createidempotencytable-и-idempotencypurgesql)) (depends on 3, 5)
-- [ ] Task 27: `@Idempotent` ([details](phase-06-idempotency.md#task-27-idempotent)) (depends on 3)
-- [ ] Task 28: интерсептор и хранилище ([details](phase-06-idempotency.md#task-28-интерсептор-и-хранилище)) (depends on 3, 17, 22, 26, 27)
-- [ ] Task 29: `KitIdempotencyModule` — проверка функции, очистка ([details](phase-06-idempotency.md#task-29-kitidempotencymodule)) (depends on 3, 17, 18, 19, 20, 22, 25, 26, 28)
-- [ ] Task 30: `peer.ts`, `src/idempotency/index.ts`, `exports["./idempotency"]` ([details](phase-06-idempotency.md#task-30-peerts-публичный-idempotency-exports)) (depends on 26, 27, 29)
-- [ ] Task 31: заголовки идемпотентности в OpenAPI ([details](phase-06-idempotency.md#task-31-заголовки-идемпотентности-в-openapi)) (depends on 3)
-- [ ] Task 32: фикстура — таблица идемпотентности и функция очистки ([details](phase-06-idempotency.md#task-32-фикстура-бд--таблица-идемпотентности-и-функция)) (depends on 8, 26)
-- [ ] Task 33: U — `idempotencyPurgeSql`, отпечаток и область, OpenAPI, граф AC-1.2 ([details](phase-06-idempotency.md#task-33-тесты-u)) (depends on 26, 27, 28, 30, 31, 32)
-- [ ] Task 34: I AC-4.14 (HTTP, очистка, без функции) и AC-9.5 ([details](phase-06-idempotency.md#task-34-тесты-i-ac-414-и-ac-95)) (depends on 13, 14, 24, 25, 29, 30, 32)
+- [x] Task 25: метрика `verdeect_cleanup_runs_total` и правило `VerdeectCleanupFailing` (AC-9.5, AC-2.11) ([details](phase-06-idempotency.md#task-25-метрика-очистки-и-правило-алерта-ac-95-ac-211))
+- [x] Task 26: `createIdempotencyTable`, `idempotencyPurgeSql` ([details](phase-06-idempotency.md#task-26-createidempotencytable-и-idempotencypurgesql)) (depends on 3, 5)
+- [x] Task 27: `@Idempotent` ([details](phase-06-idempotency.md#task-27-idempotent)) (depends on 3)
+- [x] Task 28: интерсептор и хранилище ([details](phase-06-idempotency.md#task-28-интерсептор-и-хранилище)) (depends on 3, 17, 22, 26, 27)
+- [x] Task 29: `KitIdempotencyModule` — проверка функции, очистка ([details](phase-06-idempotency.md#task-29-kitidempotencymodule)) (depends on 3, 17, 18, 19, 20, 22, 25, 26, 28)
+- [x] Task 30: `peer.ts`, `src/idempotency/index.ts`, `exports["./idempotency"]` ([details](phase-06-idempotency.md#task-30-peerts-публичный-idempotency-exports)) (depends on 26, 27, 29)
+- [x] Task 31: заголовки идемпотентности в OpenAPI ([details](phase-06-idempotency.md#task-31-заголовки-идемпотентности-в-openapi)) (depends on 3)
+- [x] Task 32: фикстура — таблица идемпотентности и функция очистки ([details](phase-06-idempotency.md#task-32-фикстура-бд--таблица-идемпотентности-и-функция)) (depends on 8, 26)
+- [x] Task 33: U — `idempotencyPurgeSql`, отпечаток и область, OpenAPI, граф AC-1.2 ([details](phase-06-idempotency.md#task-33-тесты-u)) (depends on 26, 27, 28, 30, 31, 32)
+- [x] Task 34: I AC-4.14 (HTTP, очистка, без функции) и AC-9.5 ([details](phase-06-idempotency.md#task-34-тесты-i-ac-414-и-ac-95)) (depends on 13, 14, 24, 25, 29, 30, 32)
 
 ### Фаза 7: `assertStrictTenantIsolation`
-- [ ] Task 35: `assertStrictTenantIsolation` с проверкой функции очистки ([details](phase-07-tenant-isolation.md#task-35-assertstricttenantisolation)) (depends on 15, 26)
-- [ ] Task 36: I AC-4.8 — фикстура на каждое нарушение ([details](phase-07-tenant-isolation.md#task-36-тест-ac-48)) (depends on 13, 16, 32, 35)
+- [x] Task 35: `assertStrictTenantIsolation` с проверкой функции очистки ([details](phase-07-tenant-isolation.md#task-35-assertstricttenantisolation)) (depends on 15, 26)
+- [x] Task 36: I AC-4.8 — фикстура на каждое нарушение ([details](phase-07-tenant-isolation.md#task-36-тест-ac-48)) (depends on 13, 16, 32, 35)
 
 ### Фаза 8: Проект-потребитель и проверки архива
-- [ ] Task 37: потребитель — таблица компании под строгим RLS, миграции с `idempotencyPurgeSql`, `assertStrictTenantIsolation`, AC-9.5, снимок OpenAPI ([details](phase-08-consumer-package.md#task-37-потребитель-с-бд-и-идемпотентностью)) (depends on 12, 13, 14, 15, 22, 23, 29, 30, 31, 35)
-- [ ] Task 38: AC-1.1, AC-1.2, AC-9.1 на архиве ([details](phase-08-consumer-package.md#task-38-проверки-архива-rc)) (depends on 22, 30, 37)
+- [x] Task 37: потребитель — таблица компании под строгим RLS, миграции с `idempotencyPurgeSql`, `assertStrictTenantIsolation`, AC-9.5, снимок OpenAPI ([details](phase-08-consumer-package.md#task-37-потребитель-с-бд-и-идемпотентностью)) (depends on 12, 13, 14, 15, 22, 23, 29, 30, 31, 35)
+- [x] Task 38: AC-1.1, AC-1.2, AC-9.1 на архиве ([details](phase-08-consumer-package.md#task-38-проверки-архива-rc)) (depends on 22, 30, 37)
 
 ### Фаза 9: README, CHANGELOG, docs
-- [ ] Task 39: README, CHANGELOG `[Unreleased]`, `docs/testing.md`, AC-9.3 ([details](phase-09-docs.md#task-39-документация-e4)) (depends on 1–38)
+- [x] Task 39: README, CHANGELOG `[Unreleased]`, `docs/testing.md`, AC-9.3 ([details](phase-09-docs.md#task-39-документация-e4)) (depends on 1–38)
 
 ## Traceability
 

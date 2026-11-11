@@ -24,12 +24,15 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 
 Опциональные peer нужны только подпути, который их использует. Без них подпуть не импортируется и называет библиотеку: «`@verdeect/kit/<подпуть>` требует `<библиотека>` — добавьте в зависимости сервиса» (AC-1.2).
 
-| Подпуть    | Опциональные peer                                                                       |
-| ---------- | --------------------------------------------------------------------------------------- |
-| `/config`  | —                                                                                       |
-| `/http`    | —                                                                                       |
-| `/testing` | `testcontainers`, `vitest`; `@nestjs/testing` — только для `createTestApp` (при вызове) |
-| остальные  | в своих этапах                                                                          |
+| Подпуть                     | Опциональные peer                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `/config`                   | —                                                                                       |
+| `/http`                     | —                                                                                       |
+| `/database`, `/idempotency` | `pg`                                                                                    |
+| `/testing`                  | `testcontainers`, `vitest`; `@nestjs/testing` — только для `createTestApp` (при вызове) |
+| остальные                   | в своих этапах                                                                          |
+
+`/database` и `/idempotency` проверяют `pg` синхронно при импорте (текст AC-1.2) и загружают `pg` и драйвер Drizzle лениво при первом вызове. Top-level await в этих подпутях нет, поэтому схему сервиса с `tenantColumn` и `createIdempotencyTable` загружает `drizzle-kit` (он грузит схему через `require`).
 
 ## Подпути
 
@@ -39,8 +42,8 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | `/testing`       | E1   | готов, в `[Unreleased]` |
 | `/observability` | E2   | готов, в `[Unreleased]` |
 | `/http`          | E3   | готов, в `[Unreleased]` |
-| `/database`      | E4   | в своём этапе           |
-| `/idempotency`   | E4   | в своём этапе           |
+| `/database`      | E4   | готов, в `[Unreleased]` |
+| `/idempotency`   | E4   | готов, в `[Unreleased]` |
 | `/messaging`     | E5   | в своём этапе           |
 | `/crypto`        | E7   | в своём этапе           |
 | `/redis`         | E8   | в своём этапе           |
@@ -221,7 +224,7 @@ export class EventsStream implements OnModuleInit {
 }
 ```
 
-**Ошибки.** Словарь — `defineErrors({...kitErrors, ITEM_NOT_FOUND: {status: 404, message: 'Запись не найдена'}})` один раз на процесс; повторный вызов объединяет словари, тот же код с другим статусом — ошибка при определении, код пакета с другим статусом — ошибка компиляции. `throw new DomainError('ITEM_NOT_FOUND', {id})` → `{error: {code, message, details}}`, статус словаря, `warn` без GlitchTip. Доменные 4xx — только `DomainError`: `HttpException` без тела с другим статусом, чем 400/401/403/404/413/415/429, — 500 `INTERNAL_ERROR` (ошибка разработчика). Тело `{error}` guard'ов `@verdeect/auth` и `@verdeect/platform-client` проходит без изменений. Срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1`, `verdeect_db_pool_wait_timeouts_total{pool="unknown"}`: имя пула фильтр не знает, метку с именем пула даст `/database` (E4).
+**Ошибки.** Словарь — `defineErrors({...kitErrors, ITEM_NOT_FOUND: {status: 404, message: 'Запись не найдена'}})` один раз на процесс; повторный вызов объединяет словари, тот же код с другим статусом — ошибка при определении, код пакета с другим статусом — ошибка компиляции. `throw new DomainError('ITEM_NOT_FOUND', {id})` → `{error: {code, message, details}}`, статус словаря, `warn` без GlitchTip. Доменные 4xx — только `DomainError`: `HttpException` без тела с другим статусом, чем 400/401/403/404/413/415/429, — 500 `INTERNAL_ERROR` (ошибка разработчика). Тело `{error}` guard'ов `@verdeect/auth` и `@verdeect/platform-client` проходит без изменений. Срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1` без метрики и события в фильтре: срок пулов `KitDatabaseModule` учитывает сам пул — `verdeect_db_pool_wait_timeouts_total{pool="main"|"read"}` и одно событие `captureThrottled`; срок собственного пула сервиса — 503 без метрики.
 
 | Код                      | Статус | Код                        | Статус |
 | ------------------------ | ------ | -------------------------- | ------ |
@@ -255,7 +258,70 @@ contracts/openapi.json
 | `INVALID_EXTRA`        | `contracts/openapi.extra.json` — не объект JSON                                      |
 | `INVALID_ENVIRONMENT`  | неверные `LOG_LEVEL` или `REPLICA_ID` (в `keys` — имена, без значений)               |
 | `OPENAPI_FAILED`       | прочий сбой сборки документа (например, код из `errors` не зарегистрирован)          |
-| `UNKNOWN_COMMAND`      | команда не `openapi`                                                                 |
+| `UNKNOWN_COMMAND`      | команда не `openapi` и не `db`                                                       |
+
+## База данных
+
+`KitDatabaseModule.forRoot({schema})` — глобальный модуль БД (окружение — `envDatabase` из `KitConfigModule`): основной пул и пул чтения (`default_transaction_read_only`, `statement_timeout` 5 с), `Db`, токены `DRIZZLE` и `DRIZZLE_READ` (Drizzle со схемой сервиса для запросов вне `Db`), критичные пробы `/health` `database` и `database-read`; пулы закрываются на шаге 4 остановки. Соединений на реплику — `2 × DB_POOL_MAX`.
+
+```ts
+const ctx: DbContext = { tenant: principal.tenant, traceId: request.id, actor: { channel: 'http' } };
+await db.transaction(ctx, async (tx) => {
+    await tx.insert(file).values({ id: newId('fil'), tenant: ctx.tenant, name });
+    db.afterCommit(tx, () => cache.invalidate(name)); // только то, что можно потерять
+});
+const rows = await db.read(ctx, (tx) => tx.select().from(file)); // read-only, пул чтения
+const flags = await db.readGlobal((reader) => reader.select().from(setting)); // без компании
+```
+
+- `Db.transaction(ctx, fn)` — ровно один `set_config('app.tenant', …, true)` на транзакцию; значение не переживает транзакцию. `Db.read(ctx, fn)` — read-only транзакция на пуле чтения; без тенанта — `TenantRequiredError`. Чтение без компании — только `Db.readGlobal(fn)` (без транзакции и `set_config`).
+- `Db.afterCommit(tx, task)` — задачи после `COMMIT` по порядку; при откате не выполняются; ошибка задачи — `error`-лог и GlitchTip, не пробрасывается; в `read`/`readGlobal` — `AfterCommitInReadOnlyError`.
+- `Db.setLocal(tx, name, value)` — своя переменная транзакции `app.*` (`^app\.[a-z_]{1,48}$`), имя и значение — параметрами.
+- Строгий RLS (P0): колонка `tenantColumn()` и политика `tenantPolicy(t.tenant)` — `tenant = current_setting('app.tenant', true)`, SQL генерирует `drizzle-kit` сервиса. `FORCE ROW LEVEL SECURITY` и права роли приложения — SQL-миграцией сервиса (`drizzle-kit generate --custom`), как в фикстуре пакета:
+
+```sql
+ALTER TABLE "files"."file" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+GRANT SELECT, INSERT, UPDATE, DELETE ON "files"."file" TO "files_app";
+```
+
+- Первая строка первой миграции `drizzle-kit` — `CREATE SCHEMA "<svc>";`: замените её на `CREATE SCHEMA IF NOT EXISTS "<svc>";` — схему заранее создаёт `prepareDatabase` (обязательный шаг после первой генерации).
+- `prepareDatabase({service, adminUrl, ownerPassword, appPassword})` — идемпотентно: роли `<svc>_owner` (миграции), `<svc>_app` (приложение, без `CREATE` на базе и схеме), `<svc>_directory` (`NOLOGIN`, `BYPASSRLS`, владелец функций `SECURITY DEFINER`), схема `<svc>`; повтор — `created: []`. `runMigrations({url, folder, schema})` — миграции под `<svc>_owner`, журнал — `<svc>.__migrations` (схемы `drizzle` нет), повтор — `{applied: 0}`.
+- `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?})` — транзакция на пачку до неполной пачки или `maxBatches`; `sql(batchSize)` возвращает одну строку с целой колонкой `deleted` (`WITH d AS (DELETE … LIMIT n RETURNING 1) SELECT count(*)::int AS deleted FROM d`); строки компаний системный контекст не видит — их удаляет функция `SECURITY DEFINER`. Остановка `Db` (шаг 3) ждёт текущую пачку, новая не начинается.
+- `runExclusive(db, key, fn)` — `pg_try_advisory_lock` без ожидания: `fn` в одной реплике, занято — `{ran: false}`. Блокировка держит соединение основного пула — `DB_POOL_MAX ≥ 2`.
+- `occurredAtColumn(name)` и `ifNewer(column, occurredAt)` — обновление только событием новее сохранённого (`rowCount` 0 — нормальный итог).
+- `newId(prefix)` и `ulid()` — id `<prefix>_<ulid>` (реестр префиксов — ниже). `isUniqueViolation(err, constraint?)`, `isConnectionError(err)`, `isPoolTimeout(err)` — распознавание ошибок pg по форме с обходом `cause`.
+- Срок пула: `verdeect_db_pool_wait_timeouts_total{pool="main"|"read"}` и `captureThrottled` пишет пул `/database` при ошибке получения соединения — и для `Db`, и для прямых `DRIZZLE`/`DRIZZLE_READ`; фильтр `/http` отвечает 503.
+
+CLI `verdeect-kit db` (результат — одна строка JSON в stdout, логи — stderr; ошибка — `{"error": {"code", …}}` и выход 1, без адресов, паролей и текста ошибки pg):
+
+| Команда                                     | Окружение                                                    | Результат                    |
+| ------------------------------------------- | ------------------------------------------------------------ | ---------------------------- |
+| `db prepare --service <svc>`                | `DATABASE_ADMIN_URL`, `DB_OWNER_PASSWORD`, `DB_APP_PASSWORD` | `{database, roles, created}` |
+| `db migrate --folder <путь> --schema <svc>` | `DATABASE_MIGRATOR_URL`                                      | `{schema, applied}`          |
+| `db move-journal --from drizzle --to <svc>` | `DATABASE_MIGRATOR_URL`                                      | `{from, to, moved}`          |
+
+Коды ошибок: `USAGE` (нет подкоманды или опции, имя вне формата, нет журнала `drizzle-kit` в папке), `INVALID_ENVIRONMENT` (`keys` — имена), `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED` (`sqlState`).
+
+## Идемпотентность
+
+`KitIdempotencyModule.forRoot({table})` (нужен `KitDatabaseModule`) и `@Idempotent({required?, tenantFromBody?})` на маршруте — повтор с тем же `Idempotency-Key` и телом возвращает сохранённые статус, тело и `Location` с `Idempotent-Replayed: true`.
+
+```ts
+// schema.ts
+export const idempotency = createIdempotencyTable(files);
+
+// controller
+@Post()
+@UseGuards(VerdeectAuthGuard)
+@Idempotent({ required: true })
+create(@Body(new ZodValidationPipe(CreateFile)) body: CreateFileDto) { … }
+```
+
+- Таблица `createIdempotencyTable(pgSchema('<svc>'))` — `idempotency_key` под политикой `tenant IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')`. В SQL-миграцию сервиса — `FORCE`, права `<svc>_app` и текст `idempotencyPurgeSql(<схема>)` без изменений (функция очистки `SECURITY DEFINER`, владелец `<svc>_directory`); пример — `test/consumer/minimal/drizzle/0001_force_grants_purge.sql`. Нет функции `<svc>.idempotency_purge` — отказ запуска с текстом про `idempotencyPurgeSql`.
+- `@Idempotent` — **только на маршрутах с `VerdeectAuthGuard`**: без проверенного принципала — 500 `INTERNAL_ERROR` при любом ключе.
+- Область ключа: пользователь и агент — компания токена и `sub` (поле тела не учитывается); служба — `client_id` и, при `tenantFromBody: 'tenant'`, компания из поля тела (нет поля — без компании).
+- Ответы: нет ключа при `required` — 400 `IDEMPOTENCY_KEY_REQUIRED`; ключ не по формату `^[\x21-\x7E]{1,200}$` — 422 `VALIDATION_FAILED` (`path: Idempotency-Key`); другое тело — 422 `IDEMPOTENCY_KEY_REUSED`; запрос ещё идёт — 409 `IDEMPOTENCY_IN_PROGRESS`. Сохраняются только успешные ответы; брошенная `in_progress` переиспользуется через 5 минут, запись — 24 часа. Заголовки и коды попадают в OpenAPI по метаданным `@Idempotent`.
+- Очистка — при старте и раз в час, одной репликой (`runExclusive`), пачками функцией `idempotency_purge`. Метрика `verdeect_cleanup_runs_total{table, result}`: `ok`, `partial` (упёрлась в предел пачек — очистка не успевает), `error`; алерт `VerdeectCleanupFailing` (порог `verdeect_kit_threshold:cleanup_runs`). Число удалённых строк — в `info`-логе прохода «очистка идемпотентности: проход» (`service`, `replica`, `table`, `deleted`).
 
 ## Тесты сервиса
 
@@ -265,21 +331,37 @@ contracts/openapi.json
 // test/integration/global-setup.ts
 import { startTestStack } from '@verdeect/kit/testing';
 
-export default startTestStack({ service: 'files', postgres: true, mailpit: true });
+export default startTestStack({
+    service: 'files',
+    postgres: true,
+    migrations: 'drizzle',
+    mailpit: true,
+});
 ```
 
 Контейнеры `TEST_IMAGES` стартуют раз на прогон, адреса доходят до тестов через `inject`:
 
-| Ключ `inject`    | Флаг       | Значение                                              |
-| ---------------- | ---------- | ----------------------------------------------------- |
-| `kitPostgresUrl` | `postgres` | `postgres://postgres:<пароль>@<host>:<port>/postgres` |
-| `kitSmtpUrl`     | `mailpit`  | `smtp://<host>:<port>`                                |
-| `kitMailpitUrl`  | `mailpit`  | `http://<host>:<port>` — HTTP API mailpit             |
-| `kitS3Endpoint`  | `minio`    | `http://<host>:<port>`                                |
-| `kitS3AccessKey` | `minio`    | пользователь MinIO                                    |
-| `kitS3SecretKey` | `minio`    | пароль MinIO, случайный на прогон                     |
+| Ключ `inject`         | Флаг       | Значение                                                  |
+| --------------------- | ---------- | --------------------------------------------------------- |
+| `kitPostgresUrl`      | `postgres` | `postgres://postgres:<пароль>@<host>:<port>/postgres`     |
+| `kitDatabaseUrl`      | `postgres` | роль `<svc>_app` к БД `<svc>` — `DATABASE_URL` тестов     |
+| `kitDatabaseOwnerUrl` | `postgres` | роль `<svc>_owner` к БД `<svc>` — `DATABASE_MIGRATOR_URL` |
+| `kitDatabaseAdminUrl` | `postgres` | суперпользователь к БД `<svc>`                            |
+| `kitDatabaseService`  | `postgres` | имя сервиса: схема и роли                                 |
+| `kitDatabaseTemplate` | `postgres` | шаблонная БД `<svc>_template`                             |
+| `kitSmtpUrl`          | `mailpit`  | `smtp://<host>:<port>`                                    |
+| `kitMailpitUrl`       | `mailpit`  | `http://<host>:<port>` — HTTP API mailpit                 |
+| `kitS3Endpoint`       | `minio`    | `http://<host>:<port>`                                    |
+| `kitS3AccessKey`      | `minio`    | пользователь MinIO                                        |
+| `kitS3SecretKey`      | `minio`    | пароль MinIO, случайный на прогон                         |
 
-После E1 `startTestStack` не готовит БД и не применяет миграции (это E4), RabbitMQ и Redis появятся в E5 и E8.
+При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. RabbitMQ и Redis появятся в E5 и E8.
+
+- `createScratchDatabase()` — пустая мигрированная БД из шаблона за доли секунды (`{name, url, ownerUrl, adminUrl, drop()}`); тест сам вызывает `drop()`.
+- `workerScope().tenant` — слаг компании воркера (`w<VITEST_POOL_ID>-<8 hex>`, формат claim `tenant`): то же значение в `DbContext.tenant` и в токене; `tenantId` и строку компании создаёт фабрика сервиса.
+- `countQueries(pool, fn)` — `{result, count, queries}`: все запросы пула за время `fn` (транзакция `Db` с одним запросом — 4: `begin`, `set_config`, запрос, `commit`).
+- `assertStrictTenantIsolation(pool, {schema, except?})` — один тест сервиса под ролью приложения после вставки данных фабриками: каждая таблица с колонкой `tenant` — RLS, `FORCE`, строгая политика, 0 строк под пустым тенантом; `idempotency_key` и `outbox` — исключения строгой модели; функция `idempotency_purge` — `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
+- `assertAppRoleIsNotOwner(db)` — роль соединения не суперпользователь, без `BYPASSRLS`, не владеет схемами и таблицами, без `CREATE` на базе и схемах.
 
 `TEST_IMAGES`: `postgres:17.11-alpine3.24`, `redis:7.4.11-alpine`, `rabbitmq:4.3.6-management-alpine`, `axllent/mailpit:v1.31.6`, `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`. Мажорная смена образа — мажор пакета (G14).
 
@@ -316,13 +398,14 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - `REPLICA_ID` не задавать ни в compose, ни в `env_file`: умолчание — `hostname()` контейнера.
 - `stop_grace_period: 15s` при `SHUTDOWN_TIMEOUT_MS` 10000: срок Docker должен быть больше срока остановки сервиса.
 - Пул соединений PostgreSQL: сервис открывает до `2 × DB_POOL_MAX × реплики` соединений (основной пул и пул чтения) — `max_connections` считается по этой формуле.
+- БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>`.
 - DLQ разбирается в течение 7 дней.
 - Смена ключа шифра (UC-10): новый секрет `verdeect-kit crypto generate-secret` (с E7) → новая версия первой в `ENCRYPTION_KEYS` → перезапуск → перешифровка → удаление старой версии.
 - Смена TTL `.retry` (`RABBITMQ_RETRY_SECONDS`): очередь `<svc>.retry` удалить и пересоздать, иначе отказ запуска (prd.md §3.4).
 
 ## Реестр префиксов id
 
-Формат префикса `^[a-z]{2,5}$`, id — `<prefix>_<ulid>`. Новый префикс добавляется строкой в этот реестр в плане сервиса.
+Формат префикса `^[a-z]{2,5}$`, id — `<prefix>_<ulid>`; id создаёт `newId(prefix)` из `/database`. Новый префикс добавляется строкой в этот реестр в плане сервиса.
 
 | Префикс | Сущность                | Сервис       |
 | ------- | ----------------------- | ------------ |
@@ -415,6 +498,50 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 
 CLI: `verdeect-kit openapi --out <файл> [--module <файл>#<экспорт>]` — результат `{written, operations}` в stdout; нет файла, экспорта или `version` в `package.json` — JSON `{error: {code}}` и выход 1.
 
+### @verdeect/kit/database
+
+- `KitDatabaseModule` — `forRoot({schema})`: пулы, `Db`, `DRIZZLE`, `DRIZZLE_READ`, пробы `database`/`database-read`, закрытие пулов на шаге 4.
+- `KitDatabaseModuleOptions` — тип опций `KitDatabaseModule.forRoot`.
+- `DRIZZLE` — токен Drizzle основного пула со схемой сервиса.
+- `DRIZZLE_READ` — токен Drizzle пула чтения со схемой сервиса.
+- `Db` — `transaction(ctx, fn)`, `read(ctx, fn)`, `readGlobal(fn)`, `afterCommit(tx, task)`, `setLocal(tx, name, value)`.
+- `DbContext` — `{tenant, traceId, actor: {clientId?, accountId?, memberId?, onBehalfOf?, channel}}`.
+- `DbTx` — тип транзакции `Db.transaction`/`Db.read`.
+- `DbReader` — тип дескриптора `Db.readGlobal`.
+- `AfterCommitTask` — тип задачи `() => void | Promise<void>`.
+- `TenantRequiredError` — `Db.read` без тенанта.
+- `AfterCommitInReadOnlyError` — `afterCommit` в `read`/`readGlobal`.
+- `tenantColumn` — `tenantColumn(name = 'tenant')`: колонка тенанта `text not null`.
+- `tenantPolicy` — `tenantPolicy(column)`: строгая политика `tenant_isolation`.
+- `prepareDatabase` — `prepareDatabase({service, adminUrl, ownerPassword, appPassword}, logger?)`: роли и схема сервиса.
+- `KitPrepareDatabaseOptions` — тип опций `prepareDatabase`.
+- `KitPrepareDatabaseResult` — `{database, roles, created}`.
+- `runMigrations` — `runMigrations({url, folder, schema}, logger?)`: `{applied}`, журнал `<schema>.__migrations`.
+- `KitRunMigrationsOptions` — тип опций `runMigrations`.
+- `deleteInBatches` — `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?})`: `{deleted, batches, complete}`.
+- `KitDeleteInBatchesOptions` — тип опций `deleteInBatches`.
+- `KitDeleteInBatchesResult` — тип итога `deleteInBatches`.
+- `runExclusive` — `runExclusive(db, key, fn)`: `{ran: true, result}` или `{ran: false}`.
+- `occurredAtColumn` — `occurredAtColumn(name)`: `timestamptz` nullable.
+- `ifNewer` — `ifNewer(column, occurredAt)`: условие «событие новее».
+- `newId` — `newId(prefix)`: `<prefix>_<ulid>`, префикс `^[a-z]{2,5}$`.
+- `ulid` — `ulid(now?)`: 26 знаков Crockford.
+- `isUniqueViolation` — `isUniqueViolation(err, constraint?)`: 23505 в ошибке или `cause`.
+- `isConnectionError` — обрыв соединения с PostgreSQL по форме.
+- `isPoolTimeout` — срок ожидания клиента пула.
+
+CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> --schema <svc>`, `db move-journal --from <схема> --to <svc>` — см. «База данных».
+
+### @verdeect/kit/idempotency
+
+- `KitIdempotencyModule` — `forRoot({table})`: интерсептор `@Idempotent`, проверка функции очистки при старте, очистка раз в час.
+- `KitIdempotencyModuleOptions` — тип опций `KitIdempotencyModule.forRoot`.
+- `Idempotent` — `@Idempotent({required?, tenantFromBody?})`: маршрут принимает `Idempotency-Key`.
+- `KitIdempotentOptions` — тип опций `@Idempotent`.
+- `createIdempotencyTable` — `createIdempotencyTable(schema)`: таблица `idempotency_key` схемы сервиса.
+- `KitIdempotencyTable` — тип таблицы идемпотентности.
+- `idempotencyPurgeSql` — `idempotencyPurgeSql(schema)`: текст SQL функции очистки для миграции сервиса.
+
 ### @verdeect/kit/testing
 
 - `createTestApp` — `createTestApp({module, service, overrides?, bodyLimit?})`: приложение сервиса для тестов.
@@ -431,6 +558,16 @@ CLI: `verdeect-kit openapi --out <файл> [--module <файл>#<экспорт
 - `TcpProxy` — тип прокси: `url`, `break`, `restore`, `blackhole`, `freeze`, `blackholeOn`, `delayOn`, `close`.
 - `timingGuard` — `globalSetup` уровня замеров времени.
 - `TEST_TIMEOUT_SCALE` — множитель тайм-аутов из `TEST_TIMEOUT_SCALE`, по умолчанию 1.
+- `createScratchDatabase` — пустая мигрированная БД из шаблона `startTestStack`.
+- `KitScratchDatabase` — `{name, url, ownerUrl, adminUrl, drop()}`.
+- `workerScope` — `workerScope()`: область воркера Vitest.
+- `KitWorkerScope` — `{tenant}`: слаг компании воркера.
+- `countQueries` — `countQueries(pool, fn)`: `{result, count, queries}`.
+- `KitCountablePool` — тип пула с событием `acquire`.
+- `assertStrictTenantIsolation` — `assertStrictTenantIsolation(db, {schema, except?})`: строгий RLS схемы под ролью приложения.
+- `KitTenantIsolationOptions` — тип опций `assertStrictTenantIsolation`.
+- `assertAppRoleIsNotOwner` — `assertAppRoleIsNotOwner(db)`: роль приложения не владелец.
+- `KitQueryable` — тип соединения с `query` (`pg.Pool`, `pg.Client`).
 
 ## Документация
 

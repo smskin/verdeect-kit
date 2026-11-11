@@ -1,10 +1,12 @@
-// Распознавание ошибок PostgreSQL по форме (prd.md §3.3, AC-3.3 — основа; KT-15 п. 9); src/internal/pg-errors.ts.
+// Распознавание ошибок PostgreSQL по форме (prd.md §3.3, AC-3.3 — основа; KT-15 п. 9; метка пула — AC-4.5); src/internal/pg-errors.ts.
 // Перенос I pg-errors.spec.ts, переписанного на объекты по форме (без DrizzleQueryError и pg.DatabaseError).
 import { describe, expect, it } from 'vitest';
 import {
     isConnectionError,
     isPoolTimeout,
     isUniqueViolation,
+    poolTimeoutOf,
+    tagPoolTimeout,
 } from '../../../src/internal/pg-errors.js';
 
 /** Ошибка, вложенная `depth` раз в `cause` (depth 0 — сама ошибка). */
@@ -89,6 +91,10 @@ describe('§3.3: isConnectionError', () => {
             'terminating connection due to administrator command',
             new Error('terminating connection due to administrator command'),
         ],
+        [
+            'Client has encountered a connection error and is not queryable',
+            new Error('Client has encountered a connection error and is not queryable'),
+        ],
     ])('§3.3: форма %s — ошибка соединения', (_name, error) => {
         expect(isConnectionError(error)).toBe(true);
     });
@@ -102,5 +108,38 @@ describe('§3.3: isConnectionError', () => {
         expect(isConnectionError(pgError('23505'))).toBe(false);
         expect(isConnectionError(pgError('57014'))).toBe(false);
         expect(isConnectionError(new Error('domain'))).toBe(false);
+    });
+});
+
+describe('AC-4.5: метка пула', () => {
+    const timeout = (): Error => new Error('timeout exceeded when trying to connect');
+
+    it('AC-4.5: tagPoolTimeout ставит имя пула на узел срока в cause глубины 2, poolTimeoutOf его читает', () => {
+        const error = nested(timeout(), 2);
+        expect(poolTimeoutOf(error)).toBeNull();
+        expect(tagPoolTimeout(error, 'read')).toBe(true);
+        expect(poolTimeoutOf(error)).toBe('read');
+        expect(isPoolTimeout(error)).toBe(true);
+    });
+
+    it('AC-4.5: повторная пометка возвращает false, имя не меняется', () => {
+        const error = nested(timeout(), 1);
+        expect(tagPoolTimeout(error, 'main')).toBe(true);
+        expect(tagPoolTimeout(error, 'read')).toBe(false);
+        expect(poolTimeoutOf(error)).toBe('main');
+    });
+
+    it('AC-4.5: ошибка не срока пула — false, poolTimeoutOf null', () => {
+        const error = pgError('08006');
+        expect(tagPoolTimeout(error, 'main')).toBe(false);
+        expect(poolTimeoutOf(error)).toBeNull();
+        expect(tagPoolTimeout('строка', 'main')).toBe(false);
+    });
+
+    it('AC-4.5: метка не видна в JSON.stringify и Object.keys', () => {
+        const error = Object.assign(timeout(), { code: 'X' });
+        tagPoolTimeout(error, 'main');
+        expect(Object.keys(error)).toEqual(['code']);
+        expect(JSON.stringify(error)).toBe('{"code":"X"}');
     });
 });

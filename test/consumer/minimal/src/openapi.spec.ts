@@ -21,7 +21,7 @@ describe('UC-14: контракт OpenAPI', () => {
                 { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LOG_LEVEL: 'silent' } },
             );
 
-            expect(JSON.parse(stdout)).toEqual({ written: out, operations: 1 });
+            expect(JSON.parse(stdout)).toEqual({ written: out, operations: 2 });
             expect(readFileSync(out, 'utf8')).toBe(
                 readFileSync(join(ROOT, 'contracts', 'openapi.json'), 'utf8'),
             );

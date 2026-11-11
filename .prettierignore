@@ -13,3 +13,5 @@ AGENTS.md
 test/fixtures/
 # Снимок OpenAPI потребителя — вывод CLI verdeect-kit openapi байт в байт (AC-3.8).
 test/consumer/minimal/contracts/
+# Миграции потребителя — вывод drizzle-kit (AC-9.1).
+test/consumer/minimal/drizzle/

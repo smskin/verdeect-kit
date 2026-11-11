@@ -1,6 +1,8 @@
 // Загрузка опционального peer с текстом ошибки AC-1.2 (prd.md §3, NFR-3; ARCHITECTURE.md «Правила зависимостей»).
 // Вызывается top-level await в модуле подпути: статический импорт отсутствующего пакета упал бы при связывании ESM
-// с ERR_MODULE_NOT_FOUND до любого кода.
+// с ERR_MODULE_NOT_FOUND до любого кода. requirePeer — синхронная проверка при загрузке модуля подпути без top-level
+// await (/database, /idempotency: drizzle-kit загружает схему сервиса через require — П15, KT-20 п. 2).
+import { createRequire } from 'node:module';
 
 type Importer = (specifier: string) => Promise<unknown>;
 
@@ -14,7 +16,7 @@ function isMissingPackage(error: unknown, library: string): boolean {
     if (typeof error !== 'object' || error === null || !('code' in error)) {
         return false;
     }
-    if (error.code !== 'ERR_MODULE_NOT_FOUND') {
+    if (error.code !== 'ERR_MODULE_NOT_FOUND' && error.code !== 'MODULE_NOT_FOUND') {
         return false;
     }
     const message = 'message' in error ? String(error.message) : '';
@@ -41,4 +43,27 @@ export async function loadPeerWith<T>(
 /** Опциональный peer подпути; вызывается top-level await в модуле подпути. */
 export function loadPeer<T>(library: string, subpath: string): Promise<T> {
     return loadPeerWith<T>((specifier) => import(specifier), library, subpath);
+}
+
+type Resolver = (specifier: string) => string;
+
+/** Синхронная проверка peer через resolver; отсутствие самого пакета → ошибка AC-1.2, прочее — как есть. */
+export function requirePeerWith(resolver: Resolver, library: string, subpath: string): void {
+    try {
+        resolver(library);
+    } catch (error) {
+        if (isMissingPackage(error, library)) {
+            throw new Error(missingPeerMessage(library, subpath), { cause: error });
+        }
+        throw error;
+    }
+}
+
+/**
+ * Синхронная проверка, что peer установлен (без загрузки); вызывается на верхнем уровне модуля подпути без
+ * top-level await. Сам peer загружается потом ленивым `import()`.
+ */
+export function requirePeer(library: string, subpath: string): void {
+    const require = createRequire(import.meta.url);
+    requirePeerWith((specifier) => require.resolve(specifier), library, subpath);
 }

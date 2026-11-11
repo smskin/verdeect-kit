@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13).
+Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14).
 
 ### Added
 
@@ -48,8 +48,36 @@
 - `/testing`: `expectMatchesApi` — ответ по схеме `@Api` маршрута (Ajv 2020).
 - Опциональный peer `@nestjs/testing` `^12.1.0` — только для `createTestApp`, грузится при вызове; зависимость `ajv` 8.20.0 — внутренняя деталь `/testing`.
 - Шаблон алертов `alerts/verdeect-kit.rules.yml` (в архиве пакета): правило на каждую метрику пакета, порог по умолчанию и переопределение `verdeect_kit_threshold:<метрика>` по `service`.
+- `/database`: `KitDatabaseModule.forRoot({schema})` и тип `KitDatabaseModuleOptions` — основной пул и пул чтения (`statement_timeout` 5 с), пробы `/health` `database` и `database-read` (критичные), закрытие пулов на шаге 4; срок пула — `verdeect_db_pool_wait_timeouts_total{pool="main"|"read"}` и `captureThrottled` при ошибке получения соединения.
+- `/database`: токены `DRIZZLE`, `DRIZZLE_READ` — Drizzle со схемой сервиса для запросов вне `Db`.
+- `/database`: `Db` — `transaction`, `read`, `readGlobal`, `afterCommit`, `setLocal`; один `set_config('app.tenant', …, true)` на транзакцию; типы `DbTx`, `DbReader`, `AfterCommitTask`; ошибки `TenantRequiredError` (`read` без тенанта), `AfterCommitInReadOnlyError`.
+- `/database`: тип `DbContext` — `{tenant, traceId, actor}`.
+- `/database`: `tenantColumn`, `tenantPolicy` — строгий RLS `tenant = current_setting('app.tenant', true)` (P0).
+- `/database`: `prepareDatabase` и типы `KitPrepareDatabaseOptions`, `KitPrepareDatabaseResult` — роли `<svc>_owner`, `<svc>_app` (без `CREATE`), `<svc>_directory` и схема сервиса, идемпотентно.
+- `/database`: `runMigrations` и тип `KitRunMigrationsOptions` — журнал `<svc>.__migrations`, схема `drizzle` не создаётся.
+- `/database`: `deleteInBatches` и типы `KitDeleteInBatchesOptions`, `KitDeleteInBatchesResult` — пачка — транзакция, остановка `Db` ждёт текущую пачку.
+- `/database`: `runExclusive` — `pg_try_advisory_lock` без ожидания.
+- `/database`: `occurredAtColumn`, `ifNewer` — обновление только событием новее.
+- `/database`: `newId`, `ulid` — id `<prefix>_<ulid>`, префикс `^[a-z]{2,5}$`.
+- `/database`: `isUniqueViolation`, `isConnectionError`, `isPoolTimeout` — реэкспорт распознавания ошибок pg по форме; `isConnectionError` узнаёт и «Client has encountered a connection error».
+- `/idempotency`: `KitIdempotencyModule.forRoot({table})` и тип `KitIdempotencyModuleOptions` — интерсептор, проверка функции `idempotency_purge` при старте (нет — отказ запуска), очистка при старте и раз в час одной репликой.
+- `/idempotency`: `Idempotent` и тип `KitIdempotentOptions` — `@Idempotent({required?, tenantFromBody?})`: повтор — сохранённый ответ и `Idempotent-Replayed: true`, коды `IDEMPOTENCY_*`; только с `VerdeectAuthGuard` (без принципала — 500).
+- `/idempotency`: `createIdempotencyTable` и тип `KitIdempotencyTable` — таблица `idempotency_key` под RLS `IS NOT DISTINCT FROM`.
+- `/idempotency`: `idempotencyPurgeSql` — текст функции очистки `SECURITY DEFINER` для миграции сервиса.
+- `/observability`: метрика `verdeect_cleanup_runs_total{table, result}` в `kitMetrics` и правило алерта `VerdeectCleanupFailing` (порог `verdeect_kit_threshold:cleanup_runs`).
+- `/http`: OpenAPI — `Idempotency-Key`, `Idempotent-Replayed` и ошибки 409/422/400 по метаданным `@Idempotent`.
+- `/testing`: `createScratchDatabase` и тип `KitScratchDatabase` — пустая мигрированная БД из шаблона.
+- `/testing`: `workerScope` и тип `KitWorkerScope` — слаг компании воркера `tenant`.
+- `/testing`: `countQueries` и тип `KitCountablePool` — запросы пула за время функции.
+- `/testing`: `assertStrictTenantIsolation` и тип `KitTenantIsolationOptions` — строгий RLS схемы сервиса и функция очистки.
+- `/testing`: `assertAppRoleIsNotOwner` и тип `KitQueryable` — роль приложения не владелец, без `CREATE`.
+- `/testing`: ключи `inject` `kitDatabaseUrl`, `kitDatabaseOwnerUrl`, `kitDatabaseAdminUrl`, `kitDatabaseService`, `kitDatabaseTemplate`.
+- CLI `verdeect-kit db`: `prepare --service <svc>`, `migrate --folder <путь> --schema <svc>`, `move-journal --from <схема> --to <svc>`; коды ошибок `USAGE`, `INVALID_ENVIRONMENT`, `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED`.
 
 ### Changed
+
+- `/testing`: `startTestStack({postgres: true})` готовит БД — `prepareDatabase`, шаблон `<svc>_template`, миграции опции `migrations` (без `postgres` — `TypeError`).
+- `/http`: `KitExceptionFilter` больше не считает срок пула — `pool: 'unknown'` удалён; метрику и событие пишет пул `/database` с меткой `main`/`read`, фильтр отвечает 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1`.
 
 - `KitConfigModule.forRoot({schema})` разбирает окружение при сборке контекста, а не при импорте `AppModule`: неверное окружение отклоняет сборку контекста, сам `forRoot` не отклоняется. Умолчания в `process.env` не дописываются, `ConfigService` читает только разобранные значения. При запуске через `bootstrapService` окружение не разбирается повторно.
 

@@ -1,4 +1,4 @@
-// AC-2.8 (U, UC-13): реестр содержит метрики процесса Node и метрики пакета verdeect_* с меткой service; второй
+// AC-2.8, AC-9.5 (U, UC-13): реестр содержит метрики процесса Node и метрики пакета verdeect_* с меткой service; второй
 // экземпляр приложения в том же процессе — свой реестр (prd.md §3.2). §3.2: alertRulesTemplate указывает на файл.
 // Перенос: O orch-metrics.spec.ts («реестр содержит все метрики», «метки без sub, tenant»).
 import { existsSync } from 'node:fs';
@@ -12,9 +12,22 @@ const KIT_METRICS = [
     'verdeect_events_consumed_total',
     'verdeect_db_pool_wait_timeouts_total',
     'verdeect_rate_limit_unavailable_total',
+    'verdeect_cleanup_runs_total',
 ];
 
 describe('UC-13: метрики пакета', () => {
+    it('AC-9.5: kitMetrics — verdeect_cleanup_runs_total{table,result} с меткой service', async () => {
+        const metrics = kitMetrics({ service: 'kit-test' });
+        metrics.cleanupRuns.inc({ table: 'idempotency_key', result: 'ok' });
+
+        const text = await metrics.registry.metrics();
+
+        expect(text).toContain('# TYPE verdeect_cleanup_runs_total counter');
+        expect(text).toContain(
+            'verdeect_cleanup_runs_total{table="idempotency_key",result="ok",service="kit-test"} 1',
+        );
+    });
+
     it('AC-2.8: реестр содержит метрики процесса Node и verdeect_* с меткой service', async () => {
         const metrics = kitMetrics({ service: 'kit-test' });
         metrics.outboxPending.set(3);

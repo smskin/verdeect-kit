@@ -1,4 +1,4 @@
-// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1–E3, bin E3; §3.2 — files: alerts).
+// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1–E4, bin E3; §3.2 — files: alerts).
 // Образец — verdeect-platform-client test/unit/package-manifest.spec.ts.
 import { readFileSync } from 'node:fs';
 import semver from 'semver';
@@ -49,11 +49,33 @@ const OPTIONAL_PEERS: Record<string, string> = {
     '@nestjs/testing': '^12.1.0',
 };
 
-describe('AC-1.1: точки входа пакета (E1–E3)', () => {
-    it('AC-1.1: exports — ровно ./config, ./http, ./observability, ./testing, ./package.json', () => {
+describe('AC-1.1: точки входа пакета (E1–E4)', () => {
+    it('AC-1.1: exports — ровно ./config, ./database, ./http, ./idempotency, ./observability, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
-            ['./config', './http', './observability', './package.json', './testing'].sort(),
+            [
+                './config',
+                './database',
+                './http',
+                './idempotency',
+                './observability',
+                './package.json',
+                './testing',
+            ].sort(),
         );
+    });
+
+    it('AC-1.1: ./idempotency — {types, default} на dist/idempotency/index.*', () => {
+        expect(manifest.exports['./idempotency']).toEqual({
+            types: './dist/idempotency/index.d.ts',
+            default: './dist/idempotency/index.js',
+        });
+    });
+
+    it('AC-1.1: ./database — {types, default} на dist/database/index.*', () => {
+        expect(manifest.exports['./database']).toEqual({
+            types: './dist/database/index.d.ts',
+            default: './dist/database/index.js',
+        });
     });
 
     it('AC-1.1: ./http — {types, default} на dist/http/index.*', () => {

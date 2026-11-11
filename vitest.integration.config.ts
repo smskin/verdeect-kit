@@ -8,7 +8,14 @@ const INCLUDE = ['test/integration/**/*.spec.ts'];
 
 // isolated: файлы, которые пишут process.env / vi.stubEnv, используют vi.mock, патчат прототипы
 // или инициализируют процесс-глобальное состояние; каждый — с причиной. Остальные — shared (skill-context «Fast Test Suites» (3)).
-const ISOLATED: string[] = [];
+const ISOLATED: string[] = [
+    // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/database/ac-4-5-pool-timeout.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/idempotency/ac-4-14-idempotency.spec.ts',
+    // vi.stubEnv и process.exit — стенд bootstrapService.
+    'test/integration/idempotency/ac-4-14-missing-purge-function.spec.ts',
+];
 
 export default defineConfig({
     plugins: [swc.vite({ module: { type: 'es6' } })],
