@@ -20,6 +20,7 @@ const THRESHOLDS = [
     'verdeect_kit_threshold:events_consumed',
     'verdeect_kit_threshold:db_pool_wait_timeouts',
     'verdeect_kit_threshold:rate_limit_unavailable',
+    'verdeect_kit_threshold:cleanup_runs',
 ];
 
 interface AlertRule {
@@ -79,7 +80,7 @@ describe('UC-13: шаблон алертов пакета', () => {
             .map((metric) => metric.name)
             .filter((name) => name.startsWith('verdeect_'));
 
-        expect(names).toHaveLength(5);
+        expect(names).toHaveLength(6);
         for (const name of names) {
             expect(
                 rules.some((rule) => new RegExp(`\\b${name}\\b`).test(rule.expr)),

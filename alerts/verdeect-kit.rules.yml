@@ -11,7 +11,7 @@
 #       service: platform
 #
 # Имена порогов: verdeect_kit_threshold:outbox_pending, :outbox_lag_seconds, :events_consumed (result="dlq"),
-# :db_pool_wait_timeouts, :rate_limit_unavailable. Правая часть каждого правила агрегирована max by (service),
+# :db_pool_wait_timeouts, :rate_limit_unavailable, :cleanup_runs. Правая часть каждого правила агрегирована max by (service),
 # чтобы сравнение on (service) group_left () не давало many-to-many.
 groups:
   - name: verdeect-kit
@@ -111,3 +111,22 @@ groups:
           description: >-
             За 5 минут сервис {{ $labels.service }} пропускал запросы без проверки лимита: Redis недоступен
             (verdeect_rate_limit_unavailable_total). Проверьте доступность Redis.
+
+      - alert: VerdeectCleanupFailing
+        # Порог по умолчанию — 0: любой неудачный или неполный проход очистки за 2 часа.
+        expr: |
+          sum by (service, table, result) (increase(verdeect_cleanup_runs_total{result=~"error|partial"}[2h]))
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:cleanup_runs)
+              or on (service) (max by (service) (verdeect_cleanup_runs_total) * 0)
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Очистка {{ $labels.table }} сервиса {{ $labels.service }}: {{ $labels.result }}'
+          description: >-
+            За 2 часа проход очистки таблицы {{ $labels.table }} сервиса {{ $labels.service }} завершился с итогом
+            {{ $labels.result }} (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса
+            («очистка … : ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка
+            не успевает за потоком записей.

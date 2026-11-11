@@ -1,6 +1,7 @@
 // kitMetrics и alertRulesTemplate (prd.md §3.2, AC-2.8, AC-2.11). Эталон — O metrics-server.ts (реестр на экземпляр) и
 // O orch-metrics.ts (метрики на реестре экземпляра). По PRD v1.12: @prometheus-io/client, как у O; метка service по
 // умолчанию, метрики процесса Node, имена verdeect_*. Глобального реестра нет: два приложения в процессе не смешиваются.
+// AC-9.5 (E4): метрика очистки verdeect_cleanup_runs_total.
 import { fileURLToPath } from 'node:url';
 import { collectDefaultMetrics, Counter, Gauge, Registry } from '@prometheus-io/client';
 import { assertServiceName } from '../internal/service-name.js';
@@ -19,6 +20,13 @@ export interface KitMetrics {
     readonly dbPoolWaitTimeouts: Counter<'pool'>;
     /** `verdeect_rate_limit_unavailable_total` — лимитер без Redis (fail-open). */
     readonly rateLimitUnavailable: Counter;
+    /**
+     * `verdeect_cleanup_runs_total{table, result}` — проходы фоновой очистки. `table` — имя таблицы без схемы, только
+     * таблицы пакета (`idempotency_key`; E5 — `outbox`, `inbox`); `result`: `ok` — проход завершён, `partial` — упёрся
+     * в `maxBatches`, записи старше срока остались, `error` — проход упал. Проход без блокировки метрику не меняет;
+     * число удалённых строк — в `info`-логе прохода.
+     */
+    readonly cleanupRuns: Counter<'table' | 'result'>;
 }
 
 /** Создаёт реестр экземпляра с меткой `service`, метриками процесса Node и метриками пакета (§3.2, AC-2.8). */
@@ -56,6 +64,12 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
         rateLimitUnavailable: new Counter({
             name: 'verdeect_rate_limit_unavailable_total',
             help: 'Проверки лимита без Redis (запрос пропущен)',
+            registers,
+        }),
+        cleanupRuns: new Counter({
+            name: 'verdeect_cleanup_runs_total',
+            help: 'Проходы фоновой очистки по таблице и итогу (ok, partial, error)',
+            labelNames: ['table', 'result'] as const,
             registers,
         }),
     };

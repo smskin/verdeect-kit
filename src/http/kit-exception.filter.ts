@@ -2,12 +2,12 @@
 // Эталон — O app-exception-filter.ts: порядок веток, libraryBody, send() с Content-Type: application/json; charset=utf-8,
 // reportUnexpected. Из B: ответ после отправленных заголовков — только warn. По PRD: коды HttpException без тела — таблица
 // HTTP_CODES (прочие статусы → 500 INTERNAL_ERROR), DomainError с незарегистрированным кодом → 500, срок пула —
-// isPoolTimeout по форме, метрика kitMetrics и captureThrottled; codeOf с путями O, maskSecretPath и instance-shutdown не
+// isPoolTimeout по форме, 503 без метрики и события: метрику и событие срока пула пишет пул /database (AC-4.5, KT-19
+// п. 3); codeOf с путями O, maskSecretPath и instance-shutdown не
 // переносятся, путь в лог не пишется (он уже есть в строке доступа).
 import {
     Catch,
     HttpException,
-    Inject,
     Injectable,
     Logger,
     type ArgumentsHost,
@@ -15,10 +15,8 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { isPoolTimeout } from '../internal/pg-errors.js';
-import { KIT_METRICS } from '../internal/tokens.js';
-import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
-import { captureError, captureThrottled } from '../observability/sentry.js';
+import { captureError } from '../observability/sentry.js';
 import { DomainError, errorMessage, errorStatus } from './errors.js';
 
 /** Код ответа HttpException без своего тела (Nest FastifyAdapter.mapException: FastifyError → HttpException). */
@@ -68,8 +66,8 @@ function libraryBody(response: unknown): WireBody | null {
 
 /**
  * Фильтр ошибок HTTP сервиса (§3.5). `DomainError` — статус словаря, `warn`, без GlitchTip; тело `{error}` guard'ов —
- * без изменений; срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1`, метрика,
- * `captureThrottled`; `HttpException` без тела 400/401/403/404/413/415/429 — код по статусу, `warn`; прочее —
+ * без изменений; срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1` (метрику и событие
+ * пишет пул /database, AC-4.5); `HttpException` без тела 400/401/403/404/413/415/429 — код по статусу, `warn`; прочее —
  * 500 `INTERNAL_ERROR`, `error`, GlitchTip ровно раз. Текст исходной ошибки, стек и SQL в ответ не попадают.
  * `createHttpApp` регистрирует фильтр сам; BFF собирает свой фильтр на `DomainError` и словаре (различие по роли).
  */
@@ -77,9 +75,6 @@ function libraryBody(response: unknown): WireBody | null {
 @Injectable()
 export class KitExceptionFilter implements ExceptionFilter {
     private readonly logger = new Logger(KitExceptionFilter.name);
-
-    /** @param metrics метрики экземпляра: счётчик сроков пула БД. */
-    constructor(@Inject(KIT_METRICS) private readonly metrics: KitMetrics) {}
 
     /** Отвечает на исключение запроса по правилам §3.5. */
     catch(exception: unknown, host: ArgumentsHost): void {
@@ -98,9 +93,7 @@ export class KitExceptionFilter implements ExceptionFilter {
 
         // Срок пула — первой веткой: он может быть в cause DomainError (эталон O).
         if (isPoolTimeout(exception)) {
-            // Ограничение: метка pool 'unknown' до E4 — там Db пометит ошибку именем пула (README, «Ошибки»).
-            this.metrics.dbPoolWaitTimeouts.inc({ pool: 'unknown' });
-            captureThrottled('db-pool-timeout', exception);
+            // Метрику и событие ставит пул /database (KT-19 п. 3); срок своего пула сервиса — 503 без метрики.
             this.warn('SERVICE_UNAVAILABLE', 503, request);
             void reply.header('Retry-After', POOL_RETRY_AFTER);
             this.send(reply, 503, bodyOf('SERVICE_UNAVAILABLE'));

@@ -1,6 +1,12 @@
-// AC-1.2 (U): загрузка опционального peer через loadPeer (prd.md §3, NFR-3); src/internal/peer.ts.
+// AC-1.2 (U): загрузка опционального peer через loadPeer и проверка requirePeer (prd.md §3, NFR-3; П15);
+// src/internal/peer.ts.
 import { describe, expect, it } from 'vitest';
-import { loadPeer, loadPeerWith } from '../../../src/internal/peer.js';
+import {
+    loadPeer,
+    loadPeerWith,
+    requirePeer,
+    requirePeerWith,
+} from '../../../src/internal/peer.js';
 
 function moduleNotFound(message: string): Error {
     return Object.assign(new Error(message), { code: 'ERR_MODULE_NOT_FOUND' });
@@ -42,5 +48,31 @@ describe('AC-1.2: loadPeer', () => {
         const yaml = await loadPeer<{ parse: unknown }>('yaml', 'testing');
 
         expect(typeof yaml.parse).toBe('function');
+    });
+});
+
+describe('AC-1.2: requirePeer', () => {
+    it('AC-1.2: requirePeer — отсутствующий пакет → текст AC-1.2; установленный — без ошибки', () => {
+        const original = Object.assign(new Error("Cannot find module 'pg'\nRequire stack:\n- /x"), {
+            code: 'MODULE_NOT_FOUND',
+        });
+        const resolver = (): string => {
+            throw original;
+        };
+
+        let caught: unknown;
+        try {
+            requirePeerWith(resolver, 'pg', 'database');
+        } catch (error) {
+            caught = error;
+        }
+        expect((caught as Error).message).toBe(
+            '@verdeect/kit/database требует pg — добавьте в зависимости сервиса',
+        );
+        expect((caught as Error).cause).toBe(original);
+        expect(() => requirePeer('pg', 'database')).not.toThrow();
+        expect(() => requirePeer('нет-такого-пакета', 'database')).toThrow(
+            '@verdeect/kit/database требует нет-такого-пакета — добавьте в зависимости сервиса',
+        );
     });
 });

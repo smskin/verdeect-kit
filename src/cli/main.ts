@@ -10,6 +10,7 @@ type CommandHandler = (args: readonly string[]) => Promise<number>;
 
 const COMMANDS: Readonly<Record<string, () => Promise<CommandHandler>>> = {
     openapi: async () => (await import('./commands/openapi.js')).openapiCommand,
+    db: async () => (await import('./commands/db.js')).dbCommand,
 };
 
 /** Точка входа: `verdeect-kit <команда> [опции]`. */

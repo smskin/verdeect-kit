@@ -29,7 +29,13 @@ const COMMON_PATTERNS = [
         ],
         allowTypeImports: true,
         message:
-            'Опциональный peer — только через loadPeer из src/internal/peer.ts (AC-1.2); import type разрешён',
+            'Опциональный peer — только через loadPeer из src/internal/peer.ts, либо requirePeer + ленивый import() в src/database/pg.ts (AC-1.2); import type разрешён',
+    },
+    {
+        group: ['drizzle-orm/node-postgres'],
+        allowTypeImports: true,
+        message:
+            'драйвер Drizzle тянет pg статически — только через loadDrizzle() из src/database/pg.ts (requirePeer + ленивый import(), AC-1.2)',
     },
     {
         group: ['@verdeect/kit', '@verdeect/kit/*'],
@@ -224,6 +230,42 @@ export default [
                 ],
                 message:
                     'http импортирует только observability, config и internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
+        files: ['src/database/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '../testing/*',
+                    '../http/*',
+                    '../idempotency/*',
+                    '../messaging/*',
+                    '../redis/*',
+                    '../crypto/*',
+                    '../cli/*',
+                    'shell-quote',
+                ],
+                message:
+                    'database импортирует только observability, config и internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
+        files: ['src/idempotency/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '../testing/*',
+                    '../messaging/*',
+                    '../redis/*',
+                    '../crypto/*',
+                    '../cli/*',
+                    'shell-quote',
+                ],
+                message:
+                    'idempotency импортирует database, http, observability, config, internal (ARCHITECTURE.md).',
             },
         ]),
     },

@@ -1,4 +1,5 @@
-// AC-1.1, AC-1.6: типы пакета (.d.ts архива) проверяются tsc потребителя; /observability — §3.2; /http — §3.5.
+// AC-1.1, AC-1.6: типы пакета (.d.ts архива) проверяются tsc потребителя; /observability — §3.2; /http — §3.5;
+// /database — §3.3, /idempotency — §3.3а, /testing — §3.8 (E4).
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { defineEnv, envBase, parseEnv } from '@verdeect/kit/config';
 import { DomainError, type KitBootstrapOptions, type Page } from '@verdeect/kit/http';
@@ -8,6 +9,9 @@ import {
     KitLifecycle,
     type KitRedaction,
 } from '@verdeect/kit/observability';
+import type { DbContext } from '@verdeect/kit/database';
+import type { KitIdempotentOptions } from '@verdeect/kit/idempotency';
+import type { KitWorkerScope } from '@verdeect/kit/testing';
 import { pino } from 'pino';
 import { z } from 'zod';
 
@@ -51,3 +55,8 @@ export const bootstrapOptions: KitBootstrapOptions<typeof schema> = {
 };
 export const page: Page<{ id: string }> = { items: [{ id: 'a' }], nextCursor: null };
 export const status: number = new DomainError('FORBIDDEN').status;
+
+// /database, /idempotency, /testing (E4): типы контекста, опций @Idempotent и области воркера.
+export const dbContext: DbContext = { tenant: null, traceId: 't', actor: { channel: 'system' } };
+export const idempotentOptions: KitIdempotentOptions = { required: true, tenantFromBody: 'tenant' };
+export const scope: KitWorkerScope = { tenant: 'w0-00000000' };

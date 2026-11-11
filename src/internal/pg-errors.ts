@@ -1,6 +1,7 @@
 // isUniqueViolation, isConnectionError, isPoolTimeout — по форме объекта, обход cause, без pg и drizzle-orm (prd.md §3.3;
 // rules/base.md). Эталоны: isUniqueViolation — I pg-errors.ts; isPoolTimeout — O pool-client.ts (сообщения);
 // isConnectionError — по PRD (у I/O — instanceof DrizzleQueryError, не переносится; формы — KT-15 п. 9).
+// tagPoolTimeout/poolTimeoutOf — метка пула /database: срок учтён (решение E3, KT-19 п. 3, AC-4.5).
 
 /** Глубина обхода `cause` — как у `sanitizeError` (§3.2). */
 const MAX_CAUSE_DEPTH = 10;
@@ -26,10 +27,11 @@ const NETWORK_CODES: ReadonlySet<string> = new Set([
     'ENOTFOUND',
 ]);
 
-/** Начала сообщений pg при обрыве соединения. */
+/** Начала сообщений pg при обрыве соединения (последнее — запрос на клиенте после обрыва, AC-4.10). */
 const CONNECTION_MESSAGE_PREFIXES: readonly string[] = [
     'Connection terminated',
     'terminating connection',
+    'Client has encountered a connection error',
 ];
 
 interface ErrorShape {
@@ -87,7 +89,8 @@ function isConnectionNode(node: ErrorShape): boolean {
 
 /**
  * Ошибка соединения с PostgreSQL: SQLSTATE `08xxx`, `57P01`–`57P03`, системные коды обрыва сети, сообщения pg
- * «Connection terminated…» и «terminating connection…» — в ошибке или её `cause`.
+ * «Connection terminated…», «terminating connection…» и «Client has encountered a connection error…» — в ошибке или
+ * её `cause`.
  */
 export function isConnectionError(error: unknown): boolean {
     return causeChain(error).some(isConnectionNode);
@@ -95,7 +98,41 @@ export function isConnectionError(error: unknown): boolean {
 
 /** Срок ожидания клиента пула истёк (тексты pg-pool) — в ошибке или её `cause`, в том числе внутри `DomainError`. */
 export function isPoolTimeout(error: unknown): boolean {
-    return causeChain(error).some(
-        (node) => typeof node.message === 'string' && POOL_TIMEOUT_MESSAGES.has(node.message),
-    );
+    return causeChain(error).some(isPoolTimeoutNode);
+}
+
+/** Имя пула `/database`: основной или пул чтения (метка `pool` метрики срока, AC-4.5). */
+export type KitPoolName = 'main' | 'read';
+
+/** Неперечисляемая метка «срок учтён пулом» на узле ошибки срока. */
+const POOL_TAG = Symbol.for('verdeect-kit.pool');
+
+function isPoolTimeoutNode(node: ErrorShape): boolean {
+    return typeof node.message === 'string' && POOL_TIMEOUT_MESSAGES.has(node.message);
+}
+
+/**
+ * Помечает узел срока пула в цепочке `cause` именем пула. `true` — метка поставлена сейчас (вызывающий
+ * учитывает срок один раз); `false` — узла срока нет или он уже помечен.
+ */
+export function tagPoolTimeout(error: unknown, pool: KitPoolName): boolean {
+    const node = causeChain(error).find(isPoolTimeoutNode);
+    if (node === undefined || Object.prototype.hasOwnProperty.call(node, POOL_TAG)) {
+        return false;
+    }
+    Object.defineProperty(node, POOL_TAG, { value: pool, enumerable: false });
+
+    return true;
+}
+
+/** Имя пула из метки `tagPoolTimeout` первого помеченного узла цепочки или `null`. */
+export function poolTimeoutOf(error: unknown): KitPoolName | null {
+    for (const node of causeChain(error)) {
+        const tag = (node as Record<symbol, unknown>)[POOL_TAG];
+        if (tag === 'main' || tag === 'read') {
+            return tag;
+        }
+    }
+
+    return null;
 }

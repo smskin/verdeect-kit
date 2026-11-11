@@ -29,9 +29,17 @@
       "types": "./dist/config/index.d.ts",
       "default": "./dist/config/index.js"
     },
+    "./database": {
+      "types": "./dist/database/index.d.ts",
+      "default": "./dist/database/index.js"
+    },
     "./http": {
       "types": "./dist/http/index.d.ts",
       "default": "./dist/http/index.js"
+    },
+    "./idempotency": {
+      "types": "./dist/idempotency/index.d.ts",
+      "default": "./dist/idempotency/index.js"
     },
     "./observability": {
       "types": "./dist/observability/index.d.ts",
@@ -59,7 +67,8 @@
     "test:integration": "vitest run -c vitest.integration.config.ts",
     "test:timing": "vitest run -c vitest.timing.config.ts",
     "test:package": "vitest run -c vitest.package.config.ts",
-    "pack:check": "pnpm build && pnpm test:package"
+    "pack:check": "pnpm build && pnpm test:package",
+    "db:fixtures": "drizzle-kit generate --config test/fixtures/database/drizzle.config.ts"
   },
   "dependencies": {
     "ajv": "8.20.0",
@@ -130,6 +139,7 @@
     "@types/semver": "7.8.0",
     "@types/shell-quote": "1.7.5",
     "@verdeect/auth": "1.0.1",
+    "drizzle-kit": "0.31.11",
     "drizzle-orm": "0.45.4",
     "eslint": "10.12.0",
     "eslint-config-prettier": "10.1.8",

@@ -1,0 +1,174 @@
+{
+  "id": "8dd45457-7b07-48aa-99dc-eb757650f30e",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "consumer.company": {
+      "name": "company",
+      "schema": "consumer",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "tenant": {
+          "name": "tenant",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "\"consumer\".\"company\".\"tenant\" = current_setting('app.tenant', true)",
+          "withCheck": "\"consumer\".\"company\".\"tenant\" = current_setting('app.tenant', true)"
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "consumer.idempotency_key": {
+      "name": "idempotency_key",
+      "schema": "consumer",
+      "columns": {
+        "tenant": {
+          "name": "tenant",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'in_progress'"
+        },
+        "response_status": {
+          "name": "response_status",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "response_body": {
+          "name": "response_body",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "response_location": {
+          "name": "response_location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idempotency_key_created_idx": {
+          "name": "idempotency_key_created_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "idempotency_key_scope_key": {
+          "name": "idempotency_key_scope_key",
+          "nullsNotDistinct": true,
+          "columns": [
+            "tenant",
+            "subject",
+            "key"
+          ]
+        }
+      },
+      "policies": {
+        "idempotency_key_scope": {
+          "name": "idempotency_key_scope",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "\"consumer\".\"idempotency_key\".\"tenant\" IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')",
+          "withCheck": "\"consumer\".\"idempotency_key\".\"tenant\" IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')"
+        }
+      },
+      "checkConstraints": {
+        "idempotency_key_state_check": {
+          "name": "idempotency_key_state_check",
+          "value": "\"consumer\".\"idempotency_key\".\"state\" IN ('in_progress', 'done')"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "consumer": "consumer"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

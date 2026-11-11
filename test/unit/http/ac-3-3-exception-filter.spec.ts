@@ -1,12 +1,11 @@
 // AC-3.3, AC-3.2, AC-3.1, AC-3.4 (UC-4): KitExceptionFilter — единый ответ {error}, GlitchTip только для неожиданных
 // (prd.md §3.5; KT-15 п. 7–8). Перенос O app-exception-filter.spec.ts и I app-exception-filter.spec.ts (обобщены: без
-// codeOf и RateLimitedError; метрики — kitMetrics, событие — captureError/captureThrottled пакета).
+// codeOf и RateLimitedError; событие — captureError пакета; срок пула учитывает пул /database — AC-4.5).
 import { HttpException, Logger, NotFoundException, type ArgumentsHost } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DomainError } from '../../../src/http/errors.js';
 import { KitExceptionFilter } from '../../../src/http/kit-exception.filter.js';
-import type { KitMetrics } from '../../../src/observability/metrics.js';
 
 vi.mock('@sentry/nestjs', () => ({ captureException: vi.fn() }));
 
@@ -33,14 +32,11 @@ function host(options: { headersSent?: boolean } = {}) {
 }
 
 function setup() {
-    const inc = vi.fn();
-    const filter = new KitExceptionFilter({
-        dbPoolWaitTimeouts: { inc },
-    } as unknown as KitMetrics);
+    const filter = new KitExceptionFilter();
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 
-    return { filter, inc, warn, error };
+    return { filter, warn, error };
 }
 
 function respond(filter: KitExceptionFilter, exception: unknown) {
@@ -65,8 +61,8 @@ beforeEach(() => {
 });
 
 describe('UC-4: KitExceptionFilter', () => {
-    it('AC-3.3: срок пула (простой, во вложенном cause, в cause DomainError) → 503 SERVICE_UNAVAILABLE + Retry-After: 1, метрика на каждый, одно событие за окно', () => {
-        const { filter, inc } = setup();
+    it('AC-3.3: срок пула → 503 SERVICE_UNAVAILABLE + Retry-After: 1; метрику пишет пул /database (AC-4.5)', () => {
+        const { filter } = setup();
         const errors = [
             new Error(POOL_TIMEOUT),
             new Error('Failed query', { cause: new Error(POOL_TIMEOUT) }),
@@ -79,9 +75,8 @@ describe('UC-4: KitExceptionFilter', () => {
             expect(body.error.code).toBe('SERVICE_UNAVAILABLE');
         }
 
-        expect(inc).toHaveBeenCalledTimes(3);
-        expect(inc).toHaveBeenCalledWith({ pool: 'unknown' });
-        expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+        // Метрику, метку и событие ставит пул /database при ошибке получения соединения (KT-19 п. 3).
+        expect(Sentry.captureException).not.toHaveBeenCalled();
     });
 
     it('AC-3.3: DomainError 403 → тело словаря, warn, без события', () => {

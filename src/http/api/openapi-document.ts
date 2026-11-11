@@ -4,7 +4,8 @@
 // ErrorResponse, схемы serviceToken/userToken. По PRD: обход метаданных модулей (imports, DynamicModule, промисы forRoot,
 // forwardRef; controllers) вместо ModulesContainer; только маршруты с @Api; ошибки — errors маршрута (статусы из реестра
 // defineErrors) + стандартные 400, 422, 429 и 401/403 у защищённых; защита — @UseGuards(VerdeectAuthGuard) и Require*
-// @verdeect/auth; X-On-Behalf-Of и Idempotency-Key не переносятся (домен I / E4); extra — глубокое слияние.
+// @verdeect/auth; X-On-Behalf-Of не переносится (домен I); Idempotency-Key — по метаданным @Idempotent (internal/metadata.ts,
+// E4); extra — глубокое слияние.
 import type { DynamicModule, Type } from '@nestjs/common';
 import { RequestMethod } from '@nestjs/common';
 import {
@@ -17,6 +18,7 @@ import {
 } from '@nestjs/common/constants.js';
 import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum.js';
 import { VerdeectAuthGuard } from '@verdeect/auth/nest';
+import { IDEMPOTENT_METADATA, type KitIdempotentOptions } from '../../internal/metadata.js';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { errorStatus } from '../errors.js';
@@ -249,6 +251,15 @@ function responseSchemaOf(api: KitApiOptions): JsonObject | null {
         : enveloped(toSchema(api.response, 'output'), api.envelope);
 }
 
+/** Опции `@Idempotent` обработчика (декоратор методный) или `null`. */
+function idempotentOf(route: ApiRoute): KitIdempotentOptions | null {
+    const options: unknown = Reflect.getMetadata(IDEMPOTENT_METADATA, route.handler);
+
+    return typeof options === 'object' && options !== null
+        ? (options as KitIdempotentOptions)
+        : null;
+}
+
 /** Ошибки операции: статус → коды. */
 function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, string[]> {
     const errors = new Map<number, string[]>([
@@ -275,6 +286,16 @@ function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, 
             );
         }
         errors.set(status, [...(errors.get(status) ?? []), code]);
+    }
+    const idempotent = idempotentOf(route);
+    if (idempotent !== null) {
+        const add = (status: number, code: string): void =>
+            void errors.set(status, [...(errors.get(status) ?? []), code]);
+        add(409, 'IDEMPOTENCY_IN_PROGRESS');
+        add(422, 'IDEMPOTENCY_KEY_REUSED');
+        if (idempotent.required === true) {
+            add(400, 'IDEMPOTENCY_KEY_REQUIRED');
+        }
     }
 
     return errors;
@@ -315,8 +336,21 @@ function parametersOf(
         };
     });
 
+    const idempotent = idempotentOf(route);
+    const idempotencyKey =
+        idempotent === null
+            ? []
+            : [
+                  {
+                      name: 'Idempotency-Key',
+                      in: 'header',
+                      required: idempotent.required === true,
+                      schema: { type: 'string', pattern: '^[\\x21-\\x7E]{1,200}$' },
+                  },
+              ];
+
     return {
-        parameters: [...pathParameters, ...parameters],
+        parameters: [...pathParameters, ...parameters, ...idempotencyKey],
         ...(body === undefined ? {} : { body }),
     };
 }
@@ -331,6 +365,18 @@ function buildOperation(route: ApiRoute, path: string): BuiltOperation {
                 ? { description: 'успех, без тела' }
                 : { description: 'успех', content: { 'application/json': { schema } } },
     };
+    if (idempotentOf(route) !== null) {
+        const success = responses[String(route.status)];
+        responses[String(route.status)] = {
+            ...success,
+            headers: {
+                'Idempotent-Replayed': {
+                    schema: { type: 'string', enum: ['true'] },
+                    description: 'ответ сохранён и повторён',
+                },
+            },
+        };
+    }
     for (const [status, codes] of [...errorsOf(route, security).entries()].sort(
         ([a], [b]) => a - b,
     )) {
