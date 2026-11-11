@@ -57,7 +57,7 @@
 
 Прочие файлы уровня I передают окружение приложения через `setPreparsedEnv` (`test/support/database.ts`, `createDbApp`) — без `vi.stubEnv`, проект `shared`.
 
-`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, rabbitmq: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`, `outbox` с `tenantNullable: true`, `inbox`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
+`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, rabbitmq: true, redis: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`, `outbox` с `tenantNullable: true`, `inbox`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
 
 Контейнеры стартуют один раз на прогон в `test/integration/global-setup.ts`, файлы идут последовательно (`fileParallelism: false`).
 
@@ -68,3 +68,11 @@
 - Очереди `kit`, `kit.retry`, `kit.dlq` durable и живут весь прогон: файл со стендом подписчика вызывает `resetQueues()` (`test/support/messaging.ts`) до создания стенда. `RABBITMQ_RETRY_SECONDS = 1`.
 - `KIT_OUTBOX_COVERAGE=1` задаёт `make test-integration` (и CI): `startTestStack({outboxEvents})` сервиса падает в teardown со списком событий без успешного `expectOutbox`. У пакета событий нет — `outboxEvents` в `globalSetup` пакета не передаётся; покрытие проверяют U-тест `outbox-coverage.spec.ts` и проект-потребитель (`test/consumer/minimal/outbox-coverage`).
 - Без реальных пауз: сигналы (`countQueries(…, {onQuery})`, барьеры `TestConsumer`, опрос брокера и management API), подменённые часы relay (AC-5.16), исчерпание повторов — заголовком `x-death`. Реальное время — только длительности PRD: недоступность брокера 10 с (AC-5.4), TTL 1 с (AC-5.7), срок пачки 5 с.
+
+## Redis (E8)
+
+- Redis поднимается в `globalSetup` уровней I и T (`redis: true`) с aclfile того же `buildRedisAclFile`, что CLI `redis acl`: `user default off`, пользователь сервиса `kit` (`~kit:* &kit:* +@all -@dangerous`) — `kitRedisUrl`, администратор теста — `kitRedisAdminUrl` (`test/support/redis.ts`: `adminRedis()`, `CLIENT LIST`, `ACL LOG`, очистка).
+- U — `test/unit/redis`: подделка ioredis (`multi()` с записью команд), часы лимитера `vi.useFakeTimers()`; `test/unit/cli/redis-acl-command.spec.ts` — команда в процессе.
+- I — `test/integration/redis`: все приложения под пользователем `kit` из aclfile; файлы чистят свои ключи `kit:*` (`deleteByPrefix`), контейнер не перезапускается. `ACL LOG` общий для сервера: проверяются записи пользователя `kit`.
+- T — `test/timing/redis`: недоступность — `tcpProxy.blackhole()`, срок — `commandTimeout` 500 мс (AC-8.2).
+- C — Redis потребителя в `test/consumer/minimal/src/observability.spec.ts`: `GET /limited` (429 + `Retry-After`) и fail-open без Redis.

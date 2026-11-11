@@ -1,6 +1,6 @@
 // Корневой модуль сервиса-потребителя (AC-9.1, AC-3.8): KitConfigModule с той же схемой, что в main.ts, маршруты с @Api,
 // KitDatabaseModule (пробы database и database-read), KitIdempotencyModule (очистка, AC-9.5), KitMessagingModule (outbox,
-// подписчик с inbox, E5), VerdeectAuthModule.
+// подписчик с inbox, E5), KitRedisModule (лимитер GET /limited, E8), VerdeectAuthModule.
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { VerdeectAuthModule } from '@verdeect/auth/nest';
@@ -8,10 +8,12 @@ import { KitConfigModule } from '@verdeect/kit/config';
 import { KitDatabaseModule } from '@verdeect/kit/database';
 import { KitIdempotencyModule } from '@verdeect/kit/idempotency';
 import { KitMessagingModule } from '@verdeect/kit/messaging';
+import { KitRedisModule } from '@verdeect/kit/redis';
 import { CompaniesController } from './companies.controller.js';
 import { CompanyEventsConsumer } from './company-events.consumer.js';
 import { serviceEnvSchema } from './env.js';
 import { ItemsController } from './items.controller.js';
+import { LimitedController } from './limited.controller.js';
 import { messagingOptions } from './messaging-options.js';
 import * as schema from './schema.js';
 
@@ -21,6 +23,7 @@ import * as schema from './schema.js';
         KitDatabaseModule.forRoot({ schema }),
         KitIdempotencyModule.forRoot({ table: schema.idempotency }),
         KitMessagingModule.forRoot(messagingOptions),
+        KitRedisModule.forRoot({ service: 'consumer' }),
         VerdeectAuthModule.forRootAsync({
             inject: [ConfigService],
             useFactory: (config: ConfigService) => ({
@@ -34,7 +37,7 @@ import * as schema from './schema.js';
             }),
         }),
     ],
-    controllers: [ItemsController, CompaniesController],
+    controllers: [ItemsController, CompaniesController, LimitedController],
     providers: [CompanyEventsConsumer],
 })
 export class AppModule {}

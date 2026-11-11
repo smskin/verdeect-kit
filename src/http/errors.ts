@@ -1,7 +1,7 @@
 // kitErrors, defineErrors, DomainError (prd.md §3.5, AC-3.2, AC-3.3). Эталон — O domain-error.ts + error-messages.ts (тело
 // {error: {code, message, details}}, name = new.target.name, общий текст «Ошибка запроса»). По PRD: запись словаря
 // {status, message}, реестр на процесс (как registerErrorSanitizer), статус берётся из словаря, коды §3.5; заголовков в
-// DomainError нет (Retry-After 429 — E8), третий аргумент — стандартный {cause}. Тексты — O error-messages.ts и guard
+// DomainError нет; Retry-After для RATE_LIMITED ставит KitExceptionFilter по details.retryAfterSec (E8, §3.7), третий аргумент — стандартный {cause}. Тексты — O error-messages.ts и guard
 // @verdeect/auth.
 
 /** Запись словаря ошибок: HTTP-статус и текст по-русски. */
@@ -111,7 +111,8 @@ interface ErrorBody {
 /**
  * Ожидаемая ошибка домена (§3.5): статус и текст — из словаря `defineErrors`, `warn` без GlitchTip. Незарегистрированный
  * код — ошибка разработчика: статус 500, фильтр отвечает `INTERNAL_ERROR` и отправляет событие. `options.cause` —
- * исходная ошибка (например, срок пула БД).
+ * исходная ошибка (например, срок пула БД). Заголовков нет; `Retry-After` для `RATE_LIMITED` ставит `KitExceptionFilter` по
+ * `details.retryAfterSec`.
  */
 export class DomainError extends Error {
     /** Код ошибки (SCREAMING_SNAKE). */

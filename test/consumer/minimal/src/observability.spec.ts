@@ -3,13 +3,15 @@
 // /health (пробы KitDatabaseModule), /metrics, очистка идемпотентности (AC-9.5), остановка по SIGTERM с выходом 0 (пулы —
 // шаг 4, очистка — шаг 3), отказ запуска при неверном окружении (prd.md §3.2, §3.5). E5: relay и подписчик процесса
 // публикуют и потребляют строку outbox другого процесса (AC-9.1), логи и метрики сообщений (AC-9.5), проба rabbitmq.
+// E8 (UC-11): проба redis, GET /limited — 429 RATE_LIMITED + Retry-After (AC-8.4), fail-open лимитера без Redis (AC-9.5).
 // Логи bootstrapService (entry http) — JSON в stdout; порты — из строки «сервис слушает». Сборка dist — globalSetup.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { newId } from '@verdeect/kit/database';
 import { waitForInbox, workerScope } from '@verdeect/kit/testing';
+import { Redis } from 'ioredis';
 import pg from 'pg';
-import { afterEach, describe, expect, inject, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DRAIN_MS = 1500;
@@ -50,6 +52,7 @@ function startService(overrides: Record<string, string> = {}): Service {
                 DATABASE_URL: databaseUrl ?? '',
                 RABBITMQ_URL: workerScope().rabbitmq.url,
                 RABBITMQ_RETRY_SECONDS: '1',
+                REDIS_URL: inject('kitRedisUrl') ?? '',
                 AUTH_ISSUER: 'https://id.verdeect.ru',
                 AUTH_JWKS_URI: 'http://127.0.0.1:9/jwks',
                 AUTH_RESOURCE: 'https://api.verdeect.ru',
@@ -128,13 +131,14 @@ async function insertOutboxRow(): Promise<string> {
     return id;
 }
 
-/** Опрос /health до rabbitmq up (сигнал, не пауза): проба сразу после старта может быть down. */
-async function healthWithRabbit(port: number): Promise<{ status: number; body: unknown }> {
+/** Опрос /health до rabbitmq и redis up (сигнал, не пауза): проба сразу после старта может быть down. */
+async function healthUp(port: number): Promise<{ status: number; body: unknown }> {
     const deadline = Date.now() + 10_000 * Number(process.env.TEST_TIMEOUT_SCALE ?? '1');
     for (;;) {
         const response = await fetch(`http://127.0.0.1:${port}/health`);
         const body = (await response.json()) as { checks?: Record<string, string> };
-        if (body.checks?.['rabbitmq'] === 'up' || Date.now() > deadline) {
+        const up = body.checks?.['rabbitmq'] === 'up' && body.checks['redis'] === 'up';
+        if (up || Date.now() > deadline) {
             return { status: response.status, body };
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -159,16 +163,16 @@ describe('UC-13: процесс сервиса-потребителя', () => {
         expect(await response.json()).toEqual({ status: 'ok' });
     });
 
-    it('AC-9.1: /health — database, database-read и rabbitmq up', async () => {
+    it('AC-9.1: /health — database, database-read, rabbitmq и redis up', async () => {
         const service = startService();
         const { metricsPort: port } = await service.ports;
 
-        const { status, body } = await healthWithRabbit(port);
+        const { status, body } = await healthUp(port);
 
         expect(status).toBe(200);
         expect(body).toEqual({
             status: 'ok',
-            checks: { database: 'up', 'database-read': 'up', rabbitmq: 'up' },
+            checks: { database: 'up', 'database-read': 'up', rabbitmq: 'up', redis: 'up' },
         });
     });
 
@@ -338,5 +342,65 @@ describe('UC-13: процесс сервиса-потребителя', () => {
         });
         expect(lines.some((line) => line.msg === 'сервис слушает')).toBe(false);
         expect(service.output()).not.toContain('MARK_BAD_PORT');
+    });
+});
+
+describe('UC-11: Redis потребителя', () => {
+    let admin: Redis;
+
+    beforeAll(() => {
+        admin = new Redis(inject('kitRedisAdminUrl') ?? '', { lazyConnect: true });
+    });
+
+    beforeEach(async () => {
+        const keys = await admin.keys('consumer:rl:*');
+        if (keys.length > 0) {
+            await admin.del(...keys);
+        }
+    });
+
+    afterAll(async () => {
+        await admin.quit();
+    });
+
+    it('AC-9.1: GET /limited — два 200, третий 429 RATE_LIMITED, Retry-After ≥ 1', async () => {
+        const service = startService();
+        const { port } = await service.ports;
+        const get = (): Promise<Response> => fetch(`http://127.0.0.1:${port}/limited`);
+
+        expect((await get()).status).toBe(200);
+        expect((await get()).status).toBe(200);
+        const limited = await get();
+
+        expect(limited.status).toBe(429);
+        expect(await limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
+        expect(Number(limited.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    });
+
+    it('AC-9.5: лимитер без Redis — 200 (fail-open), лог «лимитер: Redis недоступен, запрос пропущен» с service=consumer и replica=consumer-1, /metrics — verdeect_rate_limit_unavailable_total{service="consumer"} ≥ 1, /health — degraded', async () => {
+        // Порт без слушателя: соединение отклоняется сразу.
+        const service = startService({ REDIS_URL: 'redis://consumer:x@127.0.0.1:1' });
+        const { port, metricsPort } = await service.ports;
+
+        const response = await fetch(`http://127.0.0.1:${port}/limited`);
+
+        expect(response.status).toBe(200);
+        expect(await service.line('лимитер: Redis недоступен, запрос пропущен')).toMatchObject({
+            service: 'consumer',
+            replica: 'consumer-1',
+        });
+        const metrics = await (await fetch(`http://127.0.0.1:${metricsPort}/metrics`)).text();
+        const sample = metrics
+            .split('\n')
+            .find((line) =>
+                line.startsWith('verdeect_rate_limit_unavailable_total{service="consumer"}'),
+            );
+        expect(Number(sample?.split(' ').at(-1))).toBeGreaterThanOrEqual(1);
+        const health = await fetch(`http://127.0.0.1:${metricsPort}/health`);
+        expect(health.status).toBe(200);
+        expect(await health.json()).toMatchObject({
+            status: 'degraded',
+            checks: { redis: 'down' },
+        });
     });
 });

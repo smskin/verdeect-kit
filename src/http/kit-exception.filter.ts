@@ -3,7 +3,7 @@
 // reportUnexpected. Из B: ответ после отправленных заголовков — только warn. По PRD: коды HttpException без тела — таблица
 // HTTP_CODES (прочие статусы → 500 INTERNAL_ERROR), DomainError с незарегистрированным кодом → 500, срок пула —
 // isPoolTimeout по форме, 503 без метрики и события: метрику и событие срока пула пишет пул /database (AC-4.5, KT-19
-// п. 3); codeOf с путями O, maskSecretPath и instance-shutdown не
+// п. 3); Retry-After RATE_LIMITED — по details.retryAfterSec (E8, §3.7); codeOf с путями O, maskSecretPath и instance-shutdown не
 // переносятся, путь в лог не пишется (он уже есть в строке доступа).
 import {
     Catch,
@@ -36,6 +36,19 @@ const EXPECTED_UNAVAILABLE_CODES: ReadonlySet<string> = new Set(['PLATFORM_UNAVA
 /** `Retry-After` при сроке пула БД (эталон O POOL_RETRY_AFTER). */
 const POOL_RETRY_AFTER = '1';
 
+/** `Retry-After` для `RATE_LIMITED` — целое `details.retryAfterSec ≥ 1` (§3.7, `throwRateLimited`, E8). */
+function rateLimitRetryAfter(error: DomainError): number | undefined {
+    if (error.code !== 'RATE_LIMITED') {
+        return undefined;
+    }
+    const value = error.details.retryAfterSec;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+        return undefined;
+    }
+
+    return value;
+}
+
 interface WireBody {
     readonly error: { readonly code: string; readonly message: string; readonly details: object };
 }
@@ -65,7 +78,8 @@ function libraryBody(response: unknown): WireBody | null {
 }
 
 /**
- * Фильтр ошибок HTTP сервиса (§3.5). `DomainError` — статус словаря, `warn`, без GlitchTip; тело `{error}` guard'ов —
+ * Фильтр ошибок HTTP сервиса (§3.5). `DomainError` — статус словаря, `warn`, без GlitchTip (`RATE_LIMITED` с
+ * `details.retryAfterSec` — ещё `Retry-After`, §3.7); тело `{error}` guard'ов —
  * без изменений; срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1` (метрику и событие
  * пишет пул /database, AC-4.5); `HttpException` без тела 400/401/403/404/413/415/429 — код по статусу, `warn`; прочее —
  * 500 `INTERNAL_ERROR`, `error`, GlitchTip ровно раз. Текст исходной ошибки, стек и SQL в ответ не попадают.
@@ -103,6 +117,10 @@ export class KitExceptionFilter implements ExceptionFilter {
 
         if (exception instanceof DomainError && errorStatus(exception.code) !== undefined) {
             this.warn(exception.code, exception.status, request);
+            const retryAfterSec = rateLimitRetryAfter(exception);
+            if (retryAfterSec !== undefined) {
+                void reply.header('Retry-After', String(retryAfterSec));
+            }
             this.send(reply, exception.status, exception.toBody());
 
             return;

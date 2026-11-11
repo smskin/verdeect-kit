@@ -1,5 +1,5 @@
 // workerScope (prd.md §3.8 v1.14, UC-14): E4 — tenant; E5 — rabbitmq (vhost воркера из startTestStack, AC-5.18);
-// redisPrefix (E8) — позже. Записей в таблицы не создаёт (N2, CE-4).
+// E8 — redisPrefix <svc>:w<N>: (AC-8.5). Записей в таблицы не создаёт (N2, CE-4).
 import { randomBytes } from 'node:crypto';
 import { missingPeerMessage } from '../internal/peer.js';
 import type { KitRabbitWorker } from './rabbitmq-admin.js';
@@ -23,11 +23,18 @@ export interface KitWorkerScope {
      * @throws {TypeError} стек без `rabbitmq: true` или нет записи для воркера (при обращении).
      */
     readonly rabbitmq: { readonly vhost: string; readonly url: string };
+    /**
+     * Префикс ключей и каналов Redis воркера `<svc>:w<VITEST_POOL_ID>:` — лежит внутри прав ACL сервиса
+     * (`startTestStack({redis: true})`, AC-8.5); подставляется в приложение через `redisWorkerOverride()`.
+     * @throws {TypeError} стек без `redis: true` (при обращении).
+     */
+    readonly redisPrefix: string;
 }
 
 let scope: KitWorkerScope | undefined;
 
 type ReadWorkers = () => readonly KitRabbitWorker[] | undefined;
+type ReadRedisService = () => string | undefined;
 
 function readProvided(): readonly KitRabbitWorker[] | undefined {
     if (vitest === undefined) {
@@ -37,8 +44,19 @@ function readProvided(): readonly KitRabbitWorker[] | undefined {
     return vitest.inject('kitRabbitmqWorkers');
 }
 
-/** `workerScope` с источником списка vhost (внутренняя: тесты подменяют `inject`). */
-export function workerScopeWith(readWorkers: ReadWorkers): KitWorkerScope {
+function readProvidedRedisService(): string | undefined {
+    if (vitest === undefined) {
+        throw new Error(missingPeerMessage('vitest', 'testing'));
+    }
+
+    return vitest.inject('kitRedisService');
+}
+
+/** `workerScope` с источниками vhost и имени сервиса Redis (внутренняя: тесты подменяют `inject`). */
+export function workerScopeWith(
+    readWorkers: ReadWorkers,
+    readRedisService: ReadRedisService = readProvidedRedisService,
+): KitWorkerScope {
     const tenant = `w${process.env.VITEST_POOL_ID ?? '0'}-${randomBytes(4).toString('hex')}`;
     if (!TENANT_SLUG.test(tenant)) {
         throw new Error(`workerScope: tenant «${tenant}» вне формата ${TENANT_SLUG.source}`);
@@ -51,6 +69,15 @@ export function workerScopeWith(readWorkers: ReadWorkers): KitWorkerScope {
             rabbitmq ??= rabbitmqOf(readWorkers());
 
             return rabbitmq;
+        },
+    });
+    let redisPrefix: string | undefined;
+    Object.defineProperty(result, 'redisPrefix', {
+        enumerable: true,
+        get: (): string => {
+            redisPrefix ??= redisPrefixOf(readRedisService());
+
+            return redisPrefix;
         },
     });
 
@@ -70,6 +97,14 @@ function rabbitmqOf(workers: readonly KitRabbitWorker[] | undefined): KitWorkerS
     }
 
     return { vhost: worker.vhost, url: worker.url };
+}
+
+function redisPrefixOf(service: string | undefined): string {
+    if (service === undefined) {
+        throw new TypeError('workerScope().redisPrefix: startTestStack запущен без redis: true');
+    }
+
+    return `${service}:w${process.env.VITEST_POOL_ID ?? '1'}:`;
 }
 
 /** Область текущего воркера: одно значение на воркер, разные воркеры — разные. */

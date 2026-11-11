@@ -1,12 +1,14 @@
 # @verdeect/kit
 
-Общий инфраструктурный пакет NestJS-сервисов Вердикта 2.0: схема окружения, тестовый контур, наблюдаемость, HTTP, а в следующих этапах — БД с RLS, идемпотентность, сообщения, шифр и Redis. Один пакет с подпутями и одной версией заменяет копии `src/shared/**` в сервисах. Требования — [requirements/0000-kit/prd.md](requirements/0000-kit/prd.md).
+Общий инфраструктурный пакет NestJS-сервисов Вердикта 2.0: схема окружения, тестовый контур, наблюдаемость, HTTP, БД с RLS, идемпотентность, сообщения, шифр и Redis. Один пакет с подпутями и одной версией заменяет копии `src/shared/**` в сервисах. Требования — [requirements/0000-kit/prd.md](requirements/0000-kit/prd.md).
 
 ## Совместимость
 
 | `@verdeect/kit`         | `@verdeect/events` | `@verdeect/auth` | `@verdeect/platform-client` |
 | ----------------------- | ------------------ | ---------------- | --------------------------- |
 | `1.0.0-rc.N` (после E8) | `1.0.0-rc.N`       | `^1.0.1`         | `1.1.x`                     |
+
+Инфраструктура: Redis ≥ 7.0 (лимитер `/redis` использует `PEXPIRE … NX`), PostgreSQL 17, RabbitMQ 4. Тесты — образы `TEST_IMAGES` (Redis 7.4.11).
 
 Промежуточных версий по этапам нет (G14): E1–E8 копятся в `[Unreleased]`, после E8 выходит `1.0.0-rc.1` (метка npm `next`), дальше `1.0.0-rc.N`. `1.0.0` (метка `latest`) — после перехода Identity. `@verdeect/events` выходит тем же порядком: `1.0.0-rc.N` после `@verdeect/kit 1.0.0-rc.1`, `1.0.0` — вместе с `@verdeect/kit 1.0.0` (prd.md §3.9). С `1.0.0` поддерживается только последний мажор (NFR-5): исправления выходят патчем последнего мажора, без бэкпортов.
 
@@ -30,7 +32,9 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | `/http`                     | —                                                                                       |
 | `/database`, `/idempotency` | `pg`                                                                                    |
 | `/testing`                  | `testcontainers`, `vitest`; `@nestjs/testing` — только для `createTestApp` (при вызове) |
-| остальные                   | в своих этапах                                                                          |
+| `/observability`, `/crypto` | —                                                                                       |
+| `/messaging`                | `amqplib`, `amqp-connection-manager`; `pg` — только при outbox или inbox                |
+| `/redis`                    | `ioredis`                                                                               |
 
 `/database` и `/idempotency` проверяют `pg` синхронно при импорте (текст AC-1.2) и загружают `pg` и драйвер Drizzle лениво при первом вызове. Top-level await в этих подпутях нет, поэтому схему сервиса с `tenantColumn` и `createIdempotencyTable` загружает `drizzle-kit` (он грузит схему через `require`).
 
@@ -46,7 +50,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | `/idempotency`   | E4   | готов, в `[Unreleased]` |
 | `/messaging`     | E5   | готов, в `[Unreleased]` |
 | `/crypto`        | E7   | готов, в `[Unreleased]` |
-| `/redis`         | E8   | в своём этапе           |
+| `/redis`         | E8   | готов, в `[Unreleased]` |
 
 Все подпути выходят вместе в `1.0.0-rc.1` после E8 (G14).
 
@@ -426,6 +430,35 @@ if (cipher.needsReencrypt(value)) {
 - Старые форматы сервисов (`v1:` base64, строковая версия, перебор секретов) не читаются: значения создаются заново при переходе (§10).
 - Секрет — `verdeect-kit crypto generate-secret | jq -r .secret` (`--bytes` — целое ≥ 32, по умолчанию 32) или `generateSecret()`.
 
+## Redis
+
+`@verdeect/kit/redis` — Redis сервиса: соединение с префиксом `<svc>:`, каналы, лимитер частоты и 429. Ключ окружения — `REDIS_URL` (`envRedis`); нужен `ioredis` в зависимостях сервиса.
+
+```ts
+import { KitRedisModule, RateLimiter, throwRateLimited } from '@verdeect/kit/redis';
+
+@Module({
+    imports: [
+        KitConfigModule.forRoot({ schema: defineEnv({ ...envBase, ...envRedis }) }),
+        KitRedisModule.forRoot({ service: 'identity', subscriber: true }),
+    ],
+})
+export class AppModule {}
+
+// в обработчике
+const result = await limiter.hit(`login:${ip}`, { limit: 30, windowMs: 60_000 });
+if (!result.allowed) {
+    throwRateLimited(result); // 429 RATE_LIMITED + Retry-After
+}
+```
+
+- `KIT_REDIS` — `Redis` ioredis основного соединения с `keyPrefix <svc>:`: ключ `k` в Redis — `<svc>:k`. Префикс не ставится шаблонам `KEYS`/`SCAN` и не снимается в их ответах — сервис пишет префикс в шаблон сам. Срок команды — 500 мс; соединение ленивое, закрывается на шаге 4 остановки.
+- `KitRedisChannels` — `publish('x', message)` → канал `<svc>:x`, `subscribe('x', handler)` → функция отписки; сообщение — строка. Подписки требуют `subscriber: true` — второе соединение (срок команды 5 с); без флага второго соединения нет, `subscribe` — `Error`.
+- `RateLimiter.hit(key, {limit, windowMs})` считает попадание, `peek` — только читает. Окно фиксированное от первого попадания (`INCR`, `PEXPIRE … NX`, `PTTL` одним `MULTI`), ключ — `<svc>:rl:<key>`, итог — `{allowed, remaining, retryAfterMs}`.
+- Redis недоступен — лимитер пропускает запрос (fail-open: `allowed: true`, `remaining = limit`), `verdeect_rate_limit_unavailable_total` +1 на каждую проверку, `warn` не чаще раза в 60 с, алерт `VerdeectRateLimitUnavailable`.
+- `throwRateLimited(result)` — `DomainError('RATE_LIMITED', {retryAfterSec})`: `KitExceptionFilter` отвечает 429 и `Retry-After` в секундах вверх (не меньше 1).
+- Проба `/health` `redis` (`PING`) некритичная: Redis недоступен — `degraded`, 200.
+
 ## Тесты сервиса
 
 Подпуть `/testing` разрешается только с условием `development` (NFR-4): в production-сборке сервиса его нет. Vitest включает это условие сам; для `node` — `node --conditions=development`.
@@ -460,12 +493,16 @@ export default startTestStack({
 | `kitRabbitmqUrl`           | `rabbitmq`     | `amqp://<администратор>@<host>:<port>` — vhost `/`        |
 | `kitRabbitmqManagementUrl` | `rabbitmq`     | `http://<host>:<port>` — management API                   |
 | `kitRabbitmqWorkers`       | `rabbitmq`     | vhost воркеров `{vhost, url, adminUrl}`                   |
+| `kitRedisUrl`              | `redis`        | пользователь сервиса из aclfile — `REDIS_URL` тестов      |
+| `kitRedisAdminUrl`         | `redis`        | администратор теста: `CLIENT LIST`, `ACL LOG`, очистка    |
+| `kitRedisService`          | `redis`        | имя сервиса — пользователь Redis и префикс воркера        |
 | `kitOutboxCoverageDir`     | `outboxEvents` | каталог покрытия outbox прогона                           |
 
-При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. При `rabbitmq: true` — RabbitMQ с `definitions.json` сервиса (тот же `buildDefinitions`, что CLI) и vhost с пользователем по правам сервиса на каждый воркер Vitest (`<svc>-test-<run>-w<N>`); teardown удаляет их, остатки прошлых прогонов удаляются при старте. Redis появится в E8.
+При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. При `rabbitmq: true` — RabbitMQ с `definitions.json` сервиса (тот же `buildDefinitions`, что CLI) и vhost с пользователем по правам сервиса на каждый воркер Vitest (`<svc>-test-<run>-w<N>`); teardown удаляет их, остатки прошлых прогонов удаляются при старте. При `redis: true` — Redis с aclfile (тот же генератор, что CLI `redis acl`): пользователь сервиса с правами `~<svc>:* &<svc>:*` — `kitRedisUrl`, администратор теста — `kitRedisAdminUrl`; пользователей на воркер нет — воркеры разделены префиксом `workerScope().redisPrefix`.
 
 - `createScratchDatabase()` — пустая мигрированная БД из шаблона за доли секунды (`{name, url, ownerUrl, adminUrl, drop()}`); тест сам вызывает `drop()`.
 - `workerScope().rabbitmq` — `{vhost, url}` vhost воркера: `url` — значение `RABBITMQ_URL` тестов.
+- `workerScope().redisPrefix` — префикс Redis воркера `<svc>:w<VITEST_POOL_ID>:`; приложение теста получает его через `createTestApp({…, overrides: [redisWorkerOverride()]})`, `REDIS_URL` — `inject('kitRedisUrl')`.
 - `workerScope().tenant` — слаг компании воркера (`w<VITEST_POOL_ID>-<8 hex>`, формат claim `tenant`): то же значение в `DbContext.tenant` и в токене; `tenantId` и строку компании создаёт фабрика сервиса.
 - `countQueries(pool, fn, {onQuery?})` — `{result, count, queries}`: все запросы пула за время `fn` (транзакция `Db` с одним запросом — 4: `begin`, `set_config`, запрос, `commit`); `onQuery(text)` — синхронный сигнал на каждый запрос (например, «первая пачка началась») вместо паузы.
 - `assertStrictTenantIsolation(pool, {schema, except?})` — один тест сервиса под ролью приложения после вставки данных фабриками: каждая таблица с колонкой `tenant` — RLS, `FORCE`, строгая политика, 0 строк под пустым тенантом; `idempotency_key` и `outbox` (политика `createOutboxTable`) — исключения строгой модели; функция `idempotency_purge` — `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
@@ -510,6 +547,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - Пул соединений PostgreSQL: сервис открывает до `2 × DB_POOL_MAX × реплики` соединений (основной пул и пул чтения) — `max_connections` считается по этой формуле.
 - БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>`.
 - RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `verdeect.events`, `amq.default` и свои очереди, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно.
+- Redis ≥ 7.0. ACL: `verdeect-kit redis acl --services <svc,…> --out users.acl` — aclfile с `user default off` первой строкой и пользователем на сервис (`~<svc>:* &<svc>:* +@all -@dangerous`); хеш пароля — из `REDIS_PASSWORD_HASH_<SVC>` (`bff-app` → `REDIS_PASSWORD_HASH_BFF_APP`, значение — sha256 hex: `printf %s "$PASS" | sha256sum`). Redis запускается с `--aclfile users.acl`; проверка здоровья в compose — с пользователем: `redis-cli --user <svc> --pass … ping`. `REDIS_URL` сервиса — `redis://<svc>:<пароль>@<host>:6379`.
 - DLQ — разбор в 7 дней: сообщения `<svc>.dlq` разбирает владелец сервиса не позже 7 дней (алерт `VerdeectEventsDlq`); причина — заголовок `x-dlq-reason`; повторная отправка — перекладкой в `<svc>` после исправления.
 - Смена ключа шифра `ENCRYPTION_KEYS` (UC-10): 1) новый секрет — `verdeect-kit crypto generate-secret | jq -r .secret` (единственный рекомендуемый способ); 2) новая версия **первой** в `ENCRYPTION_KEYS`, старая остаётся; 3) перезапуск всех реплик; 4) задача сервиса под `runExclusive` перешифровывает значения с `needsReencrypt(value) === true`; 5) старая версия убирается из `ENCRYPTION_KEYS`, когда значений под ней не осталось.
 - Смена TTL `.retry` (`RABBITMQ_RETRY_SECONDS`): 1) остановить все реплики сервиса; 2) дождаться опустошения `<svc>.retry` (или переложить сообщения в `<svc>`); 3) удалить очередь `<svc>.retry`; 4) задать новый `RABBITMQ_RETRY_SECONDS` и запустить реплики — очередь объявится с новым TTL. Иначе — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь».
@@ -688,6 +726,19 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 
 CLI: `verdeect-kit crypto generate-secret [--bytes 32]` → `{"secret":"…"}` в stdout; `--bytes` — целое ≥ 32, иначе `{"error": {"code": "USAGE"}}` и выход 1.
 
+### @verdeect/kit/redis
+
+- `KitRedisModule` — `KitRedisModule.forRoot({service, subscriber?: true})`: соединение `<svc>:`, каналы, лимитер, проба `redis`, закрытие на шаге 4; глобальный.
+- `KitRedisModuleOptions` — `{service, subscriber?: true}`.
+- `KIT_REDIS` — токен `Redis` ioredis основного соединения с `keyPrefix <svc>:`.
+- `KitRedisChannels` — `publish(channel, message)`, `subscribe(channel, handler)` → отписка; каналы `<svc>:<channel>`.
+- `RateLimiter` — `hit(key, opts)`, `peek(key, opts)`: фиксированное окно, fail-open с метрикой.
+- `RateLimitOptions` — `{limit, windowMs}`, целые ≥ 1.
+- `RateLimitResult` — `{allowed, remaining, retryAfterMs}`.
+- `throwRateLimited` — `throwRateLimited(result)`: 429 `RATE_LIMITED` + `Retry-After` в секундах вверх.
+
+CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile и `{"out", "services"}` в stdout; ошибки — `USAGE` (в том числе без `--out`), `INVALID_ENVIRONMENT` с `keys`, выход 1.
+
 ### @verdeect/kit/testing
 
 - `createTestApp` — `createTestApp({module, service, overrides?, bodyLimit?})`: приложение сервиса для тестов.
@@ -698,7 +749,7 @@ CLI: `verdeect-kit crypto generate-secret [--bytes 32]` → `{"secret":"…"}` �
 - `KitTestResponse` — тип ответа `{statusCode, json()}`.
 - `expectMatchesApi` — `expectMatchesApi(res, [Controller, 'method'])`: ответ по схеме `@Api`.
 - `TEST_IMAGES` — образы тестов и compose сервисов.
-- `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон, адреса через `provide`.
+- `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон, адреса через `provide`; флаги `postgres`, `migrations`, `mailpit`, `minio`, `rabbitmq`, `redis?`, `outboxEvents`.
 - `assertRepoConventions` — проверка репозитория сервиса по правилам выше.
 - `tcpProxy` — запущенный TCP-прокси к цели.
 - `TcpProxy` — тип прокси: `url`, `break`, `restore`, `blackhole`, `freeze`, `blackholeOn`, `delayOn`, `close`.
@@ -707,7 +758,8 @@ CLI: `verdeect-kit crypto generate-secret [--bytes 32]` → `{"secret":"…"}` �
 - `createScratchDatabase` — пустая мигрированная БД из шаблона `startTestStack`.
 - `KitScratchDatabase` — `{name, url, ownerUrl, adminUrl, drop()}`.
 - `workerScope` — `workerScope()`: область воркера Vitest.
-- `KitWorkerScope` — `{tenant}`: слаг компании воркера.
+- `KitWorkerScope` — `{tenant, rabbitmq, redisPrefix}`: слаг компании, vhost и префикс Redis воркера.
+- `redisWorkerOverride` — `redisWorkerOverride()`: подмена префикса `KitRedisModule` префиксом воркера для `createTestApp({overrides})`.
 - `countQueries` — `countQueries(pool, fn, {onQuery?})`: `{result, count, queries}`.
 - `KitCountablePool` — тип пула с событием `acquire`.
 - `KitCountQueriesOptions` — `{onQuery?}`: колбэк на каждый запрос пула.

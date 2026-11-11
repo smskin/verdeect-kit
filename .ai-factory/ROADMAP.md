@@ -12,7 +12,7 @@
 - [x] **E4 База данных и идемпотентность** — `/database` §3.3 и `/idempotency` §3.3а. В `startTestStack` — подготовка БД и миграции; `createScratchDatabase`, `countQueries`, `assertStrictTenantIsolation`, `assertAppRoleIsNotOwner`, `workerScope` (`tenant`); CLI `db`. Выпуска нет — `[Unreleased]` · requirements/0000-kit · UC-5, UC-7, UC-9, UC-12, UC-14, AC-4.1–AC-4.18, AC-9.5 (очистка идемпотентности)
 - [x] **E5 Сообщения** — `/messaging` §3.4: outbox из кода, relay, подписчик, inbox, retry/DLQ, очередь реплики, `defineEvent`. В `startTestStack` — RabbitMQ и `definitions.json`, vhost на воркер; `expectOutbox`, `assertOutboxCoverage`, `publishTestEvent`, `waitForInbox`; CLI `rabbitmq definitions`. Выпуска нет — `[Unreleased]` · requirements/0000-kit · UC-5, UC-6, UC-8, UC-12, UC-14, AC-5.1–AC-5.20, AC-9.5 (relay, подписчик, очистка)
 - [x] **E7 Шифр секретов** — `/crypto` §3.6: `createCipher`, версии ключей, AAD, CLI `crypto generate-secret`. Выпуска нет — `[Unreleased]` · requirements/0000-kit · UC-10, AC-7.1–AC-7.5
-- [ ] **E8 Redis** — `/redis` §3.7: клиент, префикс `<svc>:`, лимитер fail-open. В `startTestStack` — Redis и ACL, префикс воркера `<svc>:w<N>:`; CLI `redis acl`. После E8 — `1.0.0-rc.1` вручную (метка `next`), `npm trust` · requirements/0000-kit · UC-11, UC-12, AC-8.1–AC-8.6, AC-9.5 (лимитер)
+- [x] **E8 Redis** — `/redis` §3.7: клиент, префикс `<svc>:`, лимитер fail-open. В `startTestStack` — Redis и ACL, префикс воркера `<svc>:w<N>:`; CLI `redis acl`. После E8 — `1.0.0-rc.1` вручную (метка `next`), `npm trust` · requirements/0000-kit · UC-11, UC-12, AC-8.1–AC-8.6, AC-9.5 (лимитер)
 
 Выпусков по этапам нет (G14, PRD v1.8): E1–E8 копятся в `[Unreleased]`, после E8 — `1.0.0-rc.1`, дальше `1.0.0-rc.N` (метка `next`); `1.0.0` — после перехода Identity. E7 и E8 можно планировать параллельно с E4–E5.
 
@@ -26,6 +26,7 @@
 | E4 База данных и идемпотентность | 2026-11-11 |
 | E5 Сообщения | 2026-11-11 |
 | E7 Шифр секретов | 2026-11-11 |
+| E8 Redis | 2026-11-11 |
 
 ## Requirements Map
 

@@ -1,4 +1,4 @@
-// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1–E4, bin E3; §3.2 — files: alerts).
+// Манифест пакета (prd.md v1.7: G1, G3, NFR-1, NFR-3, NFR-4, AC-1.1 — форма exports E1–E8, bin E3; §3.2 — files: alerts).
 // Образец — verdeect-platform-client test/unit/package-manifest.spec.ts.
 import { readFileSync } from 'node:fs';
 import semver from 'semver';
@@ -49,8 +49,8 @@ const OPTIONAL_PEERS: Record<string, string> = {
     '@nestjs/testing': '^12.1.0',
 };
 
-describe('AC-1.1: точки входа пакета (E1–E7)', () => {
-    it('AC-1.1: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./testing, ./package.json', () => {
+describe('AC-1.1: точки входа пакета (E1–E8)', () => {
+    it('AC-1.1: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./redis, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
             [
                 './config',
@@ -61,6 +61,7 @@ describe('AC-1.1: точки входа пакета (E1–E7)', () => {
                 './messaging',
                 './observability',
                 './package.json',
+                './redis',
                 './testing',
             ].sort(),
         );
@@ -112,6 +113,13 @@ describe('AC-1.1: точки входа пакета (E1–E7)', () => {
         expect(manifest.exports['./observability']).toEqual({
             types: './dist/observability/index.d.ts',
             default: './dist/observability/index.js',
+        });
+    });
+
+    it('AC-1.1: ./redis — {types, default} на dist/redis/index.*', () => {
+        expect(manifest.exports['./redis']).toEqual({
+            types: './dist/redis/index.d.ts',
+            default: './dist/redis/index.js',
         });
     });
 
@@ -175,9 +183,10 @@ describe('NFR-3: зависимости', () => {
         }
     });
 
-    it('NFR-3: драйвер AMQP в devDependencies — amqplib 2.2.0 и amqp-connection-manager 5.0.1 (§11 п. 4)', () => {
+    it('NFR-3: драйверы в devDependencies — amqplib 2.2.0, amqp-connection-manager 5.0.1 (§11 п. 4), ioredis 6.0.0', () => {
         expect(manifest.devDependencies['amqplib']).toBe('2.2.0');
         expect(manifest.devDependencies['amqp-connection-manager']).toBe('5.0.1');
+        expect(manifest.devDependencies['ioredis']).toBe('6.0.0');
     });
 });
 

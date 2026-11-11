@@ -21,6 +21,7 @@
     "amqplib": "2.2.0",
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.5",
+    "ioredis": "6.0.0",
     "nestjs-pino": "5.3.1",
     "pg": "8.23.1",
     "pino": "10.4.0",
