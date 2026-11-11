@@ -53,8 +53,8 @@ function parseEnv<T extends z.ZodType>(schema: T, env: DbCommandContext['env']):
 
 async function createLogger(env: DbCommandContext['env']): Promise<Logger> {
     const [{ envBase }, { createLoggerOptions }] = await Promise.all([
-        import('../../config/index.js'),
-        import('../../observability/index.js'),
+        import('../../config/fragments.js'),
+        import('../../observability/logger-options.js'),
     ]);
     const parsed = parseEnv(
         z.object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID }),
