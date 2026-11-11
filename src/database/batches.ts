@@ -4,7 +4,8 @@
 import { Logger } from '@nestjs/common';
 import type { SQL } from 'drizzle-orm';
 import { ulid } from '../internal/ids.js';
-import { isStopping, trackBatchRun, type Db } from './db.js';
+import { isStopping, trackBatchRun, transactionOn, type Db, type DbTx } from './db.js';
+import type { PoolClient } from './pg.js';
 import type { DbContext } from './tenant.js';
 
 /** Опции `deleteInBatches`. */
@@ -23,6 +24,11 @@ export interface KitDeleteInBatchesOptions {
     readonly maxBatches: number;
     /** `false` — следующая пачка не начинается, текущая дорабатывает. */
     readonly shouldContinue?: () => boolean;
+    /**
+     * Соединение для пачек — обычно соединение блокировки из `runExclusive(db, key, (connection) => …)`: второе
+     * соединение пула не берётся. Без него — транзакция `Db` на соединении основного пула.
+     */
+    readonly connection?: PoolClient;
 }
 
 /** Итог прохода `deleteInBatches`. */
@@ -60,9 +66,11 @@ async function runBatches(options: KitDeleteInBatchesOptions): Promise<KitDelete
         !isStopping(options.db) &&
         (options.shouldContinue?.() ?? true)
     ) {
-        const result = await options.db.transaction(ctx, (tx) =>
-            tx.execute(options.sql(options.batchSize)),
-        );
+        const batch = (tx: DbTx) => tx.execute(options.sql(options.batchSize));
+        const result =
+            options.connection === undefined
+                ? await options.db.transaction(ctx, batch)
+                : await transactionOn(options.db, options.connection, ctx, batch);
         const count = deletedOf(result.rows);
         batches += 1;
         deleted += count;

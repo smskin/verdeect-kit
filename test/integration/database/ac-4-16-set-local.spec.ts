@@ -1,5 +1,5 @@
 // AC-4.16 (UC-5): Db.setLocal — имя ^app\.[a-z_]{1,48}$, имя и значение параметрами, значение живёт до конца
-// транзакции (prd.md §3.3).
+// транзакции (prd.md §3.3); служебные app.tenant — только через DbContext (KT-22 п. 1).
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDb, ctx, type TestDb } from '../../support/database.js';
@@ -51,5 +51,20 @@ describe('UC-5: Db.setLocal', () => {
         await expect(
             test.db.readGlobal((reader) => test.db.setLocal(reader, 'app.flag', 'on')),
         ).rejects.toThrow(TypeError);
+    });
+
+    it("AC-4.16: setLocal(tx, 'app.tenant', …) — ошибка, тенант транзакции не меняется", async () => {
+        const tenant = await test.db.transaction(ctx('acme'), async (tx) => {
+            await expect(test.db.setLocal(tx, 'app.tenant', 'globex')).rejects.toThrow(
+                /app\.tenant.*DbContext/,
+            );
+            const { rows } = await tx.execute<{ tenant: string }>(
+                sql`select current_setting('app.tenant', true) as tenant`,
+            );
+
+            return rows[0]?.tenant;
+        });
+
+        expect(tenant).toBe('acme');
     });
 });

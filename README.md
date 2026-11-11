@@ -275,8 +275,8 @@ const flags = await db.readGlobal((reader) => reader.select().from(setting)); //
 ```
 
 - `Db.transaction(ctx, fn)` — ровно один `set_config('app.tenant', …, true)` на транзакцию; значение не переживает транзакцию. `Db.read(ctx, fn)` — read-only транзакция на пуле чтения; без тенанта — `TenantRequiredError`. Чтение без компании — только `Db.readGlobal(fn)` (без транзакции и `set_config`).
-- `Db.afterCommit(tx, task)` — задачи после `COMMIT` по порядку; при откате не выполняются; ошибка задачи — `error`-лог и GlitchTip, не пробрасывается; в `read`/`readGlobal` — `AfterCommitInReadOnlyError`.
-- `Db.setLocal(tx, name, value)` — своя переменная транзакции `app.*` (`^app\.[a-z_]{1,48}$`), имя и значение — параметрами.
+- `Db.afterCommit(tx, task)` — задачи после `COMMIT` по порядку; при откате не выполняются; ошибка задачи — `error`-лог и GlitchTip, не пробрасывается; в `read`/`readGlobal` — `AfterCommitInReadOnlyError`; с транзакцией не этого `Db` (другой `Db`, `DRIZZLE`, вложенная `tx.transaction()`) — `AfterCommitOutsideTransactionError` (задача не теряется молча).
+- `Db.setLocal(tx, name, value)` — своя переменная транзакции `app.*` (`^app\.[a-z_]{1,48}$`), имя и значение — параметрами. Служебная `app.tenant` запрещена (`TypeError`): тенант задаётся только `DbContext` в `transaction`/`read`.
 - Строгий RLS (P0): колонка `tenantColumn()` и политика `tenantPolicy(t.tenant)` — `tenant = current_setting('app.tenant', true)`, SQL генерирует `drizzle-kit` сервиса. `FORCE ROW LEVEL SECURITY` и права роли приложения — SQL-миграцией сервиса (`drizzle-kit generate --custom`), как в фикстуре пакета:
 
 ```sql
@@ -286,8 +286,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON "files"."file" TO "files_app";
 
 - Первая строка первой миграции `drizzle-kit` — `CREATE SCHEMA "<svc>";`: замените её на `CREATE SCHEMA IF NOT EXISTS "<svc>";` — схему заранее создаёт `prepareDatabase` (обязательный шаг после первой генерации).
 - `prepareDatabase({service, adminUrl, ownerPassword, appPassword})` — идемпотентно: роли `<svc>_owner` (миграции), `<svc>_app` (приложение, без `CREATE` на базе и схеме), `<svc>_directory` (`NOLOGIN`, `BYPASSRLS`, владелец функций `SECURITY DEFINER`), схема `<svc>`; повтор — `created: []`. `runMigrations({url, folder, schema})` — миграции под `<svc>_owner`, журнал — `<svc>.__migrations` (схемы `drizzle` нет), повтор — `{applied: 0}`.
-- `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?})` — транзакция на пачку до неполной пачки или `maxBatches`; `sql(batchSize)` возвращает одну строку с целой колонкой `deleted` (`WITH d AS (DELETE … LIMIT n RETURNING 1) SELECT count(*)::int AS deleted FROM d`); строки компаний системный контекст не видит — их удаляет функция `SECURITY DEFINER`. Остановка `Db` (шаг 3) ждёт текущую пачку, новая не начинается.
-- `runExclusive(db, key, fn)` — `pg_try_advisory_lock` без ожидания: `fn` в одной реплике, занято — `{ran: false}`. Блокировка держит соединение основного пула — `DB_POOL_MAX ≥ 2`.
+- `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?, connection?})` — транзакция на пачку до неполной пачки или `maxBatches`; `sql(batchSize)` возвращает одну строку с целой колонкой `deleted` (`WITH d AS (DELETE … LIMIT n RETURNING 1) SELECT count(*)::int AS deleted FROM d`); строки компаний системный контекст не видит — их удаляет функция `SECURITY DEFINER`. Остановка `Db` (шаг 3) ждёт текущую пачку, новая не начинается. `connection` — соединение блокировки `runExclusive`: пачки идут на нём, второе соединение пула не берётся.
+- `runExclusive(db, key, (connection) => …)` — `pg_try_advisory_lock` без ожидания: `fn` в одной реплике, занято — `{ran: false}`. Блокировка держит соединение основного пула и передаётся в `fn`: работа на нём (`deleteInBatches({…, connection})`) не берёт второе соединение — очистка работает и при `DB_POOL_MAX = 1`; транзакции `Db` внутри `fn` берут другие соединения пула.
 - `occurredAtColumn(name)` и `ifNewer(column, occurredAt)` — обновление только событием новее сохранённого (`rowCount` 0 — нормальный итог).
 - `newId(prefix)` и `ulid()` — id `<prefix>_<ulid>` (реестр префиксов — ниже). `isUniqueViolation(err, constraint?)`, `isConnectionError(err)`, `isPoolTimeout(err)` — распознавание ошибок pg по форме с обходом `cause`.
 - Срок пула: `verdeect_db_pool_wait_timeouts_total{pool="main"|"read"}` и `captureThrottled` пишет пул `/database` при ошибке получения соединения — и для `Db`, и для прямых `DRIZZLE`/`DRIZZLE_READ`; фильтр `/http` отвечает 503.
@@ -317,11 +317,11 @@ export const idempotency = createIdempotencyTable(files);
 create(@Body(new ZodValidationPipe(CreateFile)) body: CreateFileDto) { … }
 ```
 
-- Таблица `createIdempotencyTable(pgSchema('<svc>'))` — `idempotency_key` под политикой `tenant IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')`. В SQL-миграцию сервиса — `FORCE`, права `<svc>_app` и текст `idempotencyPurgeSql(<схема>)` без изменений (функция очистки `SECURITY DEFINER`, владелец `<svc>_directory`); пример — `test/consumer/minimal/drizzle/0001_force_grants_purge.sql`. Нет функции `<svc>.idempotency_purge` — отказ запуска с текстом про `idempotencyPurgeSql`.
+- Таблица `createIdempotencyTable(pgSchema('<svc>'))` — `idempotency_key` (с меткой попытки `attempt`: ответ пишет только попытка, захватившая строку; если обработчик шёл дольше 5 минут и строку перехватил повтор, его ответ не сохраняется — `warn`) под политикой `tenant IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')`. В SQL-миграцию сервиса — `FORCE`, права `<svc>_app` и текст `idempotencyPurgeSql(<схема>)` без изменений (функция очистки `SECURITY DEFINER`, владелец `<svc>_directory`); пример — `test/consumer/minimal/drizzle/0001_force_grants_purge.sql`. Нет функции `<svc>.idempotency_purge` — отказ запуска с текстом про `idempotencyPurgeSql`.
 - `@Idempotent` — **только на маршрутах с `VerdeectAuthGuard`**: без проверенного принципала — 500 `INTERNAL_ERROR` при любом ключе.
 - Область ключа: пользователь и агент — компания токена и `sub` (поле тела не учитывается); служба — `client_id` и, при `tenantFromBody: 'tenant'`, компания из поля тела (нет поля — без компании).
 - Ответы: нет ключа при `required` — 400 `IDEMPOTENCY_KEY_REQUIRED`; ключ не по формату `^[\x21-\x7E]{1,200}$` — 422 `VALIDATION_FAILED` (`path: Idempotency-Key`); другое тело — 422 `IDEMPOTENCY_KEY_REUSED`; запрос ещё идёт — 409 `IDEMPOTENCY_IN_PROGRESS`. Сохраняются только успешные ответы; брошенная `in_progress` переиспользуется через 5 минут, запись — 24 часа. Заголовки и коды попадают в OpenAPI по метаданным `@Idempotent`.
-- Очистка — при старте и раз в час, одной репликой (`runExclusive`), пачками функцией `idempotency_purge`. Метрика `verdeect_cleanup_runs_total{table, result}`: `ok`, `partial` (упёрлась в предел пачек — очистка не успевает), `error`; алерт `VerdeectCleanupFailing` (порог `verdeect_kit_threshold:cleanup_runs`). Число удалённых строк — в `info`-логе прохода «очистка идемпотентности: проход» (`service`, `replica`, `table`, `deleted`).
+- Очистка — при старте и раз в час, одной репликой (`runExclusive`), пачками функцией `idempotency_purge`. Метрика `verdeect_cleanup_runs_total{table, result}`: `ok`, `partial` (упёрлась в предел пачек — очистка не успевает), `interrupted` (остановлена при выкате; алерт не срабатывает), `error`; алерт `VerdeectCleanupFailing` (`error` и `partial`) (порог `verdeect_kit_threshold:cleanup_runs`). Число удалённых строк — в `info`-логе прохода «очистка идемпотентности: проход» (`service`, `replica`, `table`, `deleted`).
 
 ## Тесты сервиса
 
@@ -511,6 +511,7 @@ CLI: `verdeect-kit openapi --out <файл> [--module <файл>#<экспорт
 - `AfterCommitTask` — тип задачи `() => void | Promise<void>`.
 - `TenantRequiredError` — `Db.read` без тенанта.
 - `AfterCommitInReadOnlyError` — `afterCommit` в `read`/`readGlobal`.
+- `AfterCommitOutsideTransactionError` — `afterCommit` с транзакцией не этого `Db` или вложенной.
 - `tenantColumn` — `tenantColumn(name = 'tenant')`: колонка тенанта `text not null`.
 - `tenantPolicy` — `tenantPolicy(column)`: строгая политика `tenant_isolation`.
 - `prepareDatabase` — `prepareDatabase({service, adminUrl, ownerPassword, appPassword}, logger?)`: роли и схема сервиса.
@@ -518,10 +519,10 @@ CLI: `verdeect-kit openapi --out <файл> [--module <файл>#<экспорт
 - `KitPrepareDatabaseResult` — `{database, roles, created}`.
 - `runMigrations` — `runMigrations({url, folder, schema}, logger?)`: `{applied}`, журнал `<schema>.__migrations`.
 - `KitRunMigrationsOptions` — тип опций `runMigrations`.
-- `deleteInBatches` — `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?})`: `{deleted, batches, complete}`.
+- `deleteInBatches` — `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?, connection?})`: `{deleted, batches, complete}`.
 - `KitDeleteInBatchesOptions` — тип опций `deleteInBatches`.
 - `KitDeleteInBatchesResult` — тип итога `deleteInBatches`.
-- `runExclusive` — `runExclusive(db, key, fn)`: `{ran: true, result}` или `{ran: false}`.
+- `runExclusive` — `runExclusive(db, key, (connection) => …)`: `{ran: true, result}` или `{ran: false}`; `fn` получает соединение блокировки.
 - `occurredAtColumn` — `occurredAtColumn(name)`: `timestamptz` nullable.
 - `ifNewer` — `ifNewer(column, occurredAt)`: условие «событие новее».
 - `newId` — `newId(prefix)`: `<prefix>_<ulid>`, префикс `^[a-z]{2,5}$`.

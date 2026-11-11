@@ -29,6 +29,13 @@
       "when": 1794349563749,
       "tag": "0003_idempotency_purge",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794381517256,
+      "tag": "0004_thin_microchip",
+      "breakpoints": true
     }
   ]
 }

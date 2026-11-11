@@ -4,7 +4,12 @@ import './pg.js';
 
 export { deleteInBatches } from './batches.js';
 export type { KitDeleteInBatchesOptions, KitDeleteInBatchesResult } from './batches.js';
-export { AfterCommitInReadOnlyError, Db, TenantRequiredError } from './db.js';
+export {
+    AfterCommitInReadOnlyError,
+    AfterCommitOutsideTransactionError,
+    Db,
+    TenantRequiredError,
+} from './db.js';
 export type { AfterCommitTask, DbReader, DbTx } from './db.js';
 export { ifNewer, occurredAtColumn } from './if-newer.js';
 export { DRIZZLE, DRIZZLE_READ, KitDatabaseModule } from './kit-database.module.js';

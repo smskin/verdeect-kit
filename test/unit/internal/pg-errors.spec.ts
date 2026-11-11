@@ -6,6 +6,7 @@ import {
     isPoolTimeout,
     isUniqueViolation,
     poolTimeoutOf,
+    sqlStateOf,
     tagPoolTimeout,
 } from '../../../src/internal/pg-errors.js';
 
@@ -141,5 +142,21 @@ describe('AC-4.5: метка пула', () => {
         tagPoolTimeout(error, 'main');
         expect(Object.keys(error)).toEqual(['code']);
         expect(JSON.stringify(error)).toBe('{"code":"X"}');
+    });
+});
+
+describe('AC-4.17: sqlStateOf', () => {
+    it('AC-4.17: SQLSTATE во вложенном cause (DrizzleQueryError) находится; глубже 10 уровней — null', () => {
+        expect(sqlStateOf(nested(pgError('42P01'), 3))).toBe('42P01');
+        expect(sqlStateOf(pgError('28P01'))).toBe('28P01');
+        expect(sqlStateOf(nested(pgError('42P01'), 10))).toBeNull();
+    });
+
+    it('AC-4.17: системные коды Node (EPIPE, EPERM) и прочие значения — не SQLSTATE', () => {
+        expect(sqlStateOf(pgError('EPIPE'))).toBeNull();
+        expect(sqlStateOf(pgError('EPERM'))).toBeNull();
+        expect(sqlStateOf(nested(pgError('EPIPE'), 1))).toBeNull();
+        expect(sqlStateOf(new Error('x'))).toBeNull();
+        expect(sqlStateOf('42P01')).toBeNull();
     });
 });

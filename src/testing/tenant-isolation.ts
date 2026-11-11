@@ -196,15 +196,16 @@ async function visibleRows(db: KitQueryable, schema: string, table: string): Pro
     });
 }
 
+/** Функция очистки — по точной сигнатуре `idempotency_purge(integer)`; другая перегрузка — «функции нет» (KT-22 п. 7). */
 async function purgeViolations(db: KitQueryable, schema: string): Promise<string[]> {
     const name = `${schema}.idempotency_purge`;
     const [fn] = (
         await db.query(
             `select p.prosecdef, pg_get_userbyid(p.proowner) as owner, p.proconfig,
                     has_function_privilege('public', p.oid, 'EXECUTE') as public_execute
-             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-             where n.nspname = $1 and p.proname = 'idempotency_purge'`,
-            [schema],
+             from pg_proc p
+             where p.oid = to_regprocedure($1)`,
+            [`${quote(schema)}.idempotency_purge(integer)`],
         )
     ).rows as {
         prosecdef: boolean;

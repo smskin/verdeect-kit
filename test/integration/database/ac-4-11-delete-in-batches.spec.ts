@@ -1,5 +1,6 @@
 // AC-4.11 (UC-8, UC-9): deleteInBatches — транзакция на пачку, shouldContinue, maxBatches, неполная пачка; остановка Db
 // ждёт текущую пачку, новая не начинается (prd.md §3.3). Перенос O batches и I db (batchRuns).
+import { once } from 'node:events';
 import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deleteInBatches } from '../../../src/database/batches.js';
@@ -53,11 +54,16 @@ describe('UC-9: deleteInBatches', () => {
 
     it('AC-4.11: Db.beforeApplicationShutdown во время пачки — пачка дорабатывает, новая не начинается', async () => {
         await seed(10);
-        const slow = (size: number) =>
-            sql`WITH s AS (SELECT pg_sleep(0.3)), d AS (DELETE FROM kit.setting WHERE key IN (SELECT key FROM kit.setting LIMIT ${size}) RETURNING 1) SELECT count(*)::int AS deleted FROM d, s`;
+        // Сигнал — выдача клиента пулу под первую пачку: остановка ставится, пока пачка идёт.
+        const acquired = once(test.main, 'acquire');
 
-        const run = deleteInBatches({ db: test.db, sql: slow, batchSize: 2, maxBatches: 100 });
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        const run = deleteInBatches({
+            db: test.db,
+            sql: deleteSettings,
+            batchSize: 2,
+            maxBatches: 100,
+        });
+        await acquired;
         await test.db.beforeApplicationShutdown();
 
         expect(await run).toEqual({ deleted: 2, batches: 1, complete: false });

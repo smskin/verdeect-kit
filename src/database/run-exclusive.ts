@@ -3,18 +3,21 @@
 import { Logger } from '@nestjs/common';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { mainPoolOf, withPoolClient, type Db } from './db.js';
+import type { PoolClient } from './pg.js';
 
 const logger = new Logger('runExclusive');
 
 /**
  * `fn` выполняется не больше чем в одной реплике одновременно: блокировка `pg_try_advisory_lock(hashtextextended(key,
- * 0))` без ожидания; занято — `{ran: false}`. Блокировка держит одно соединение основного пула (`DB_POOL_MAX ≥ 2`).
+ * 0))` без ожидания; занято — `{ran: false}`. Блокировка держит одно соединение основного пула; `fn` получает его
+ * аргументом — работа на нём (например, `deleteInBatches({connection})`) не берёт второе соединение, поэтому
+ * достаточно `DB_POOL_MAX = 1` (KT-22 п. 4). Транзакции `fn` через `Db` берут другие соединения пула.
  * @throws {TypeError} пустой `key`.
  */
 export async function runExclusive<T>(
     db: Db,
     key: string,
-    fn: () => Promise<T>,
+    fn: (connection: PoolClient) => Promise<T>,
 ): Promise<{ readonly ran: true; readonly result: T } | { readonly ran: false }> {
     if (key === '') {
         throw new TypeError('runExclusive: пустой ключ');
@@ -31,7 +34,7 @@ export async function runExclusive<T>(
             return { ran: false } as const;
         }
         try {
-            return { ran: true, result: await fn() } as const;
+            return { ran: true, result: await fn(client) } as const;
         } finally {
             try {
                 await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]);

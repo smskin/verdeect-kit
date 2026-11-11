@@ -19,27 +19,34 @@ describe('UC-9: runExclusive', () => {
 
     it('AC-4.12: одновременно — fn выполняется ровно раз, вторая {ran: false} без ожидания', async () => {
         let calls = 0;
-        let finishedAt = 0;
+        let entered = (): void => undefined;
+        const inside = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        let release = (): void => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
         const running = runExclusive(first.db, 'kit:test-job', async () => {
             calls += 1;
-            await new Promise((resolve) => setTimeout(resolve, 400));
-            finishedAt = performance.now();
+            entered();
+            await gate;
 
             return 'first';
         });
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await inside;
 
+        // Первая держит блокировку, пока шлагбаум закрыт: вторая обязана вернуться, не дожидаясь первой.
         const other = await runExclusive(second.db, 'kit:test-job', async () => {
             calls += 1;
 
             return 'second';
         });
-        const returnedAt = performance.now();
+        release();
 
         expect(other).toEqual({ ran: false });
         expect(await running).toEqual({ ran: true, result: 'first' });
         expect(calls).toBe(1);
-        expect(returnedAt).toBeLessThan(finishedAt);
     });
 
     it('AC-4.12: исключение в fn — блокировка снята, следующий runExclusive выполняется', async () => {
@@ -50,6 +57,19 @@ describe('UC-9: runExclusive', () => {
         expect(await runExclusive(second.db, 'kit:failing-job', () => Promise.resolve(42))).toEqual(
             { ran: true, result: 42 },
         );
+    });
+
+    it('AC-4.12: fn получает соединение блокировки — запрос на нём идёт в сеансе, который держит блокировку (KT-22 п. 4)', async () => {
+        const outcome = await runExclusive(first.db, 'kit:connection-job', async (connection) => {
+            const { rows } = await connection.query<{ held: boolean }>(
+                `select exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()
+                 and granted) as held`,
+            );
+
+            return rows[0]?.held;
+        });
+
+        expect(outcome).toEqual({ ran: true, result: true });
     });
 
     it('§3.3: пустой ключ → TypeError', async () => {

@@ -1,11 +1,9 @@
 // AC-4.14, AC-9.5, AC-4.11 (UC-9): очистка идемпотентности под kit_app функцией idempotency_purge — записи старше 24 ч
 // всех компаний и без компании, одна реплика (runExclusive), метрика verdeect_cleanup_runs_total ok/partial/error,
-// остановка во время прохода (prd.md §3.3а v1.14). Перенос O idempotency-cleanup.int-spec.ts.
-import { pgSchema } from 'drizzle-orm/pg-core';
+// остановка во время прохода → interrupted, DB_POOL_MAX=1 (prd.md §3.3а v1.14; KT-22 п. 4, 5). Перенос O idempotency-cleanup.int-spec.ts.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
-import { idempotencyPurgeSql } from '../../../src/idempotency/table.js';
-import { countQueries } from '../../../src/testing/count-queries.js';
+import type { Pool, PoolClient } from '../../../src/database/pg.js';
 import { createScratchDatabase } from '../../../src/testing/scratch-database.js';
 import { adminQuery as adminAt } from '../../support/postgres.js';
 import { adminQuery } from '../../support/database.js';
@@ -18,6 +16,51 @@ import {
 } from './support.js';
 
 const LOCK_KEY = 'verdeect-kit:idempotency-cleanup:kit';
+
+/** Сигнал первого запроса с фрагментом текста на клиентах пула и счёт таких запросов (без пауз). */
+function watchQueries(
+    pool: Pool,
+    fragment: string,
+): { first: Promise<void>; count: () => number; stop: () => void } {
+    let count = 0;
+    let signal = (): void => undefined;
+    const first = new Promise<void>((resolve) => {
+        signal = resolve;
+    });
+    const wrapped: PoolClient[] = [];
+    const onAcquire = (client: PoolClient): void => {
+        if (wrapped.includes(client)) {
+            return;
+        }
+        wrapped.push(client);
+        const original = client.query;
+        // boundary: обёртка сохраняет перегрузки query pg.
+        client.query = ((...args: Parameters<PoolClient['query']>) => {
+            const text =
+                typeof args[0] === 'string'
+                    ? args[0]
+                    : String((args[0] as { text?: unknown }).text);
+            if (text.includes(fragment)) {
+                count += 1;
+                signal();
+            }
+
+            return (original as (...a: unknown[]) => unknown).apply(client, args);
+        }) as PoolClient['query'];
+    };
+    pool.on('acquire', onAcquire);
+
+    return {
+        first,
+        count: () => count,
+        stop: () => {
+            pool.off('acquire', onAcquire);
+            for (const client of wrapped) {
+                delete (client as Partial<PoolClient>).query;
+            }
+        },
+    };
+}
 
 async function seed(rows: readonly (readonly [string | null, string, number])[]): Promise<void> {
     for (const [tenant, key, hours] of rows) {
@@ -127,15 +170,10 @@ describe('UC-9: очистка идемпотентности', () => {
         }
     });
 
-    it('AC-4.11: остановка во время прохода — пачка дорабатывает, новая не начинается', async () => {
+    it('AC-4.11, AC-9.5: остановка во время прохода — пачка дорабатывает, новая не начинается, result="interrupted"', async () => {
         const scratch = await createScratchDatabase();
         const stand = await createStand({ url: scratch.url });
         try {
-            // Медленная пачка: та же функция с pg_sleep(0.3) (владелец и права при CREATE OR REPLACE сохраняются).
-            const slow = idempotencyPurgeSql(pgSchema('kit'))
-                .split('\n--> statement-breakpoint\n')[0]
-                ?.replace('BEGIN\n', 'BEGIN\n    PERFORM pg_sleep(0.3);\n');
-            await adminAt(scratch.adminUrl, String(slow));
             for (let n = 1; n <= 6; n += 1) {
                 await adminAt(
                     scratch.adminUrl,
@@ -144,23 +182,49 @@ describe('UC-9: очистка идемпотентности', () => {
                     [`s${n}`],
                 );
             }
-
-            const { queries } = await countQueries(mainPoolOf(stand.app.get(Db)), async () => {
+            const before = await cleanupRuns(stand.metrics, 'interrupted');
+            const purge = watchQueries(mainPoolOf(stand.app.get(Db)), 'idempotency_purge');
+            try {
                 const run = stand.cleanup.run({ batchSize: 2, maxBatches: 100 });
-                await new Promise((resolve) => setTimeout(resolve, 100));
+                // Сигнал — отправка первой пачки; остановка ставится раньше, чем пачка вернётся с сервера.
+                await purge.first;
                 await stand.cleanup.beforeApplicationShutdown();
                 await run;
-            });
+            } finally {
+                purge.stop();
+            }
 
-            expect(queries.filter((text) => text.includes('idempotency_purge'))).toHaveLength(1);
+            expect(purge.count()).toBe(1);
             const [left] = await adminAt<{ count: number }>(
                 scratch.adminUrl,
                 'select count(*)::int as count from kit.idempotency_key',
             );
             expect(left?.count).toBe(4);
+            expect(await cleanupRuns(stand.metrics, 'interrupted')).toBe(before + 1);
         } finally {
             await stand.close();
             await scratch.drop();
+        }
+    });
+
+    it('AC-4.14: DB_POOL_MAX=1 — очистка выполняется на соединении блокировки, result="ok" (KT-22 п. 4)', async () => {
+        const stand = await createStand({
+            env: { DB_POOL_MAX: '1', DB_POOL_ACQUIRE_TIMEOUT_MS: '500' },
+        });
+        try {
+            await seed([
+                ['acme', 'pool-1', 25],
+                [OTHER_TENANT, 'pool-2', 26],
+            ]);
+            const before = await cleanupRuns(stand.metrics, 'ok');
+
+            await stand.cleanup.run();
+
+            expect(await cleanupRuns(stand.metrics, 'ok')).toBe(before + 1);
+            expect(await cleanupRuns(stand.metrics, 'error')).toBe(0);
+            expect(await keys()).toEqual([]);
+        } finally {
+            await stand.close();
         }
     });
 });

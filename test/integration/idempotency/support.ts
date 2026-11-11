@@ -45,18 +45,43 @@ export const handlers = {
     fail: null as 'error' | 'domain' | null,
 };
 
+/** Ожидающие входа в обработчик (сигнал вместо опроса). */
+let entryWaiters: ((call: number) => void)[] = [];
+
+/** Промис следующего входа в обработчик: номер вызова. */
+export function nextEntry(): Promise<number> {
+    return new Promise((resolve) => {
+        entryWaiters.push(resolve);
+    });
+}
+
+/** Шлагбаум обработчиков: возвращает функцию открытия. */
+export function closeGate(): () => void {
+    let open = (): void => undefined;
+    handlers.gate = new Promise<void>((resolve) => {
+        open = resolve;
+    });
+
+    return open;
+}
+
 /** Сброс состояния обработчиков. */
 export function resetHandlers(): void {
     handlers.calls = 0;
     handlers.gate = null;
     handlers.fail = null;
+    entryWaiters = [];
 }
 
 async function handle(body: unknown, reply: FastifyReply): Promise<unknown> {
     handlers.calls += 1;
     const n = handlers.calls;
-    if (handlers.gate !== null) {
-        await handlers.gate;
+    const gate = handlers.gate;
+    for (const notify of entryWaiters.splice(0)) {
+        notify(n);
+    }
+    if (gate !== null) {
+        await gate;
     }
     if (handlers.fail === 'error') {
         throw new Error('обработчик упал');
@@ -146,13 +171,17 @@ export interface IdempotencyStand {
 
 /** Собирает стенд; первый проход очистки после старта завершён до возврата. */
 export async function createStand(
-    options: { readonly url?: string; readonly overrides?: readonly KitTestOverride[] } = {},
+    options: {
+        readonly url?: string;
+        readonly env?: Readonly<Record<string, string>>;
+        readonly overrides?: readonly KitTestOverride[];
+    } = {},
 ): Promise<IdempotencyStand> {
     const signer = await createTestSigner();
     const app = await createDbApp({
         module: standModule(signer),
         schema: standEnv,
-        env: { DATABASE_URL: options.url ?? appUrl(), LOG_LEVEL: 'silent' },
+        env: { DATABASE_URL: options.url ?? appUrl(), LOG_LEVEL: 'silent', ...options.env },
         overrides: options.overrides,
     });
     const cleanup = app.get(IdempotencyCleanup);
@@ -214,7 +243,7 @@ export async function truncateIdempotency(): Promise<void> {
 /** Значение счётчика `verdeect_cleanup_runs_total` по итогу. */
 export async function cleanupRuns(
     metrics: KitMetrics,
-    result: 'ok' | 'partial' | 'error',
+    result: 'ok' | 'partial' | 'interrupted' | 'error',
 ): Promise<number> {
     const { values } = await metrics.cleanupRuns.get();
 

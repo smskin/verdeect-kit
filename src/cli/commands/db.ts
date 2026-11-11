@@ -181,15 +181,16 @@ async function failureOf(error: unknown): Promise<Record<string, unknown>> {
     if (error instanceof CommandError) {
         return { code: error.code, message: error.message, ...error.extra };
     }
-    const { isConnectionError } = await import('../../internal/pg-errors.js');
+    const { isConnectionError, sqlStateOf } = await import('../../internal/pg-errors.js');
     if (isConnectionError(error)) {
         return { code: 'DATABASE_UNAVAILABLE', message: 'БД недоступна' };
     }
     if (error instanceof TypeError || (error instanceof Error && error.name === 'KitUsageError')) {
         return { code: 'USAGE', message: error.message };
     }
-    const code = (error as { code?: unknown } | null)?.code;
-    const sqlState = typeof code === 'string' && code.length === 5 ? { sqlState: code } : {};
+    // SQLSTATE — по цепочке cause: у DrizzleQueryError код pg во вложенной ошибке (KT-22 п. 6).
+    const code = sqlStateOf(error);
+    const sqlState = code === null ? {} : { sqlState: code };
 
     return { code: 'DB_COMMAND_FAILED', message: 'команда db завершилась ошибкой', ...sqlState };
 }

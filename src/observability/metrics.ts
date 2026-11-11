@@ -23,7 +23,8 @@ export interface KitMetrics {
     /**
      * `verdeect_cleanup_runs_total{table, result}` — проходы фоновой очистки. `table` — имя таблицы без схемы, только
      * таблицы пакета (`idempotency_key`; E5 — `outbox`, `inbox`); `result`: `ok` — проход завершён, `partial` — упёрся
-     * в `maxBatches`, записи старше срока остались, `error` — проход упал. Проход без блокировки метрику не меняет;
+     * в `maxBatches`, записи старше срока остались, `interrupted` — остановлен (выкат; алерт не срабатывает), `error` —
+     * проход упал. Проход без блокировки метрику не меняет;
      * число удалённых строк — в `info`-логе прохода.
      */
     readonly cleanupRuns: Counter<'table' | 'result'>;
@@ -68,7 +69,7 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
         }),
         cleanupRuns: new Counter({
             name: 'verdeect_cleanup_runs_total',
-            help: 'Проходы фоновой очистки по таблице и итогу (ok, partial, error)',
+            help: 'Проходы фоновой очистки по таблице и итогу (ok, partial, interrupted, error)',
             labelNames: ['table', 'result'] as const,
             registers,
         }),

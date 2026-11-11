@@ -136,3 +136,17 @@ export function poolTimeoutOf(error: unknown): KitPoolName | null {
 
     return null;
 }
+
+/** SQLSTATE: 5 знаков `0-9A-Z` с цифрой (системные коды Node вроде `EPIPE` цифр не содержат). */
+const SQLSTATE = /^(?=.*\d)[0-9A-Z]{5}$/;
+
+/** SQLSTATE первого узла цепочки `cause` (до 10 уровней) или `null` — например, ошибка pg в `cause` `DrizzleQueryError`. */
+export function sqlStateOf(error: unknown): string | null {
+    for (const node of causeChain(error)) {
+        if (typeof node.code === 'string' && SQLSTATE.test(node.code)) {
+            return node.code;
+        }
+    }
+
+    return null;
+}

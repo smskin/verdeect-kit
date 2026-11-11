@@ -186,6 +186,22 @@ describe('UC-1: строгий RLS', () => {
         });
     });
 
+    it('AC-4.8: есть только idempotency_purge(bigint) с верными атрибутами — нарушение «функции нет» (точная сигнатура (integer))', async () => {
+        await withScratch(
+            [
+                `DROP FUNCTION ${PURGE}`,
+                `CREATE FUNCTION kit.idempotency_purge(batch bigint) RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path = kit, pg_temp AS 'SELECT 0'`,
+                'ALTER FUNCTION kit.idempotency_purge(bigint) OWNER TO kit_directory',
+                'REVOKE ALL ON FUNCTION kit.idempotency_purge(bigint) FROM PUBLIC',
+            ],
+            async (run) => {
+                await expect(run()).rejects.toThrow(
+                    'нет функции kit.idempotency_purge (idempotencyPurgeSql)',
+                );
+            },
+        );
+    });
+
     it('AC-4.8: except пропускает таблицу', async () => {
         await withScratch(['ALTER TABLE kit.note NO FORCE ROW LEVEL SECURITY'], async (run) => {
             await run({ schema: 'kit', except: ['note'] });
