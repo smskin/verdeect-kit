@@ -18,7 +18,7 @@
 
 ## Структура проекта
 
-Состояние после E5 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`. Следующие подпути появляются по этапам E7–E8 (`requirements/0000-kit/README.md`).
+Состояние после E7 (в `[Unreleased]`; выпуск — `1.0.0-rc.1` после E8): подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`. Следующий подпуть — `/redis` (этап E8, `requirements/0000-kit/README.md`).
 
 ```
 verdeect-kit/
@@ -38,11 +38,13 @@ verdeect-kit/
 │   ├── messaging/                # ./messaging — §3.4: peer, errors, define-event, envelope, tables, topology, redelivery,
 │                                 #   rabbit-connection, outbox-store, outbox-relay, inbox, subscriber, cleanup, config,
 │                                 #   kit-messaging.module
+│   ├── crypto/                   # ./crypto — §3.6: cipher (createCipher, DecryptError, generateSecret), index
 │   ├── testing/                  # ./testing (только development) — §3.8 E1, E3, E4: images, start-test-stack, repo-files,
 │                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale, create-test-app,
 │                                 #   expect-problem, expect-matches-api, scratch-database, worker-scope,
 │                                 #   tenant-isolation, count-queries, rabbitmq-admin, outbox-coverage, test-events
-│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts, commands/db.ts, commands/rabbitmq.ts
+│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts, commands/db.ts, commands/rabbitmq.ts,
+│                                 #   commands/crypto.ts
 ├── alerts/verdeect-kit.rules.yml # шаблон правил vmalert (alertRulesTemplate, §3.2), входит в архив
 ├── test/
 │   ├── unit/<подпуть>/           # U: без сети и Docker (+ *.test-d.ts)
@@ -94,6 +96,7 @@ verdeect-kit/
 | `src/observability/index.ts` | публичная поверхность `@verdeect/kit/observability` |
 | `src/http/index.ts` | публичная поверхность `@verdeect/kit/http` |
 | `src/messaging/index.ts` | публичная поверхность `@verdeect/kit/messaging` |
+| `src/crypto/index.ts` | публичная поверхность `@verdeect/kit/crypto` |
 | `src/cli/main.ts` | CLI `verdeect-kit` (поле `bin`) |
 | `src/testing/index.ts` | публичная поверхность `@verdeect/kit/testing` |
 | `package.json` | `exports`, peer-зависимости (NFR-3), скрипты |

@@ -77,14 +77,18 @@ const encryptionSecret = z
         }
     });
 
+/**
+ * @internal Массив ключей шифра `[{version, secret}]`: одна проверка для envCrypto и createCipher (§3.6);
+ * из /config не реэкспортируется.
+ */
+export const encryptionKeysSchema = z
+    .array(z.object({ version: z.number().int().positive(), secret: encryptionSecret }))
+    .min(1)
+    .superRefine(uniqueBy('version'));
+
 /** Ключи шифра (§3.1, §3.6): ENCRYPTION_KEYS — JSON `[{version, secret}]`, версии без повторов. */
 export const envCrypto = {
-    ENCRYPTION_KEYS: jsonValue(
-        z
-            .array(z.object({ version: z.number().int().positive(), secret: encryptionSecret }))
-            .min(1)
-            .superRefine(uniqueBy('version')),
-    ),
+    ENCRYPTION_KEYS: jsonValue(encryptionKeysSchema),
 };
 
 /**

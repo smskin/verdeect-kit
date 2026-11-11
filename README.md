@@ -45,7 +45,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 | `/database`      | E4   | готов, в `[Unreleased]` |
 | `/idempotency`   | E4   | готов, в `[Unreleased]` |
 | `/messaging`     | E5   | готов, в `[Unreleased]` |
-| `/crypto`        | E7   | в своём этапе           |
+| `/crypto`        | E7   | готов, в `[Unreleased]` |
 | `/redis`         | E8   | в своём этапе           |
 
 Все подпути выходят вместе в `1.0.0-rc.1` после E8 (G14).
@@ -405,6 +405,27 @@ export class CompanyEvents implements OnModuleInit {
 
 **Остановка**: relay, подписчик (снять потребителей → дождаться доставок → закрыть канал) и очистка — шаг 3, соединение RabbitMQ — шаг 4, в общем сроке `SHUTDOWN_TIMEOUT_MS`. Проба `/health` `rabbitmq` — некритичная.
 
+## Шифр
+
+`@verdeect/kit/crypto` шифрует секреты в БД (секреты клиентов, ключи агентов, сессии): AES-256-GCM, ключ каждой версии — HKDF-SHA256 от декодированных байт секрета, соль пустая, `info = verdeect-<svc>:<purpose>`. Один секрет `ENCRYPTION_KEYS` даёт разные ключи для разных сервисов и назначений. Шифр — чистые функции без Nest-модуля и без `pg`.
+
+```ts
+import { createCipher, DecryptError } from '@verdeect/kit/crypto';
+
+const cipher = createCipher({ service: 'identity', keys: env.ENCRYPTION_KEYS, purpose: 'client-secret' });
+const value = cipher.encrypt(secret, { aad: `client-secret:${client.id}` });
+const plain = cipher.decrypt(value, { aad: `client-secret:${client.id}` });
+if (cipher.needsReencrypt(value)) {
+    // перешифровать в задаче под runExclusive
+}
+```
+
+- Значение — `v<N>:<iv>:<ct>:<tag>` в base64url без `=`: `N` — версия ключа, IV 12 байт, тег 16 байт. Шифрует первый ключ `keys`, расшифровывает ключ версии значения — без перебора.
+- `aad = <purpose>:<id записи>` обязателен: значение одной записи не расшифровывается в другой. Пустой `aad` — `TypeError`.
+- `DecryptError.reason`: `'format'` — значение вне формата (в том числе неканоничный base64url: лишний символ или изменённые хвостовые биты), `'unknown_version'` — версии нет в `keys`, `'auth'` — другой `aad`, ключ или изменённое значение. Текст ошибки без значения, `aad`, открытого текста и ключей.
+- Старые форматы сервисов (`v1:` base64, строковая версия, перебор секретов) не читаются: значения создаются заново при переходе (§10).
+- Секрет — `verdeect-kit crypto generate-secret | jq -r .secret` (`--bytes` — целое ≥ 32, по умолчанию 32) или `generateSecret()`.
+
 ## Тесты сервиса
 
 Подпуть `/testing` разрешается только с условием `development` (NFR-4): в production-сборке сервиса его нет. Vitest включает это условие сам; для `node` — `node --conditions=development`.
@@ -490,7 +511,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>`.
 - RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `verdeect.events`, `amq.default` и свои очереди, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно.
 - DLQ — разбор в 7 дней: сообщения `<svc>.dlq` разбирает владелец сервиса не позже 7 дней (алерт `VerdeectEventsDlq`); причина — заголовок `x-dlq-reason`; повторная отправка — перекладкой в `<svc>` после исправления.
-- Смена ключа шифра (UC-10): новый секрет `verdeect-kit crypto generate-secret` (с E7) → новая версия первой в `ENCRYPTION_KEYS` → перезапуск → перешифровка → удаление старой версии.
+- Смена ключа шифра `ENCRYPTION_KEYS` (UC-10): 1) новый секрет — `verdeect-kit crypto generate-secret | jq -r .secret` (единственный рекомендуемый способ); 2) новая версия **первой** в `ENCRYPTION_KEYS`, старая остаётся; 3) перезапуск всех реплик; 4) задача сервиса под `runExclusive` перешифровывает значения с `needsReencrypt(value) === true`; 5) старая версия убирается из `ENCRYPTION_KEYS`, когда значений под ней не осталось.
 - Смена TTL `.retry` (`RABBITMQ_RETRY_SECONDS`): 1) остановить все реплики сервиса; 2) дождаться опустошения `<svc>.retry` (или переложить сообщения в `<svc>`); 3) удалить очередь `<svc>.retry`; 4) задать новый `RABBITMQ_RETRY_SECONDS` и запустить реплики — очередь объявится с новым TTL. Иначе — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь».
 
 ## Реестр префиксов id
@@ -655,6 +676,17 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `ExpectedMessageError` — ожидаемый отказ: повтор, затем DLQ с кодом, без GlitchTip.
 - `InvalidMessageError` — сообщение не обработать никогда: сразу DLQ с причиной.
 - `MessagingStartupError` — отказ запуска `/messaging` с кодом `MESSAGING_TENANT_NOT_NULLABLE` или `MESSAGING_RETRY_TTL_MISMATCH` (`startupCode`, `startupDetails()`).
+
+### @verdeect/kit/crypto
+
+- `createCipher` — `createCipher({service, keys, purpose})`: шифр назначения; неверные `service`, `purpose` или `keys` — `TypeError` с путём без значений.
+- `KitCipher` — `encrypt(plaintext, {aad})`, `decrypt(value, {aad})`, `needsReencrypt(value)`.
+- `KitCipherOptions` — `{service, keys: [{version, secret}], purpose}`.
+- `DecryptError` — отказ `decrypt` с `reason`, без открытого текста и ключей.
+- `DecryptErrorReason` — `'format' | 'unknown_version' | 'auth'`.
+- `generateSecret` — `generateSecret(bytes = 32)`: секрет base64url без `=`; `bytes` не целое или < 32 — `RangeError`.
+
+CLI: `verdeect-kit crypto generate-secret [--bytes 32]` → `{"secret":"…"}` в stdout; `--bytes` — целое ≥ 32, иначе `{"error": {"code": "USAGE"}}` и выход 1.
 
 ### @verdeect/kit/testing
 

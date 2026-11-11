@@ -115,6 +115,8 @@ describe('UC-16: архив пакета', () => {
         expect(entries).toContain('package/dist/idempotency/index.js');
         expect(entries).toContain('package/dist/messaging/index.js');
         expect(entries).toContain('package/dist/cli/commands/rabbitmq.js');
+        expect(entries).toContain('package/dist/crypto/index.js');
+        expect(entries).toContain('package/dist/cli/commands/crypto.js');
         expect(entries).toContain('package/dist/internal/rabbitmq-definitions.js');
         expect(entries).toContain('package/dist/cli/main.js');
         expect(entries).toContain('package/alerts/verdeect-kit.rules.yml');
@@ -144,6 +146,7 @@ describe('UC-16: архив пакета', () => {
             'database',
             'idempotency',
             'messaging',
+            'crypto',
         ]
             .flatMap((dir) => filesUnder(join(REPO_ROOT, 'dist', dir)))
             .filter((file) => file.endsWith('.js'));
@@ -157,6 +160,28 @@ describe('UC-16: архив пакета', () => {
         );
 
         expect(offending).toEqual([]);
+    });
+
+    it('AC-1.2: dist/crypto загружает только node:*, zod и свои файлы (без pg, @nestjs/*, dist/config/index.js, dist/testing)', () => {
+        const { seen, specifiers } = importGraph(join(REPO_ROOT, 'dist', 'crypto', 'index.js'));
+        const files = [...seen].map((file) => relative(REPO_ROOT, file));
+
+        expect(files).toContain(join('dist', 'crypto', 'cipher.js'));
+        expect(
+            specifiers.filter(
+                (specifier) =>
+                    !specifier.startsWith('.') &&
+                    !specifier.startsWith('node:') &&
+                    specifier !== 'zod',
+            ),
+        ).toEqual([]);
+        expect(
+            files.filter(
+                (file) =>
+                    file === join('dist', 'config', 'index.js') ||
+                    !/^dist\/(crypto|config|internal)\//.test(file),
+            ),
+        ).toEqual([]);
     });
 
     it('§3.2: dist/observability не загружает @nestjs/* и config/index.js', () => {

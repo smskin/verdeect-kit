@@ -9,6 +9,7 @@ import { REPO_ROOT } from './support/pack.js';
 const ROOT_DOCS = ['README.md', 'CHANGELOG.md', 'AGENTS.md'];
 const ENTRY_POINTS = [
     'src/config/index.ts',
+    'src/crypto/index.ts',
     'src/database/index.ts',
     'src/http/index.ts',
     'src/idempotency/index.ts',
@@ -135,6 +136,10 @@ describe('UC-16: документация пакета', () => {
             'RABBITMQ_PASSWORD_HASH_',
             'удалить очередь',
             'x-dlq-reason',
+            'crypto generate-secret',
+            'jq -r .secret',
+            'needsReencrypt',
+            'первой',
         ]) {
             expect(deploy, fragment).toContain(fragment);
         }

@@ -49,11 +49,12 @@ const OPTIONAL_PEERS: Record<string, string> = {
     '@nestjs/testing': '^12.1.0',
 };
 
-describe('AC-1.1: точки входа пакета (E1–E5)', () => {
-    it('AC-1.1: exports — ровно ./config, ./database, ./http, ./idempotency, ./messaging, ./observability, ./testing, ./package.json', () => {
+describe('AC-1.1: точки входа пакета (E1–E7)', () => {
+    it('AC-1.1: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
             [
                 './config',
+                './crypto',
                 './database',
                 './http',
                 './idempotency',
@@ -90,6 +91,13 @@ describe('AC-1.1: точки входа пакета (E1–E5)', () => {
         expect(manifest.exports['./http']).toEqual({
             types: './dist/http/index.d.ts',
             default: './dist/http/index.js',
+        });
+    });
+
+    it('AC-1.1: ./crypto — {types, default} на dist/crypto/index.*', () => {
+        expect(manifest.exports['./crypto']).toEqual({
+            types: './dist/crypto/index.d.ts',
+            default: './dist/crypto/index.js',
         });
     });
 

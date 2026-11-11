@@ -188,6 +188,28 @@ export default [
         ]),
     },
     {
+        files: ['src/crypto/**/*.ts'],
+        rules: restrictedImports([
+            {
+                group: [
+                    '@nestjs/*',
+                    '../config/index.js',
+                    '../observability/*',
+                    '../http/*',
+                    '../database/*',
+                    '../idempotency/*',
+                    '../messaging/*',
+                    '../redis/*',
+                    '../testing/*',
+                    '../cli/*',
+                    'shell-quote',
+                ],
+                message:
+                    'crypto импортирует только node:crypto, config/fragments и internal (ARCHITECTURE.md).',
+            },
+        ]),
+    },
+    {
         files: ['src/observability/**/*.ts'],
         rules: restrictedImports([
             {

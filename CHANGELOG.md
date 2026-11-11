@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14), `/messaging` и CLI `rabbitmq` (этап E5, PRD v1.14).
+Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14), `/messaging` и CLI `rabbitmq` (этап E5, PRD v1.14), `/crypto` и CLI `crypto` (этап E7, PRD v1.16).
 
 ### Added
 
@@ -87,6 +87,10 @@
 - `/testing`: `publishTestEvent`, `waitForInbox` — публикация конверта в vhost воркера и ожидание обработки подписчиком без `sleep`.
 - `/testing`: ключи `inject` `kitDatabaseUrl`, `kitDatabaseOwnerUrl`, `kitDatabaseAdminUrl`, `kitDatabaseService`, `kitDatabaseTemplate`.
 - CLI `verdeect-kit db`: `prepare --service <svc>`, `migrate --folder <путь> --schema <svc>`, `move-journal --from <схема> --to <svc>`; коды ошибок `USAGE`, `INVALID_ENVIRONMENT`, `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED`.
+- `/crypto`: `createCipher` и типы `KitCipher`, `KitCipherOptions` — AES-256-GCM, ключ HKDF-SHA256 (`info = verdeect-<svc>:<purpose>`), значение `v<N>:<iv>:<ct>:<tag>` base64url, обязательный `aad`, `needsReencrypt`; `keys` проверяются схемой `ENCRYPTION_KEYS`.
+- `/crypto`: `DecryptError` и тип `DecryptErrorReason` — `'format' | 'unknown_version' | 'auth'` без открытого текста и ключей.
+- `/crypto`: `generateSecret(bytes = 32)` — секрет base64url без `=` (не меньше 32 байт).
+- CLI `verdeect-kit crypto generate-secret [--bytes N]` — `{"secret":"…"}` в stdout; код ошибки `USAGE`.
 
 ### Changed
 
@@ -109,6 +113,7 @@
 - `/testing`: `assertStrictTenantIsolation` проверяет функцию очистки по точной сигнатуре `idempotency_purge(integer)`; другая перегрузка без нужной — «функции нет» (KT-22 п. 7).
 - Тесты `/database` и `/idempotency` уровня I — без реальных пауз: сигналы входа в обработчик, события `acquire` пула и шлагбаумы вместо `setTimeout` и опроса (KT-22 п. 8).
 - `/testing`: `publishTestEvent` после обрыва соединения или закрытия канала открывает новое соединение при следующем вызове (раньше переиспользовал закрытый канал); неудачное подключение не запоминается.
+- `/testing`: `publishTestEvent` закрывает соединение, если после `connect()` не открылся confirm-канал, — повторные неудачные вызовы не копят открытых соединений (KT-24 п. 1).
 - `/database`: `runExclusive` сбрасывает сеанс соединения блокировки (`RESET ALL`) перед возвратом в пул; TSDoc запрещает `SET` и `set_config(…, false)` внутри `fn`.
 - `/http`: OpenAPI — у маршрутов с `@RequireTenant()` ответ 409 `TENANT_REQUIRED` (тело guard'а `@verdeect/auth`); `expectMatchesApi` проверяет описанные статусы ошибок по схеме `ErrorResponse` и падает на неописанном статусе.
 - `/http`: `bootstrapService` — `SENTRY_NOT_PRELOADED` только при верной конфигурации Sentry (верный `SENTRY_DSN`, `NODE_ENV = production`); при неверном `SENTRY_*` предупреждения нет — `initSentry` выключил Sentry намеренно.

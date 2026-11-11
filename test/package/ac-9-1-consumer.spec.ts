@@ -1,4 +1,4 @@
-// AC-9.1 (UC-1, UC-16; E4 — БД и идемпотентность, drizzle-kit; E5 — сообщения), AC-1.1 (условие development), AC-1.2
+// AC-9.1 (UC-1, UC-16; E4 — БД и идемпотентность, drizzle-kit; E5 — сообщения; E7 — шифр и CLI crypto), AC-1.1 (условие development), AC-1.2
 // (уровень C), AC-3.8, AC-5.13 (покрытие outbox), AC-5.18 (vhost воркера)
 // (снимок OpenAPI): проекты-потребители на упакованном архиве (prd.md §3.5, §3.8, NFR-3, NFR-4). Нужны Docker (startTestStack) и сеть до реестра npm.
 import { existsSync } from 'node:fs';
@@ -95,7 +95,7 @@ describe('UC-1: проекты-потребители', () => {
         const result = await runInConsumer(dir(minimal), 'node', ['import-check.mjs']);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
+            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
         );
     });
 
@@ -106,7 +106,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ok',
+            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok testing:ok',
         );
     });
 
@@ -121,7 +121,7 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.code, describeResult(result)).toBe(0);
     });
 
-    it('AC-1.2: без pg и testcontainers /config, /http, /messaging, /observability импортируются; /database — «@verdeect/kit/database требует pg — добавьте в зависимости сервиса»; /idempotency — «@verdeect/kit/idempotency требует pg — …»; /testing — «… требует testcontainers …»', async () => {
+    it('AC-1.2: без pg и testcontainers /config, /crypto, /http, /messaging, /observability импортируются; /database — «@verdeect/kit/database требует pg — добавьте в зависимости сервиса»; /idempotency — «@verdeect/kit/idempotency требует pg — …»; /testing — «… требует testcontainers …»', async () => {
         const project = dir(noTestcontainers);
         expect(existsSync(join(project, 'node_modules', 'pg'))).toBe(false);
         expect(existsSync(join(project, 'node_modules', 'testcontainers'))).toBe(false);
@@ -132,6 +132,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout, describeResult(result)).toContain('config:ok');
+        expect(result.stdout, describeResult(result)).toContain('crypto:ok');
         expect(result.stdout, describeResult(result)).toContain('http:ok');
         expect(result.stdout, describeResult(result)).toContain('observability:ok');
         expect(result.stdout, describeResult(result)).toContain(
@@ -155,6 +156,30 @@ describe('UC-1: проекты-потребители', () => {
             'dedupe-none:ok',
             'outbox:@verdeect/kit/messaging требует pg — добавьте в зависимости сервиса',
         ]);
+    });
+
+    it('AC-9.1: verdeect-kit crypto generate-secret из архива — секрет принимается createCipher потребителя', async () => {
+        const generated = await runInConsumer(dir(minimal), 'pnpm', [
+            'exec',
+            'verdeect-kit',
+            'crypto',
+            'generate-secret',
+        ]);
+        expect(generated.code, describeResult(generated)).toBe(0);
+        const { secret } = JSON.parse(generated.stdout.trim()) as { secret: string };
+
+        const result = await runInConsumer(dir(minimal), 'node', [
+            '--input-type=module',
+            '-e',
+            [
+                "import { createCipher } from '@verdeect/kit/crypto';",
+                `const cipher = createCipher({ service: 'consumer', keys: [{ version: 1, secret: ${JSON.stringify(secret)} }], purpose: 'client-secret' });`,
+                "const opts = { aad: 'client-secret:cli_1' };",
+                "console.log(cipher.decrypt(cipher.encrypt('text', opts), opts) === 'text' ? 'ok' : 'mismatch');",
+            ].join('\n'),
+        ]);
+
+        expect(result.stdout.trim(), describeResult(result)).toBe('ok');
     });
 
     it('AC-9.1: drizzle-kit загружает схему потребителя с @verdeect/kit/database и /idempotency — «No schema changes»', async () => {

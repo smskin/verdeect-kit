@@ -1,7 +1,14 @@
 // AC-1.1, AC-1.6: типы пакета (.d.ts архива) проверяются tsc потребителя; /observability — §3.2; /http — §3.5;
-// /database — §3.3, /idempotency — §3.3а, /testing — §3.8 (E4).
+// /database — §3.3, /idempotency — §3.3а, /testing — §3.8 (E4); /crypto — §3.6 (E7).
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { defineEnv, envBase, parseEnv } from '@verdeect/kit/config';
+import {
+    createCipher,
+    DecryptError,
+    generateSecret,
+    type DecryptErrorReason,
+    type KitCipher,
+} from '@verdeect/kit/crypto';
 import { DomainError, type KitBootstrapOptions, type Page } from '@verdeect/kit/http';
 import {
     createLoggerOptions,
@@ -86,3 +93,16 @@ export const messagingOptionsCheck: KitMessagingModuleOptions = {
     service: 'consumer',
     subscriber: { dedupe: 'none' },
 };
+
+// /crypto (E7): шифр назначения, обязательный aad, причина DecryptError.
+const cipher: KitCipher = createCipher({
+    service: 'consumer',
+    keys: [{ version: 1, secret: generateSecret() }],
+    purpose: 'client-secret',
+});
+// @ts-expect-error aad обязателен (§3.6)
+cipher.encrypt('x');
+export const encrypted: string = cipher.encrypt('x', { aad: 'client-secret:cli_1' });
+export function reasonOf(error: unknown): DecryptErrorReason | null {
+    return error instanceof DecryptError ? error.reason : null;
+}
