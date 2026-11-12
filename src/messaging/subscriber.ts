@@ -58,6 +58,8 @@ const PARSE_REASONS = new Set(['not-json', 'envelope', 'unsubscribed', 'tenant',
 interface Registered {
     readonly event: KitEvent;
     readonly handler: (event: Envelope, tx: DbTx | null) => Promise<void>;
+    /** Защита от повторов обработчика: опция `on` или `dedupe` модуля. */
+    readonly dedupe: 'inbox' | 'none';
 }
 
 /** Зависимости подписчика (внутренние). */
@@ -121,11 +123,27 @@ export class KitSubscriber {
     }
 
     /**
-     * Обработчик события из очереди `<svc>`.
-     * @throws {TypeError} тип уже зарегистрирован или приложение уже запущено.
+     * Обработчик события из очереди `<svc>`. `dedupe` переопределяет `dedupe` модуля (§3.4 v1.25): `'none'` — без inbox
+     * и без транзакции пакета, обработчик получает `(event, null)` и сам открывает короткие транзакции через `Db`;
+     * `'inbox'` — inbox и транзакция `Db` с `DbContext` из конверта.
+     * @throws {TypeError} тип уже зарегистрирован, приложение уже запущено, `dedupe` вне `'inbox' | 'none'` или
+     * `'inbox'` без таблицы inbox у модуля (отказ запуска).
      */
-    on<E extends KitEvent>(event: E, handler: KitEventHandler<E>): void {
-        this.register(this.handlers, 'on', event, handler as Registered['handler']);
+    on<E extends KitEvent>(
+        event: E,
+        handler: KitEventHandler<E>,
+        options: { readonly dedupe?: 'inbox' | 'none' } = {},
+    ): void {
+        const dedupe = options.dedupe ?? this.deps.dedupe;
+        if (dedupe !== 'inbox' && dedupe !== 'none') {
+            throw new TypeError(`KitSubscriber.on: dedupe ${String(dedupe)} — 'inbox' или 'none'`);
+        }
+        if (dedupe === 'inbox' && this.deps.inbox === undefined) {
+            throw new TypeError(
+                `KitSubscriber.on: обработчик ${event.type} с dedupe: 'inbox' — у KitMessagingModule нет таблицы inbox (subscriber.inbox: createInboxTable(schema))`,
+            );
+        }
+        this.register(this.handlers, 'on', event, handler as Registered['handler'], dedupe);
     }
 
     /**
@@ -135,8 +153,12 @@ export class KitSubscriber {
      * @throws {TypeError} тип уже зарегистрирован или приложение уже запущено.
      */
     onReplica<E extends KitEvent>(event: E, handler: KitReplicaHandler<E>): void {
-        this.register(this.replicaHandlers, 'onReplica', event, (envelope) =>
-            (handler as KitReplicaHandler<KitEvent>)(envelope),
+        this.register(
+            this.replicaHandlers,
+            'onReplica',
+            event,
+            (envelope) => (handler as KitReplicaHandler<KitEvent>)(envelope),
+            'none',
         );
     }
 
@@ -228,6 +250,7 @@ export class KitSubscriber {
         method: 'on' | 'onReplica',
         event: KitEvent,
         handler: Registered['handler'],
+        dedupe: Registered['dedupe'],
     ): void {
         if (this.started) {
             throw new TypeError(
@@ -239,7 +262,7 @@ export class KitSubscriber {
                 `KitSubscriber.${method}: обработчик ${event.type} уже зарегистрирован`,
             );
         }
-        registry.set(event.type, { event, handler });
+        registry.set(event.type, { event, handler, dedupe });
     }
 
     /**
@@ -403,7 +426,7 @@ export class KitSubscriber {
     /** true — повтор `id` (inbox занят), обработчик не вызван. */
     private async invoke(registered: Registered, envelope: Envelope): Promise<boolean> {
         const { db, inbox } = this.deps;
-        if (this.deps.dedupe === 'none' || db === undefined || inbox === undefined) {
+        if (registered.dedupe === 'none' || db === undefined || inbox === undefined) {
             await registered.handler(envelope, null);
 
             return false;

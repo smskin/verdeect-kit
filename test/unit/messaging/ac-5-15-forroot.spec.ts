@@ -48,13 +48,16 @@ describe('UC-5: опции outbox', () => {
         expect(module.module).toBe(KitMessagingModule);
     });
 
-    it('§3.4: inbox без dedupe inbox, таблицы разных схем, дубликат события → TypeError', async () => {
-        await expect(
-            KitMessagingModule.forRoot({
-                service: 'kitnn',
-                subscriber: { dedupe: 'none', inbox: createInboxTable(kitnn) },
-            }),
-        ).rejects.toThrow(TypeError);
+    it("§3.4 v1.25: inbox при dedupe: 'none' модуля — собирается (для обработчиков с {dedupe: 'inbox'})", async () => {
+        const module = await KitMessagingModule.forRoot({
+            service: 'kitnn',
+            subscriber: { dedupe: 'none', inbox: createInboxTable(kitnn) },
+        });
+
+        expect(module.module).toBe(KitMessagingModule);
+    });
+
+    it('§3.4: dedupe inbox без таблицы, таблицы разных схем, дубликат события → TypeError', async () => {
         await expect(
             KitMessagingModule.forRoot({ service: 'kitnn', subscriber: {} }),
         ).rejects.toThrow(/требует inbox/);

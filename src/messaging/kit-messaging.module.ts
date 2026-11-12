@@ -57,7 +57,8 @@ export interface KitMessagingModuleOptions {
     readonly outbox?: { readonly table: KitOutboxTable; readonly events: readonly KitEvent[] };
     /**
      * Подписчик; не задан — подписчика нет. `dedupe` по умолчанию `'inbox'` и требует `inbox: createInboxTable(schema)`;
-     * `'none'` — без БД и inbox (роль BFF).
+     * `'none'` — без БД и inbox (роль BFF). Обработчик может переопределить `dedupe` опцией `on(E, h, {dedupe})`;
+     * `inbox` при `'none'` модуля — для обработчиков с `{dedupe: 'inbox'}`.
      */
     readonly subscriber?: {
         /** Защита от повторов подписчика. */
@@ -236,7 +237,8 @@ function subscriberProviders(config: KitMessagingConfig): Provider[] {
     if (!config.subscriber) {
         return [];
     }
-    const withDb = config.dedupe === 'inbox' && config.database !== undefined;
+    // Db — при таблице inbox: её используют обработчики с dedupe 'inbox' (модуля или опции on, v1.25).
+    const withDb = config.inbox !== undefined && config.database !== undefined;
 
     return [
         {
@@ -370,14 +372,13 @@ export class KitMessagingModule {
         assertServiceName(options.service, 'KitMessagingModule');
         const dedupe = options.subscriber?.dedupe ?? 'inbox';
         const subscriber = options.subscriber !== undefined;
-        const needsDb = options.outbox !== undefined || (subscriber && dedupe === 'inbox');
+        const needsDb =
+            options.outbox !== undefined ||
+            (subscriber && (dedupe === 'inbox' || options.subscriber?.inbox !== undefined));
         if (subscriber && dedupe === 'inbox' && options.subscriber?.inbox === undefined) {
             throw new TypeError(
                 "KitMessagingModule: subscriber с dedupe: 'inbox' требует inbox: createInboxTable(schema)",
             );
-        }
-        if (dedupe === 'none' && options.subscriber?.inbox !== undefined) {
-            throw new TypeError("KitMessagingModule: inbox не используется при dedupe: 'none'");
         }
         const listen = options.listen ?? true;
         if (typeof listen !== 'boolean') {
