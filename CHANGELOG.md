@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-11-12
+
+Находки переходов сервисов (PRD v1.23): Orchestrator OR-139/143 (К1, К2, К4, К7, К9), BFF-60, Platform PL-48.
+
 ### Added
 
 - `/http`: `DomainError(code, details?, {message?, headers?, status?, cause?})` — текст случая, заголовки ответа (имена — к нижнему регистру; `set-cookie`, заголовки безопасности и `retry-after` у `RATE_LIMITED` — `TypeError`), статус из объявленных; тип `KitDomainErrorOptions`.
