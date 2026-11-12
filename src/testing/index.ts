@@ -29,4 +29,4 @@ export type { KitCountablePool, KitCountQueriesOptions } from './count-queries.j
 export { assertAppRoleIsNotOwner, assertStrictTenantIsolation } from './tenant-isolation.js';
 export type { KitQueryable, KitTenantIsolationOptions } from './tenant-isolation.js';
 export { assertOutboxCoverage, expectOutbox } from './outbox-coverage.js';
-export { publishTestEvent, waitForInbox } from './test-events.js';
+export { publishTestEvent, waitForBrokerReady, waitForInbox } from './test-events.js';
