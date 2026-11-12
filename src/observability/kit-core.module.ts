@@ -2,9 +2,11 @@
 // экземпляра (entry 'cli' — stderr), HealthRegistry, KitLifecycle, kitMetrics и KIT_METRICS. KitHttpCoreModule
 // импортирует его сам (createHttpApp, bootstrapService не меняются); контекст CLI сервиса подключает его явно. Сервер
 // метрик и /health поднимает только bootstrapService — в режиме 'cli' их нет по построению.
-import { Module, type DynamicModule } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+// Без импорта @nestjs/* во время выполнения (§3.2: /observability грузится в instrument.ts до приложения): класс модуля
+// без декоратора (метаданные — в DynamicModule), окружение — провайдер разобранного окружения KitConfigModule.
+import type { DynamicModule } from '@nestjs/common';
 import { pino, type Logger } from 'pino';
+import { KIT_PARSED_ENV } from '../internal/preparsed-env.js';
 import type { KitBaseEnv } from '../config/fragments.js';
 import { KIT_LOGGER, KIT_METRICS, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from './health-registry.js';
@@ -46,18 +48,31 @@ const CORE_ENV = Symbol('KIT_CORE_ENV');
 /** @internal Параметры логгера ядра: журнал доступа `KitHttpCoreModule` строится на них. */
 export const KIT_LOGGER_PARAMS = Symbol('KIT_LOGGER_PARAMS');
 
-function coreEnv(config: ConfigService | null | undefined, entry: string): CoreEnv {
-    if (config === null || config === undefined) {
+function coreEnv(
+    env: Readonly<Record<string, unknown>> | null | undefined,
+    entry: string,
+): CoreEnv {
+    if (env === null || env === undefined) {
         throw new Error(
             `${entry === 'http' ? 'createHttpApp' : 'KitCoreModule'}: модуль сервиса не импортирует KitConfigModule.forRoot({schema})`,
         );
     }
 
+    const value = <K extends keyof CoreEnv>(key: K): CoreEnv[K] => {
+        if (env[key] === undefined) {
+            throw new Error(
+                `${entry === 'http' ? 'createHttpApp' : 'KitCoreModule'}: в схеме окружения нет ${key} (envBase)`,
+            );
+        }
+
+        return env[key] as CoreEnv[K];
+    };
+
     return {
-        LOG_LEVEL: config.getOrThrow('LOG_LEVEL'),
-        REPLICA_ID: config.getOrThrow('REPLICA_ID'),
-        SHUTDOWN_TIMEOUT_MS: config.getOrThrow('SHUTDOWN_TIMEOUT_MS'),
-        SHUTDOWN_DRAIN_MS: config.getOrThrow('SHUTDOWN_DRAIN_MS'),
+        LOG_LEVEL: value('LOG_LEVEL'),
+        REPLICA_ID: value('REPLICA_ID'),
+        SHUTDOWN_TIMEOUT_MS: value('SHUTDOWN_TIMEOUT_MS'),
+        SHUTDOWN_DRAIN_MS: value('SHUTDOWN_DRAIN_MS'),
     };
 }
 
@@ -66,7 +81,6 @@ function coreEnv(config: ConfigService | null | undefined, entry: string): CoreE
  * `/messaging`, `/redis`, `/idempotency`, лимитер) требуют его — без ядра ошибка при сборке контекста. Требует
  * `KitConfigModule`.
  */
-@Module({})
 export class KitCoreModule {
     /** Ядро одного экземпляра (приложения или команды CLI). */
     static forRoot(options: KitCoreModuleOptions): DynamicModule {
@@ -76,8 +90,9 @@ export class KitCoreModule {
             providers: [
                 {
                     provide: CORE_ENV,
-                    useFactory: (config?: ConfigService) => coreEnv(config, options.entry),
-                    inject: [{ token: ConfigService, optional: true }],
+                    useFactory: (env?: Readonly<Record<string, unknown>>) =>
+                        coreEnv(env, options.entry),
+                    inject: [{ token: KIT_PARSED_ENV, optional: true }],
                 },
                 {
                     provide: KIT_LOGGER_PARAMS,
