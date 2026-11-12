@@ -16,6 +16,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import type { TestProject } from 'vitest/node';
 import { loadPeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
+import { PUBLISH_PREFIX_PATTERN } from '../internal/rabbitmq-definitions.js';
 import { buildRedisAclFile, redisPasswordHash } from '../internal/redis-acl.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import type { KitEvent } from '../messaging/define-event.js';
@@ -59,6 +60,11 @@ export interface TestStackOptions {
      * vhost и пользователей с префиксом `<svc>-test-` (AC-5.18).
      */
     readonly rabbitmq?: boolean;
+    /**
+     * Префиксы ключей публикации пользователя воркера в `verdeect.events` (как `--publishes` CLI, `['identity.']`); без
+     * них воркер не публикует. `publishTestEvent` ходит от администратора vhost и не ограничивается.
+     */
+    readonly publishes?: readonly string[];
     /**
      * Redis TEST_IMAGES.redis с aclfile (тот же генератор, что `verdeect-kit redis acl`): пользователь сервиса
      * `~<svc>:* &<svc>:*` — kitRedisUrl, администратор теста — kitRedisAdminUrl, имя сервиса — kitRedisService. Пользователей
@@ -325,7 +331,11 @@ export function maxWorkersOf(configs: readonly { readonly maxWorkers?: unknown }
     return counts.length === 0 ? Math.max(1, availableParallelism()) : Math.max(...counts);
 }
 
-function rabbitmqPart(labels: Record<string, string>, service: string): StackPart {
+function rabbitmqPart(
+    labels: Record<string, string>,
+    service: string,
+    publishes: readonly string[] | undefined,
+): StackPart {
     const password = randomBytes(16).toString('hex');
     const prefix = `${service}-test-`;
     let admin: RabbitAdmin | undefined;
@@ -355,6 +365,7 @@ function rabbitmqPart(labels: Record<string, string>, service: string): StackPar
             ]);
             const prepared = await prepareWorkerVhosts(admin, {
                 service,
+                ...(publishes === undefined ? {} : { publishes }),
                 workers,
                 runId: randomBytes(4).toString('hex'),
                 amqpAdminUrl: url,
@@ -433,6 +444,15 @@ export function startTestStack(
     if (options.migrations !== undefined && options.postgres !== true) {
         throw new TypeError('startTestStack: migrations требует postgres: true');
     }
+    if (options.publishes !== undefined && options.rabbitmq !== true) {
+        throw new TypeError('startTestStack: publishes требует rabbitmq: true');
+    }
+    const badPrefix = options.publishes?.find((prefix) => !PUBLISH_PREFIX_PATTERN.test(prefix));
+    if (badPrefix !== undefined) {
+        throw new TypeError(
+            `startTestStack: префикс publishes «${badPrefix}» вне формата ${PUBLISH_PREFIX_PATTERN.source}`,
+        );
+    }
     const labels = { 'verdeect.kit.service': options.service };
 
     return async (project) => {
@@ -442,7 +462,9 @@ export function startTestStack(
                 : []),
             ...(options.mailpit === true ? [mailpitPart(labels)] : []),
             ...(options.minio === true ? [minioPart(labels)] : []),
-            ...(options.rabbitmq === true ? [rabbitmqPart(labels, options.service)] : []),
+            ...(options.rabbitmq === true
+                ? [rabbitmqPart(labels, options.service, options.publishes)]
+                : []),
             ...(options.redis === true ? [redisPart(labels, options.service)] : []),
         ];
         const results = await Promise.allSettled(parts.map((part) => part.start()));

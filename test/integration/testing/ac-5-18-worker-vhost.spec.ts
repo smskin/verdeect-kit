@@ -40,6 +40,7 @@ describe('UC-14: vhost воркера', () => {
                 },
             ],
             permissions: [],
+            topic_permissions: [],
             exchanges: [],
             queues: [],
             bindings: [],

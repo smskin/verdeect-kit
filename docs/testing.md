@@ -57,13 +57,13 @@
 
 Прочие файлы уровня I передают окружение приложения через `setPreparsedEnv` (`test/support/database.ts`, `createDbApp`) — без `vi.stubEnv`, проект `shared`.
 
-`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, rabbitmq: true, redis: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`, `outbox` с `tenantNullable: true`, `inbox`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
+`globalSetup` уровня I — `startTestStack({service: 'kit', postgres: true, rabbitmq: true, publishes: ['kit.'], redis: true, migrations: 'test/fixtures/database/migrations'})`: БД `kit` подготовлена и мигрирована фикстурой, шаблон `kit_template` — для `createScratchDatabase()`. Фикстура `test/fixtures/database` — схема `kit` (`note`, `setting`, `idempotency_key`, `outbox` с `tenantNullable: true`, `inbox`) и миграции `drizzle-kit` из `devDependencies`; после правки `schema.ts` — `pnpm db:fixtures` (новая миграция), ручной SQL (FORCE, права, `idempotencyPurgeSql`) — `drizzle-kit generate --custom`. Повторный `pnpm db:fixtures` должен сообщать «No schema changes».
 
 Контейнеры стартуют один раз на прогон в `test/integration/global-setup.ts`, файлы идут последовательно (`fileParallelism: false`).
 
 ## Сообщения (E5)
 
-- RabbitMQ поднимается в `globalSetup` уровней I и T (`rabbitmq: true`; уровень T — `timingGuard`, затем тот же стек). `definitions.json` vhost — тот же `buildDefinitions`, что CLI `rabbitmq definitions`.
+- RabbitMQ поднимается в `globalSetup` уровней I и T (`rabbitmq: true`; уровень T — `timingGuard`, затем тот же стек). `definitions.json` vhost — тот же `buildDefinitions`, что CLI `rabbitmq definitions`. Пользователь воркера kit публикует с префиксом `kit.` (`publishes: ['kit.']`), потребитель — `consumer.`; ключ вне префикса — `ACCESS_REFUSED`.
 - vhost и пользователь на каждый воркер Vitest: `kit-test-<run>-w<N>`, права M3 сервиса `kit`; администратору — полные права на vhost. Teardown удаляет всё с префиксом `kit-test-` (stderr `[startTestStack] RabbitMQ: удалено vhost N, пользователей N`), остатки прошлых прогонов удаляются при старте. Тесты берут `workerScope().rabbitmq.url` (пользователь воркера) и `test/support/broker.ts` (администратор vhost).
 - Очереди `kit`, `kit.retry`, `kit.dlq` durable и живут весь прогон: файл со стендом подписчика вызывает `resetQueues()` (`test/support/messaging.ts`) до создания стенда. `RABBITMQ_RETRY_SECONDS = 1`.
 - `KIT_OUTBOX_COVERAGE=1` задаёт `make test-integration` (и CI): `startTestStack({outboxEvents})` сервиса падает в teardown со списком событий без успешного `expectOutbox`. У пакета событий нет — `outboxEvents` в `globalSetup` пакета не передаётся; покрытие проверяют U-тест `outbox-coverage.spec.ts` и проект-потребитель (`test/consumer/minimal/outbox-coverage`).

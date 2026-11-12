@@ -1,5 +1,6 @@
 // AC-5.10 (UC-12): definitions.json из CLI verdeect-kit rabbitmq definitions загружается в брокер — пользователь сервиса
-// входит, exchange verdeect.events виден пассивной проверкой (prd.md §3.4 M3). Операции relay/подписчика и
+// входит, exchange verdeect.events виден пассивной проверкой; публикация — только с ключом префикса --publishes, без
+// --publishes и вне префикса — ACCESS_REFUSED (prd.md §3.4 M3, v1.20). Операции relay/подписчика и
 // ACCESS_REFUSED — test/integration/messaging/ac-5-10-permissions.spec.ts.
 import { randomBytes } from 'node:crypto';
 import amqp from 'amqplib';
@@ -8,6 +9,7 @@ import { rabbitmqCommand } from '../../../src/cli/commands/rabbitmq.js';
 import {
     EVENTS_EXCHANGE,
     hashRabbitPassword,
+    passwordHashKey,
     type RabbitDefinitions,
 } from '../../../src/internal/rabbitmq-definitions.js';
 import { brokerAdmin, workerBroker } from '../../support/broker.js';
@@ -21,44 +23,110 @@ describe('UC-12: definitions.json в брокере', () => {
         vi.restoreAllMocks();
     });
 
-    it('AC-5.10: definitions из CLI загружаются в брокер — пользователь входит, exchange verdeect.events виден пассивной проверкой', async () => {
+    /** definitions из CLI в свой vhost (CLI пишет vhost `/`), операция пользователем `service` на канале с подтверждениями. */
+    async function withCliUser(
+        args: readonly string[],
+        services: readonly string[],
+        work: (channel: amqp.ConfirmChannel, service: string) => Promise<void>,
+    ): Promise<void> {
         const password = randomBytes(8).toString('hex');
+        const env: Record<string, string> = { LOG_LEVEL: 'silent' };
+        for (const service of services) {
+            env[passwordHashKey(service)] = hashRabbitPassword(password);
+        }
         const output: string[] = [];
-        const code = await rabbitmqCommand(['definitions', '--services', 'kitcli'], {
-            cwd: process.cwd(),
-            write: (text) => void output.push(text),
-            env: {
-                LOG_LEVEL: 'silent',
-                RABBITMQ_PASSWORD_HASH_KITCLI: hashRabbitPassword(password),
-            },
-        });
+        const code = await rabbitmqCommand(
+            ['definitions', '--services', services.join(','), ...args],
+            { cwd: process.cwd(), write: (text) => void output.push(text), env },
+        );
         expect(code).toBe(0);
         const definitions = JSON.parse(output.join('')) as RabbitDefinitions;
         const vhost = `kit-test-cli-${randomBytes(4).toString('hex')}`;
         const admin = brokerAdmin();
         try {
-            // CLI пишет vhost `/`; тест грузит тот же файл в свой vhost.
             await admin.loadDefinitions({
                 ...definitions,
                 vhosts: [{ name: vhost }],
                 permissions: definitions.permissions.map((item) => ({ ...item, vhost })),
+                topic_permissions: definitions.topic_permissions.map((item) => ({
+                    ...item,
+                    vhost,
+                })),
                 exchanges: definitions.exchanges.map((item) => ({ ...item, vhost })),
             });
-            const url = new URL(workerBroker().url);
-            url.username = 'kitcli';
-            url.password = password;
-            url.pathname = `/${encodeURIComponent(vhost)}`;
-            const connection = await amqp.connect(url.toString());
-            try {
-                const channel = await connection.createChannel();
-                await expect(channel.checkExchange(EVENTS_EXCHANGE)).resolves.toBeDefined();
-            } finally {
-                await connection.close();
+            for (const service of services) {
+                const url = new URL(workerBroker().url);
+                url.username = service;
+                url.password = password;
+                url.pathname = `/${encodeURIComponent(vhost)}`;
+                const connection = await amqp.connect(url.toString());
+                connection.on('error', () => undefined);
+                try {
+                    const channel = await connection.createConfirmChannel();
+                    channel.on('error', () => undefined);
+                    await work(channel, service);
+                } finally {
+                    await connection.close().catch(() => undefined);
+                }
             }
         } finally {
             await admin.deleteVhost(vhost);
-            await admin.deleteUser('kitcli');
+            await Promise.all(services.map((service) => admin.deleteUser(service)));
         }
+    }
+
+    /** Публикация в verdeect.events с ожиданием подтверждения; отказ брокера — текст. */
+    async function publish(channel: amqp.ConfirmChannel, key: string): Promise<string> {
+        // Причина закрытия канала (ACCESS_REFUSED) приходит событием; отказ подтверждения — только «channel closed».
+        let closed: Error | undefined;
+        channel.once('error', (error: Error) => {
+            closed = error;
+        });
+        try {
+            channel.publish(EVENTS_EXCHANGE, key, Buffer.from('{}'));
+            await channel.waitForConfirms();
+
+            return 'ok';
+        } catch (error) {
+            return String((closed ?? (error as Error)).message);
+        }
+    }
+
+    it('AC-5.10: definitions из CLI загружаются в брокер — пользователь входит, exchange verdeect.events виден пассивной проверкой', async () => {
+        await withCliUser([], ['kitcli'], async (channel) => {
+            await expect(channel.checkExchange(EVENTS_EXCHANGE)).resolves.toBeDefined();
+        });
+    });
+
+    it('AC-5.10: сервис с --publishes kitcli.,audit.kitcli. публикует с ключом своего префикса', async () => {
+        await withCliUser(
+            ['--publishes', 'kitcli=kitcli.,audit.kitcli.'],
+            ['kitcli'],
+            async (channel) => {
+                expect(await publish(channel, 'kitcli.note.created')).toBe('ok');
+                expect(await publish(channel, 'audit.kitcli.x')).toBe('ok');
+            },
+        );
+    });
+
+    it('AC-5.10: сервис с --publishes — ключ вне префикса → ACCESS_REFUSED', async () => {
+        await withCliUser(['--publishes', 'kitcli=kitcli.'], ['kitcli'], async (channel) => {
+            expect(await publish(channel, 'identity.user.created')).toMatch(/ACCESS_REFUSED|403/);
+        });
+    });
+
+    it('AC-5.10: сервис без --publishes → публикация в verdeect.events ACCESS_REFUSED', async () => {
+        await withCliUser(
+            ['--publishes', 'kitcli=kitcli.'],
+            ['kitcli', 'kitcli-ro'],
+            async (channel, service) => {
+                if (service === 'kitcli-ro') {
+                    expect(await publish(channel, 'kitcli.note.created')).toMatch(
+                        /ACCESS_REFUSED|403/,
+                    );
+                }
+            },
+        );
     });
 
     it('AC-5.10: CLI без ключа RABBITMQ_PASSWORD_HASH_<SVC> одного из --services → INVALID_ENVIRONMENT с именем ключа, значений в выводе нет, выход 1', async () => {

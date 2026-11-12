@@ -168,6 +168,8 @@ export const redaction: KitRedaction = {
 
 **Метрики.** `kitMetrics` построен на `@prometheus-io/client` (обязательный peer `^0.16.1`, PRD v1.12): свой `Registry` на экземпляр приложения, метка `service`, метрики процесса Node.
 
+Метрики домена сервис называет с префиксом — именем сервиса без экземпляра: `[a-z][a-z0-9_]*` (`bff_`, `platform_`, `orchestrator_`, `identity_`). Экземпляр (`bff-app`, `bff-admin`) различается меткой `service`, не префиксом.
+
 **Алерты.** `alertRulesTemplate` — путь к `alerts/verdeect-kit.rules.yml` в установленном пакете: правила vmalert для метрик пакета с порогом по умолчанию. Свой порог — recording-правило `verdeect_kit_threshold:<метрика>` с меткой `service` в файле правил сервиса:
 
 ```yaml
@@ -498,7 +500,7 @@ export default startTestStack({
 | `kitRedisService`          | `redis`        | имя сервиса — пользователь Redis и префикс воркера        |
 | `kitOutboxCoverageDir`     | `outboxEvents` | каталог покрытия outbox прогона                           |
 
-При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. При `rabbitmq: true` — RabbitMQ с `definitions.json` сервиса (тот же `buildDefinitions`, что CLI) и vhost с пользователем по правам сервиса на каждый воркер Vitest (`<svc>-test-<run>-w<N>`); teardown удаляет их, остатки прошлых прогонов удаляются при старте. При `redis: true` — Redis с aclfile (тот же генератор, что CLI `redis acl`): пользователь сервиса с правами `~<svc>:* &<svc>:*` — `kitRedisUrl`, администратор теста — `kitRedisAdminUrl`; пользователей на воркер нет — воркеры разделены префиксом `workerScope().redisPrefix`.
+При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. При `rabbitmq: true` — RabbitMQ с `definitions.json` сервиса (тот же `buildDefinitions`, что CLI) и vhost с пользователем по правам сервиса на каждый воркер Vitest (`<svc>-test-<run>-w<N>`); сервис, который публикует события, передаёт свои префиксы — `publishes: ['identity.']` (как `--publishes` CLI; без них пользователь воркера в `verdeect.events` не публикует, `publishTestEvent` ходит от администратора vhost и не ограничивается; `publishes` без `rabbitmq: true` или с префиксом вне `^[a-z][a-z0-9.]*\.$` — `TypeError` при вызове `startTestStack`); teardown удаляет их, остатки прошлых прогонов удаляются при старте. При `redis: true` — Redis с aclfile (тот же генератор, что CLI `redis acl`): пользователь сервиса с правами `~<svc>:* &<svc>:*` — `kitRedisUrl`, администратор теста — `kitRedisAdminUrl`; пользователей на воркер нет — воркеры разделены префиксом `workerScope().redisPrefix`.
 
 - `createScratchDatabase()` — пустая мигрированная БД из шаблона за доли секунды (`{name, url, ownerUrl, adminUrl, drop()}`); тест сам вызывает `drop()`.
 - `workerScope().rabbitmq` — `{vhost, url}` vhost воркера: `url` — значение `RABBITMQ_URL` тестов.
@@ -546,7 +548,15 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - `stop_grace_period: 15s` при `SHUTDOWN_TIMEOUT_MS` 10000: срок Docker должен быть больше срока остановки сервиса.
 - Пул соединений PostgreSQL: сервис открывает до `2 × DB_POOL_MAX × реплики` соединений (основной пул и пул чтения) — `max_connections` считается по этой формуле.
 - БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>`.
-- RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `verdeect.events`, `amq.default` и свои очереди, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно.
+- RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `amq.default` и свои очереди, `verdeect.events` — только у сервиса с `--publishes`, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно.
+- RabbitMQ, публикация: `--publishes <svc>=<префикс>[,<префикс>…]` (повторяемая) — ключи, с которыми сервис публикует в `verdeect.events` (`topic_permissions`: write `^(<префиксы>)`, без `--publishes` — `^$`, сервис не публикует; read — `.*`, чтение по ключам не ограничено — его задают привязки подписчика). Префикс оканчивается точкой, формат `^[a-z][a-z0-9.]*\.$`; неверный префикс или сервис вне `--services` — `USAGE`, выход 1. Префиксы сервисов: Identity — `identity.`, Platform — `platform.`, Orchestrator — `agent.`, `audit.agent.`, BFF — без `--publishes` (не публикует). Exchange `verdeect.events` вручную не удалять: брокер удаляет topic-права вместе с ним, и пересозданный exchange пускает публикацию с любым ключом до повторной загрузки `definitions.json`:
+
+  ```bash
+  verdeect-kit rabbitmq definitions --services identity,platform,orchestrator,bff-app,bff-admin \
+      --publishes identity=identity. --publishes platform=platform. \
+      --publishes orchestrator=agent.,audit.agent. --out definitions.json
+  ```
+
 - Redis ≥ 7.0. ACL: `verdeect-kit redis acl --services <svc,…> --out users.acl` — aclfile с `user default off` первой строкой и пользователем на сервис (`~<svc>:* &<svc>:* +@all -@dangerous`); хеш пароля — из `REDIS_PASSWORD_HASH_<SVC>` (`bff-app` → `REDIS_PASSWORD_HASH_BFF_APP`, значение — sha256 hex: `printf %s "$PASS" | sha256sum`). Redis запускается с `--aclfile users.acl`; проверка здоровья в compose — с пользователем: `redis-cli --user <svc> --pass … ping`. `REDIS_URL` сервиса — `redis://<svc>:<пароль>@<host>:6379`.
 - DLQ — разбор в 7 дней: сообщения `<svc>.dlq` разбирает владелец сервиса не позже 7 дней (алерт `VerdeectEventsDlq`); причина — заголовок `x-dlq-reason`; повторная отправка — перекладкой в `<svc>` после исправления.
 - Смена ключа шифра `ENCRYPTION_KEYS` (UC-10): 1) новый секрет — `verdeect-kit crypto generate-secret | jq -r .secret` (единственный рекомендуемый способ); 2) новая версия **первой** в `ENCRYPTION_KEYS`, старая остаётся; 3) перезапуск всех реплик; 4) задача сервиса под `runExclusive` перешифровывает значения с `needsReencrypt(value) === true`; 5) старая версия убирается из `ENCRYPTION_KEYS`, когда значений под ней не осталось.
@@ -749,7 +759,7 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 - `KitTestResponse` — тип ответа `{statusCode, json()}`.
 - `expectMatchesApi` — `expectMatchesApi(res, [Controller, 'method'])`: ответ по схеме `@Api`.
 - `TEST_IMAGES` — образы тестов и compose сервисов.
-- `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон, адреса через `provide`; флаги `postgres`, `migrations`, `mailpit`, `minio`, `rabbitmq`, `redis?`, `outboxEvents`.
+- `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон, адреса через `provide`; флаги `postgres`, `migrations`, `mailpit`, `minio`, `rabbitmq`, `publishes`, `redis?`, `outboxEvents`.
 - `assertRepoConventions` — проверка репозитория сервиса по правилам выше.
 - `tcpProxy` — запущенный TCP-прокси к цели.
 - `TcpProxy` — тип прокси: `url`, `break`, `restore`, `blackhole`, `freeze`, `blackholeOn`, `delayOn`, `close`.

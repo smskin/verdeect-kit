@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.3] - 2026-11-12
+
+Права публикации RabbitMQ по префиксам (PRD v1.20, находки BFF-55).
+
+### Changed
+
+- **Ломающее для rc:** без `--publishes` сервис не может публиковать в `verdeect.events` — `write` на exchange только у сервиса с `--publishes`, topic-права write без префиксов — `^$`. Сервисам, которые публикуют, добавить `--publishes <svc>=<префикс>` в CLI и `publishes` в `startTestStack`.
+
+### Added
+
+- CLI `rabbitmq definitions --publishes <svc>=<префикс>[,<префикс>…]` (повторяемая): префиксы ключей публикации; неверный префикс или сервис вне `--services` — `USAGE`.
+- `topic_permissions` на `verdeect.events` в `definitions.json`: write — `^(<префиксы>)`, read — `.*`.
+- `startTestStack({rabbitmq: true, publishes})`: права пользователя воркера с префиксами публикации тем же генератором, что CLI.
+
+### Fixed
+
+- `/messaging`: отказ публикации из-за закрытия канала брокером — в `outbox.last_error` и warn/error relay причина брокера (`ACCESS_REFUSED - …`), а не «channel closed».
+- `/redis`: `@sentry/nestjs` загружается только при ошибке обработчика канала — холодный импорт подпути без Sentry.
+
 ## [1.0.0-rc.2] - 2026-11-12
 
 ### Fixed

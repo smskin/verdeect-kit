@@ -1,6 +1,6 @@
 // AC-5.10 (UC-12): с правами definitions.json (buildDefinitions — тот же путь, что CLI) relay публикует, подписчик
 // получает, повтор и DLQ через exchange по умолчанию; объявление и чтение чужих очередей — ACCESS_REFUSED; exchange
-// только пассивно (prd.md §3.4 M3; П13). Обобщение O or-119-rabbit-permissions.int-spec на vhost воркера.
+// только пассивно; публикация с ключом вне префикса publishes — ACCESS_REFUSED (prd.md §3.4 M3, v1.20; П13). Обобщение O or-119-rabbit-permissions.int-spec на vhost воркера.
 import amqp from 'amqplib';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -20,14 +20,22 @@ import {
     waitUntil,
 } from '../../support/messaging.js';
 
-/** Операция пользователем воркера на одноразовом канале; ошибка брокера — текст. */
-async function asWorker(work: (channel: amqp.Channel) => Promise<unknown>): Promise<string> {
+/** Операция пользователем воркера на одноразовом канале с подтверждениями; ошибка брокера — текст. */
+async function asWorker(work: (channel: amqp.ConfirmChannel) => Promise<unknown>): Promise<string> {
     const connection = await amqp.connect(workerScope().rabbitmq.url);
     connection.on('error', () => undefined);
     try {
-        const channel = await connection.createChannel();
-        channel.on('error', () => undefined);
-        await work(channel);
+        const channel = await connection.createConfirmChannel();
+        // Причина закрытия канала (ACCESS_REFUSED) приходит событием; отказ подтверждения — только «channel closed».
+        let closed: Error | undefined;
+        channel.on('error', (error: Error) => {
+            closed = error;
+        });
+        try {
+            await work(channel);
+        } catch (error) {
+            throw closed ?? error;
+        }
 
         return 'ok';
     } catch (error) {
@@ -70,7 +78,7 @@ describe('UC-12: права definitions.json', () => {
             );
     }
 
-    it('AC-5.10: с правами definitions relay публикует в verdeect.events, подписчик получает и подтверждает', async () => {
+    it('AC-5.10: relay публикует в verdeect.events с ключом своего префикса (publishes kit.), подписчик получает и подтверждает', async () => {
         await add('ok', 'p1');
         await waitUntil(async () => (await consumed(app, 'handled')) === 1, 'handled');
 
@@ -105,6 +113,18 @@ describe('UC-12: права definitions.json', () => {
             /ACCESS_REFUSED|403/,
         );
     });
+
+    it.each(['platform.note.created', 'kitx.note.created'])(
+        'AC-5.10: публикация в verdeect.events с ключом %s вне префикса kit. → ACCESS_REFUSED',
+        async (key) => {
+            expect(
+                await asWorker(async (channel) => {
+                    channel.publish('verdeect.events', key, Buffer.from('{}'));
+                    await channel.waitForConfirms();
+                }),
+            ).toMatch(/ACCESS_REFUSED|403/);
+        },
+    );
 
     it('AC-5.10: exchange виден пассивной проверкой', async () => {
         expect(await asWorker((channel) => channel.checkExchange('verdeect.events'))).toBe('ok');
