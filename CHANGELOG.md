@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Снимки OpenAPI сервисов изменятся:** стандартные ошибки — по факту. 400 `BAD_REQUEST` и 422 `VALIDATION_FAILED` — только у маршрута с `ZodValidationPipe` тела или query (pipe параметра пути — только 422); 429 `RATE_LIMITED` — только если перечислен в `@Api({errors})`; у маршрута без тела, query и аутентификации стандартных ошибок нет. `expectMatchesApi` — по тому же документу: ответ 429 маршрута без `errors: ['RATE_LIMITED']` теперь не описан. Перегенерируйте `contracts/openapi.json` (`verdeect-kit openapi`).
+
 ## [1.0.0-rc.4] - 2026-11-12
 
 Находки переходов сервисов (PRD v1.23): Orchestrator OR-139/143 (К1, К2, К4, К7, К9), BFF-60, Platform PL-48.
