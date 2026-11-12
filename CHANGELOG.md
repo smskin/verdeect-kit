@@ -7,6 +7,7 @@
 ### Added
 
 - `/http`: `DomainError(code, details?, {message?, headers?, status?, cause?})` — текст случая, заголовки ответа (имена — к нижнему регистру; `set-cookie`, заголовки безопасности и `retry-after` у `RATE_LIMITED` — `TypeError`), статус из объявленных; тип `KitDomainErrorOptions`.
+- `/redis`: `KitRedisModule.forRoot({critical})` — проба `redis` критичная: Redis недоступен → `/health` 503.
 
 ### Changed
 

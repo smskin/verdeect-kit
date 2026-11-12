@@ -809,7 +809,7 @@ CLI: `verdeect-kit crypto generate-secret [--bytes 32]` → `{"secret":"…"}` �
 
 ### @verdeect/kit/redis
 
-- `KitRedisModule` — `KitRedisModule.forRoot({service, subscriber?: true})`: соединение `<svc>:`, каналы, лимитер, проба `redis`, закрытие на шаге 4; глобальный.
+- `KitRedisModule` — `KitRedisModule.forRoot({service, subscriber?: true, critical?: boolean})`: соединение `<svc>:`, каналы, лимитер, проба `redis` (некритичная; `critical: true` — Redis недоступен → `/health` 503, BFF — сессии), закрытие на шаге 4; глобальный.
 - `KitRedisModuleOptions` — `{service, subscriber?: true}`.
 - `KIT_REDIS` — токен `Redis` ioredis основного соединения с `keyPrefix <svc>:`.
 - `KitRedisChannels` — `publish(channel, message)`, `subscribe(channel, handler)` → отписка; каналы `<svc>:<channel>`.
