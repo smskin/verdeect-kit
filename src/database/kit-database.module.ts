@@ -14,7 +14,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { KitDatabaseEnv } from '../config/fragments.js';
 import { isPoolTimeout, tagPoolTimeout, type KitPoolName } from '../internal/pg-errors.js';
-import { KIT_METRICS } from '../internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
@@ -170,7 +170,7 @@ export class KitDatabaseModule implements OnModuleInit, OnApplicationShutdown {
                     provide: KIT_PG_POOLS,
                     useFactory: (env: KitDatabaseEnv, metrics?: KitMetrics) =>
                         createPools(env, { metrics }),
-                    inject: [KIT_DATABASE_ENV, { token: KIT_METRICS, optional: true }],
+                    inject: [KIT_DATABASE_ENV, { token: KIT_PACKAGE_METRICS, optional: true }],
                 },
                 {
                     provide: DRIZZLE,

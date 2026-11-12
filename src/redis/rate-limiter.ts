@@ -2,7 +2,7 @@
 // (consume → hit, peek, scope); из B — PTTL и fail-open без GlitchTip. Окно в мс, PEXPIRE NX в одном MULTI.
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Redis } from 'ioredis';
-import { KIT_METRICS, KIT_REDIS_LOG } from '../internal/tokens.js';
+import { KIT_PACKAGE_METRICS, KIT_REDIS_LOG } from '../internal/tokens.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { DomainError } from '../http/errors.js';
@@ -77,7 +77,7 @@ export class RateLimiter {
     constructor(
         @Inject(KIT_REDIS) private readonly redis: Redis,
         @Inject(KIT_REDIS_LOG) private readonly log: RedisLog,
-        @Optional() @Inject(KIT_METRICS) private readonly metrics?: KitMetrics,
+        @Optional() @Inject(KIT_PACKAGE_METRICS) private readonly metrics?: KitMetrics,
     ) {}
 
     /** Считает попадание: `INCR`, `PEXPIRE … NX`, `PTTL` одним `MULTI`; `allowed = count ≤ limit`. */

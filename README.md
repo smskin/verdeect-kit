@@ -21,7 +21,7 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 Версия пакета в сервисе — точная. Обязательные peer-зависимости (NFR-3) — точными версиями в диапазоне пакета:
 
 - `@nestjs/common`, `@nestjs/core`, `@nestjs/config`, `@nestjs/platform-fastify`;
-- `fastify`, `reflect-metadata`, `rxjs`, `zod`, `drizzle-orm`;
+- `fastify`, `reflect-metadata`, `rxjs`, `zod`, `drizzle-orm` — и сервису без БД (BFF): его статически импортируют `/http` (keyset-пагинация) и `/messaging` (фабрики таблиц outbox и inbox); соединения и драйвера `pg` он не требует;
 - `nestjs-pino`, `pino`, `@prometheus-io/client`, `@sentry/nestjs`, `@verdeect/auth`.
 
 Опциональные peer нужны только подпути, который их использует. Без них подпуть не импортируется и называет библиотеку: «`@verdeect/kit/<подпуть>` требует `<библиотека>` — добавьте в зависимости сервиса» (AC-1.2).
@@ -168,6 +168,19 @@ export const redaction: KitRedaction = {
 
 **Метрики.** `kitMetrics` построен на `@prometheus-io/client` (обязательный peer `^0.16.1`, PRD v1.12): свой `Registry` на экземпляр приложения, метка `service`, метрики процесса Node.
 
+Реестр экземпляра — токен `KIT_METRICS` из `/observability` (тот же `Registry`, что отдаёт `/metrics`). Метрики домена регистрируйте только в нём; метку `service` ставит реестр — своей не добавляйте. Глобальный реестр `@prometheus-io/client` в `/metrics` не попадает.
+
+```ts
+@Injectable()
+export class FilesMetrics {
+    readonly uploaded: Counter;
+
+    constructor(@Inject(KIT_METRICS) registry: Registry) {
+        this.uploaded = new Counter({ name: 'files_uploaded_total', help: 'Загруженные файлы', registers: [registry] });
+    }
+}
+```
+
 Метрики домена сервис называет с префиксом — именем сервиса без экземпляра: `[a-z][a-z0-9_]*` (`bff_`, `platform_`, `orchestrator_`, `identity_`). Экземпляр (`bff-app`, `bff-admin`) различается меткой `service`, не префиксом.
 
 **Алерты.** `alertRulesTemplate` — путь к `alerts/verdeect-kit.rules.yml` в установленном пакете: правила vmalert для метрик пакета с порогом по умолчанию. Свой порог — recording-правило `verdeect_kit_threshold:<метрика>` с меткой `service` в файле правил сервиса:
@@ -206,9 +219,50 @@ export class AppModule {}
 
 Без `KitConfigModule.forRoot({schema})` сборка падает: «модуль сервиса не импортирует KitConfigModule.forRoot({schema})». С той же схемой `KitConfigModule` берёт окружение, разобранное `bootstrapService`, и не разбирает его повторно.
 
-Опции по роли сервиса: BFF — `logger: {trustTraceparent: false}` (trace-id всегда новый); P, O — `logger: {quietRoutes: ['/internal/…']}` (успешный ответ — `debug`); O — `redaction`; `http: {bodyLimit}` — лимит тела (по умолчанию — лимит Fastify 1 MiB, больше — 413). Журнал доступа — один на процесс, см. «Один журнал доступа на процесс» в разделе «Наблюдаемость».
+Опции по роли сервиса: BFF — `logger: {trustTraceparent: false}` (trace-id всегда новый); P, O — `logger: {quietRoutes: ['/internal/…']}` (успешный ответ — `debug`); O — `redaction`; `http: {bodyLimit}` — общий лимит тела (по умолчанию — лимит Fastify 1 MiB, больше — 413). Журнал доступа — один на процесс, см. «Один журнал доступа на процесс» в разделе «Наблюдаемость».
 
 `createHttpApp` даёт: заголовки `X-Content-Type-Options: nosniff` и `Referrer-Policy: no-referrer` на каждом ответе (HSTS, CSP и `no-store` для HTML — сервис и Traefik), trace-id, `GET /ok` (`{status: 'ok'}`, `no-store`, вне журнала доступа и OpenAPI), `KitExceptionFilter`, 404 `ROUTE_NOT_FOUND`. Модули сервиса внедряют `KitLifecycle` и `HealthRegistry`.
+
+HTTP-опции по роли (`createHttpApp` и `bootstrapService({http})`):
+
+- `securityHeaders` — `'api'` (умолч., как выше); `{referrerPolicy}` — те же заголовки с этой политикой (BFF — `{referrerPolicy: 'same-origin'}`), значение не из `Referrer-Policy` — `TypeError` до открытия порта; `false` — пакет заголовков безопасности не ставит, их ставит сервис (Identity).
+- `exceptionFilter` — класс фильтра сервиса: `APP_FILTER` получает его вместо `KitExceptionFilter`. Через него идут ошибки маршрутов Nest, 404 `ROUTE_NOT_FOUND` и ошибки хуков Fastify (в том числе из `configureFastify`). `KitExceptionFilter` внедряется — необработанное делегируйте ему (фильтр живёт в глобальном модуле ядра пакета: внедряются `KitExceptionFilter` и провайдеры глобальных модулей сервиса, провайдеры обычных модулей — нет): он отвечает 429 + `Retry-After`, 413/415/400, 503 пула и 500 с ровно одним событием GlitchTip.
+- `configureFastify(fastify)` — вызывается один раз после создания адаптера и до регистрации маршрутов Nest: хуки `onRoute`, парсеры, ранние плагины. Ошибка — `failStartup`, порт не открывается. Заголовки безопасности, trace-id, `/ok` и фильтр по-прежнему ставит пакет. Предел тела отдельного маршрута — `routeOptions.bodyLimit` в `onRoute`; общий — `http.bodyLimit`.
+
+```ts
+@Catch()
+@Injectable()
+export class BffExceptionFilter implements ExceptionFilter {
+    constructor(private readonly kit: KitExceptionFilter) {}
+
+    catch(exception: unknown, host: ArgumentsHost): void {
+        if (exception instanceof SessionExpiredError) {
+            void host.switchToHttp().getResponse<FastifyReply>().status(401).send(sessionExpiredBody);
+
+            return;
+        }
+        this.kit.catch(exception, host);
+    }
+}
+
+await bootstrapService({
+    module: AppModule,
+    service: 'bff-app',
+    env: envSchema,
+    logger: { trustTraceparent: false },
+    http: {
+        securityHeaders: { referrerPolicy: 'same-origin' },
+        exceptionFilter: BffExceptionFilter,
+        configureFastify: (fastify) => {
+            fastify.addHook('onRoute', (route) => {
+                if (route.url === '/api/uploads') {
+                    route.bodyLimit = 16 * 1024 * 1024;
+                }
+            });
+        },
+    },
+});
+```
 
 **Остановка.** `app.close()` = `lifecycle.close()`: шаги 1–5 без сторожа и `exit`. Шаг 2 — участник `http` (`server.close()` Fastify, keep-alive закрываются) и участники сервиса параллельно; шаг 3 — участник `nest` (исходный `app.close()` Nest: `onModuleDestroy` → `beforeApplicationShutdown` → адаптер → `onApplicationShutdown`). Правило для модулей: `beforeApplicationShutdown` — шаг 3, `onApplicationShutdown` — шаг 4. `enableShutdownHooks()` не вызывайте: сигналы ловит `KitLifecycle.listen()`.
 
@@ -535,7 +589,7 @@ export default startTestStack({
 - `stop_grace_period` — после подстановки `${VAR:-default}`; переменная без умолчания — «значение не определено»; нет нигде — 10 с Docker. `SHUTDOWN_TIMEOUT_MS` — целое или `${NAME:-N}`; нет нигде — 10000; иное — «значение не определено или не целое число мс» (без значения в тексте). В `env_file` у значения без кавычек ` #…` — комментарий, как в Compose.
 - `image:` в compose разбирается как значение: подстановка `${VAR:-default}`, без префикса `docker.io/library/` или `docker.io/`, дайджест `@sha256:…` отдельно, без тега — `latest`. Неразрешённая переменная в теге образа из `TEST_IMAGES` — нарушение «тег не определён»; образы вне `TEST_IMAGES` и с неопределяемым репозиторием не проверяются. В тексте CI префикс `docker.io/library/` и `docker.io/` снимается так же, тег учитывается, только если в нём есть точка или буква (`postgres:5432` — адрес, а не образ).
 
-HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
+HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. `http` — тот же объект опций, что `bootstrapService({http})` в `main.ts` (вынесите его в модуль сервиса): фильтр `exceptionFilter`, `securityHeaders` и `configureFastify` в тесте работают как в приложении. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
 
 Ещё в `/testing`: `tcpProxy(target)` — обрывы (`break`, `restore`, `blackhole`, `freeze`, `blackholeOn`) и задержки (`delayOn`) TCP; `timingGuard` — `globalSetup` замеров времени (нагрузка, ядра, отказ при запущенном e2e-контуре `verdeect-*-e2e`); `TEST_TIMEOUT_SCALE` — множитель тайм-аутов конфигов Vitest.
 
@@ -624,6 +678,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - `HealthRegistry` — пробы `/health`: `register(name, probe, {critical})`, `markStopping()`, `evaluate()`; срок пробы 2 с.
 - `HealthProbe` — тип пробы `() => Promise<boolean>`.
 - `HealthReport` — `{status: 'ok' | 'degraded' | 'unavailable', checks}`.
+- `KIT_METRICS` — токен DI реестра метрик экземпляра (`Registry`, тот же, что в `/metrics`): метрики домена — `registers: [registry]`.
 - `MetricsServer` — `/health` и `/metrics` на `METRICS_PORT`: `listen()`, `address()`, `close()`.
 - `kitMetrics` — `kitMetrics({service})`: свой реестр экземпляра с меткой `service`, метрики процесса Node и `verdeect_*`.
 - `KitMetrics` — тип реестра и метрик пакета.
@@ -638,14 +693,17 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 
 - `bootstrapService` — `bootstrapService({module, service, env, logger?, http?, redaction?})`: точка входа `main.ts`.
 - `KitBootstrapOptions` — тип опций `bootstrapService`.
-- `createHttpApp` — `createHttpApp({module, service, bodyLimit?, securityHeaders?})`: Fastify-приложение Nest сервиса.
+- `createHttpApp` — `createHttpApp({module, service, bodyLimit?, securityHeaders?, exceptionFilter?, configureFastify?})`: Fastify-приложение Nest сервиса.
+- `KitHttpOptions` — тип опций `http` (`bodyLimit`, `securityHeaders`, `exceptionFilter`, `configureFastify`): один объект для `bootstrapService` и `createTestApp`.
+- `KitSecurityHeaders` — тип `securityHeaders`: `'api' | {referrerPolicy} | false`.
+- `KitReferrerPolicy` — стандартные значения `Referrer-Policy`.
 - `KitHttpAppOptions` — тип опций `createHttpApp`.
 - `kitErrors` — общие коды пакета `{status, message}`.
 - `defineErrors` — `defineErrors({...kitErrors, …})`: словарь сервиса на процесс.
 - `KitErrorDictionary` — тип словаря `код → {status, message}`.
 - `KitErrorEntry` — тип записи словаря.
 - `DomainError` — `new DomainError(code, details?, {cause}?)`: ошибка домена со статусом из словаря, `toBody()`.
-- `KitExceptionFilter` — фильтр ошибок (регистрирует `createHttpApp`; BFF собирает свой на `DomainError`).
+- `KitExceptionFilter` — фильтр ошибок (регистрирует `createHttpApp`; фильтр сервиса — `exceptionFilter` с делегированием в `kit.catch(exception, host)`).
 - `ZodValidationPipe` — `new ZodValidationPipe(schema)`: 422 `VALIDATION_FAILED`.
 - `PageQuerySchema` — `{cursor?, limit}` (умолчание 100, максимум 200).
 - `Page` — тип ответа `{items, nextCursor}`.
@@ -751,7 +809,7 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 
 ### @verdeect/kit/testing
 
-- `createTestApp` — `createTestApp({module, service, overrides?, bodyLimit?})`: приложение сервиса для тестов.
+- `createTestApp` — `createTestApp({module, service, overrides?, http?})`: приложение сервиса для тестов; `http` — тот же объект `KitHttpOptions`, что `bootstrapService({http})` в `main.ts` (`bodyLimit`, `securityHeaders`, `exceptionFilter`, `configureFastify`).
 - `KitTestAppOptions` — тип опций `createTestApp`.
 - `KitTestOverride` — подмена провайдера `{provide, useValue}`.
 - `expectProblem` — `expectProblem(res, {status, code, issues?})`: утверждение об ответе-ошибке.

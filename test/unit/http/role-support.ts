@@ -1,6 +1,6 @@
 // Модуль тестов AC-3.12 (prd.md §3.5): GET /report пишет в лог и в GlitchTip значения под чувствительными именами.
 import 'reflect-metadata';
-import { Controller, Get, Logger, Module } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Logger, Module, Post } from '@nestjs/common';
 import { KitConfigModule } from '../../../src/config/index.js';
 import { captureError } from '../../../src/observability/sentry.js';
 import { probeEnv, ProbeController } from './support.js';
@@ -23,6 +23,13 @@ class ReportController {
         captureError(new Error('отчёт'), { extra: { ...SECRETS } });
 
         return { ok: true };
+    }
+
+    /** Второй маршрут с телом: общий предел (AC-3.12, configureFastify). */
+    @Post('echo')
+    @HttpCode(200)
+    echo(@Body() body: unknown): unknown {
+        return body;
     }
 }
 

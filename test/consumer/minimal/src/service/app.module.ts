@@ -1,6 +1,6 @@
 // Корневой модуль сервиса-потребителя (AC-9.1, AC-3.8): KitConfigModule с той же схемой, что в main.ts, маршруты с @Api,
 // KitDatabaseModule (пробы database и database-read), KitIdempotencyModule (очистка, AC-9.5), KitMessagingModule (outbox,
-// подписчик с inbox, E5), KitRedisModule (лимитер GET /limited, E8), VerdeectAuthModule.
+// подписчик с inbox, E5), KitRedisModule (лимитер GET /limited, E8), VerdeectAuthModule; метрика домена через KIT_METRICS.
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { VerdeectAuthModule } from '@verdeect/auth/nest';
@@ -11,6 +11,7 @@ import { KitMessagingModule } from '@verdeect/kit/messaging';
 import { KitRedisModule } from '@verdeect/kit/redis';
 import { CompaniesController } from './companies.controller.js';
 import { CompanyEventsConsumer } from './company-events.consumer.js';
+import { DomainMetrics } from './domain-metrics.js';
 import { serviceEnvSchema } from './env.js';
 import { ItemsController } from './items.controller.js';
 import { LimitedController } from './limited.controller.js';
@@ -38,6 +39,6 @@ import * as schema from './schema.js';
         }),
     ],
     controllers: [ItemsController, CompaniesController, LimitedController],
-    providers: [CompanyEventsConsumer],
+    providers: [CompanyEventsConsumer, DomainMetrics],
 })
 export class AppModule {}

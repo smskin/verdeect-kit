@@ -18,7 +18,7 @@ import type { Logger as PinoLogger } from 'pino';
 import type * as Database from '../database/index.js';
 import { requirePeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
-import { KIT_LOGGER, KIT_METRICS } from '../internal/tokens.js';
+import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import type { KitEvent } from './define-event.js';
@@ -201,7 +201,7 @@ function outboxProviders(config: KitMessagingConfig): Provider[] {
                 database.Db,
                 KIT_RABBIT_CONNECTION,
                 KIT_MESSAGING_LOG,
-                { token: KIT_METRICS, optional: true },
+                { token: KIT_PACKAGE_METRICS, optional: true },
             ],
         },
         {
@@ -251,7 +251,7 @@ function subscriberProviders(config: KitMessagingConfig): Provider[] {
                 KIT_MESSAGING_ENV,
                 KIT_RABBIT_CONNECTION,
                 KIT_MESSAGING_LOG,
-                { token: KIT_METRICS, optional: true },
+                { token: KIT_PACKAGE_METRICS, optional: true },
                 ...(withDb && config.database !== undefined ? [config.database.Db] : []),
             ],
         },
@@ -286,7 +286,11 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
                     metrics,
                     log,
                 }),
-            inject: [database.Db, KIT_MESSAGING_LOG, { token: KIT_METRICS, optional: true }],
+            inject: [
+                database.Db,
+                KIT_MESSAGING_LOG,
+                { token: KIT_PACKAGE_METRICS, optional: true },
+            ],
         },
     ];
 }

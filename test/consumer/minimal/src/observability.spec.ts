@@ -261,6 +261,15 @@ describe('UC-13: процесс сервиса-потребителя', () => {
         expect(body).toContain('verdeect_outbox_pending{service="consumer"}');
     });
 
+    it('AC-2.14: /metrics — метрика домена consumer_started{service="consumer"} из KIT_METRICS', async () => {
+        const service = startService();
+        const { metricsPort: port } = await service.ports;
+
+        const body = await (await fetch(`http://127.0.0.1:${port}/metrics`)).text();
+
+        expect(body).toContain('consumer_started{service="consumer"} 1');
+    });
+
     it('AC-9.1: SIGTERM — /health 503 во время паузы, выход 0 в пределах SHUTDOWN_TIMEOUT_MS', async () => {
         const service = startService();
         const { metricsPort: port } = await service.ports;

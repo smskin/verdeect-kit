@@ -23,7 +23,7 @@ import { runExclusive } from '../database/run-exclusive.js';
 import { resultOf } from '../internal/cleanup-result.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
-import { KIT_LOGGER, KIT_METRICS } from '../internal/tokens.js';
+import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError } from '../observability/sentry.js';
@@ -76,7 +76,7 @@ export class IdempotencyCleanup
     constructor(
         private readonly db: Db,
         @Inject(KIT_IDEMPOTENCY_SCHEMA) private readonly schema: string,
-        @Optional() @Inject(KIT_METRICS) private readonly metrics?: KitMetrics,
+        @Optional() @Inject(KIT_PACKAGE_METRICS) private readonly metrics?: KitMetrics,
         @Optional() @Inject(KIT_LOGGER) logger?: PinoLogger,
     ) {
         this.log = logger ?? nestLog();

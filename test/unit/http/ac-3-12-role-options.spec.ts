@@ -1,11 +1,13 @@
 // AC-3.12 (UC-3): опции bootstrapService по роли сервиса (prd.md §3.5): BFF — trustTraceparent: false; P, O — quietRoutes;
-// http.bodyLimit; O — redaction (одно правило для лога и GlitchTip). nestjs-pino держит один pino-http на процесс,
+// http.bodyLimit; O — redaction (одно правило для лога и GlitchTip); v1.21 — http.configureFastify (onRoute bodyLimit маршрута,
+// ошибка → failStartup). nestjs-pino держит один pino-http на процесс,
 // поэтому файл запускает все приложения с одной конфигурацией роли; умолчания — ac-3-12-role-defaults.spec.ts.
 import * as Sentry from '@sentry/nestjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bootstrapService } from '../../../src/http/index.js';
 import type { KitRedaction } from '../../../src/observability/redaction.js';
 import { expectProblem } from '../../../src/testing/index.js';
+import { expectExit } from './bootstrap-support.js';
 import { initFakeSentry, type DeliveredEvent } from '../../support/fake-sentry.js';
 import { useBootstrapStand } from './bootstrap-support.js';
 import { accessLines, RoleModule, SECRETS } from './role-support.js';
@@ -100,5 +102,59 @@ describe('UC-3: опции по роли', () => {
             expect(text).not.toContain(secret);
             expect(event).not.toContain(secret);
         }
+    });
+});
+
+describe('UC-3: configureFastify', () => {
+    const logger = { trustTraceparent: false, quietRoutes: ['/probe'] };
+
+    it('AC-3.12: configureFastify ставит в onRoute bodyLimit 16384 маршруту /probe — 20 КиБ → 413, на /echo — общий предел (200)', async () => {
+        const app = stand.track(
+            await bootstrapService({
+                module: RoleModule,
+                service: 'probe',
+                env: probeEnv,
+                logger,
+                http: {
+                    configureFastify: (fastify) => {
+                        fastify.addHook('onRoute', (route) => {
+                            if (route.url === '/probe') {
+                                route.bodyLimit = 16384;
+                            }
+                        });
+                    },
+                },
+                redaction,
+            }),
+        );
+        const payload = { title: 'x'.repeat(20 * 1024), tags: [] };
+
+        expectProblem(await app.inject({ method: 'POST', url: '/probe', payload }), {
+            status: 413,
+            code: 'PAYLOAD_TOO_LARGE',
+        });
+        expect((await app.inject({ method: 'POST', url: '/echo', payload })).statusCode).toBe(200);
+    });
+
+    it('AC-3.12: ошибка в configureFastify → failStartup (fatal, exit 1), порт не открыт', async () => {
+        const exit = await expectExit(
+            bootstrapService({
+                module: RoleModule,
+                service: 'probe',
+                env: probeEnv,
+                logger,
+                http: {
+                    configureFastify: () => {
+                        throw new Error('configureFastify сломан');
+                    },
+                },
+                redaction,
+            }),
+        );
+        const records = stand.records();
+
+        expect(exit.code).toBe(1);
+        expect(records.some((record) => record['level'] === 60)).toBe(true);
+        expect(records.some((record) => record['msg'] === 'сервис слушает')).toBe(false);
     });
 });

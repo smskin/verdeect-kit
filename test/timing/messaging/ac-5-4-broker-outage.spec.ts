@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db } from '../../../src/database/db.js';
-import { KIT_METRICS } from '../../../src/internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../../../src/internal/tokens.js';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
@@ -22,7 +22,7 @@ describe('UC-5: недоступный брокер', () => {
     let broker: BrokerClient;
 
     async function gauge(name: 'outboxLagSeconds' | 'outboxPending'): Promise<number> {
-        return (await app.get<KitMetrics>(KIT_METRICS)[name].get()).values[0]?.value ?? 0;
+        return (await app.get<KitMetrics>(KIT_PACKAGE_METRICS)[name].get()).values[0]?.value ?? 0;
     }
 
     beforeAll(async () => {

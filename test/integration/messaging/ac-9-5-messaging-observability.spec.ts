@@ -3,7 +3,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db } from '../../../src/database/db.js';
-import { KIT_LOGGER, KIT_METRICS } from '../../../src/internal/tokens.js';
+import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../../../src/internal/tokens.js';
 import { MessagingCleanup } from '../../../src/messaging/cleanup.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import type { KitMetrics } from '../../../src/observability/metrics.js';
@@ -52,7 +52,7 @@ describe('NFR-8: наблюдаемость сообщений', () => {
         );
         await waitUntil(async () => (await consumed(app, 'handled')) === 1, 'handled');
         await app.get(MessagingCleanup).run();
-        const { registry } = app.get<KitMetrics>(KIT_METRICS);
+        const { registry } = app.get<KitMetrics>(KIT_PACKAGE_METRICS);
 
         const text = (await registry.metrics()).split('\n');
         expect(text.some((line) => line.startsWith('verdeect_outbox_pending{service="kit"}'))).toBe(

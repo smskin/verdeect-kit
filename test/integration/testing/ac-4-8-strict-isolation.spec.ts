@@ -25,6 +25,11 @@ async function withScratch(
 ): Promise<void> {
     const scratch: KitScratchDatabase = await createScratchDatabase();
     const pool = new pg.Pool({ connectionString: scratch.url, max: 2 });
+    // pool.end() отдаёт управление до закрытия сокетов клиентов и снимает их обработчик error; DROP … WITH (FORCE)
+    // обрывает ещё закрывающееся соединение (57P01) — без своего обработчика это uncaught exception прогона.
+    pool.on('connect', (client) => {
+        client.on('error', () => undefined);
+    });
     try {
         for (const statement of prepare) {
             await adminQuery(scratch.adminUrl, statement);

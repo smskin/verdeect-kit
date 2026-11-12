@@ -6,17 +6,24 @@
 
 ## [1.0.0-rc.3] - 2026-11-12
 
-Права публикации RabbitMQ по префиксам (PRD v1.20, находки BFF-55).
+Права публикации RabbitMQ по префиксам (PRD v1.20, находки BFF-55); HTTP-опции по роли и реестр метрик `KIT_METRICS` (PRD v1.21, находки BFF-58).
 
 ### Changed
 
 - **Ломающее для rc:** без `--publishes` сервис не может публиковать в `verdeect.events` — `write` на exchange только у сервиса с `--publishes`, topic-права write без префиксов — `^$`. Сервисам, которые публикуют, добавить `--publishes <svc>=<префикс>` в CLI и `publishes` в `startTestStack`.
+- README (NFR-3): `drizzle-orm` — обязательный peer и для сервиса без БД (его импортируют `/http` и `/messaging`).
+- **Ломающее для rc:** `createTestApp` — лимит тела в `http.bodyLimit` вместо `bodyLimit` верхнего уровня; `http` — тот же объект `KitHttpOptions`, что `bootstrapService({http})`.
 
 ### Added
 
 - CLI `rabbitmq definitions --publishes <svc>=<префикс>[,<префикс>…]` (повторяемая): префиксы ключей публикации; неверный префикс или сервис вне `--services` — `USAGE`.
 - `topic_permissions` на `verdeect.events` в `definitions.json`: write — `^(<префиксы>)`, read — `.*`.
 - `startTestStack({rabbitmq: true, publishes})`: права пользователя воркера с префиксами публикации тем же генератором, что CLI.
+- `/observability`: токен `KIT_METRICS` — реестр метрик экземпляра (`Registry`, тот же, что в `/metrics`) для метрик домена; глобальный реестр `@prometheus-io/client` в `/metrics` не попадает.
+- `/http`: `createHttpApp` и `bootstrapService({http})` — `securityHeaders: 'api' | {referrerPolicy} | false` (неверная политика — `TypeError` до открытия порта); типы `KitSecurityHeaders`, `KitReferrerPolicy`.
+- `/http`: `exceptionFilter` — фильтр сервиса в `APP_FILTER` вместо `KitExceptionFilter`; `KitExceptionFilter` внедряется для делегирования; через фильтр идут ошибки маршрутов, 404 `ROUTE_NOT_FOUND` и ошибки хуков Fastify.
+- `/http`: `configureFastify(fastify)` — до регистрации маршрутов Nest (`onRoute`, парсеры, ранние плагины); ошибка — `failStartup`.
+- `/http`: тип `KitHttpOptions` — опции `http` для `bootstrapService` и `createTestApp`; `/testing`: `createTestApp({http})`.
 
 ### Fixed
 

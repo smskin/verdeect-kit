@@ -25,7 +25,7 @@ import {
     IdempotencyCleanup,
     KitIdempotencyModule,
 } from '../../../src/idempotency/kit-idempotency.module.js';
-import { KIT_METRICS } from '../../../src/internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../../../src/internal/tokens.js';
 import type { KitMetrics } from '../../../src/observability/metrics.js';
 import type { KitTestOverride } from '../../../src/testing/create-test-app.js';
 import { workerScope } from '../../../src/testing/worker-scope.js';
@@ -191,7 +191,7 @@ export async function createStand(
         app,
         signer,
         cleanup,
-        metrics: app.get<KitMetrics>(KIT_METRICS),
+        metrics: app.get<KitMetrics>(KIT_PACKAGE_METRICS),
         close: async () => {
             await app.close();
             await signer.close();
