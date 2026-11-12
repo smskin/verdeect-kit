@@ -83,7 +83,8 @@ function libraryBody(response: unknown): WireBody | null {
  * без изменений; срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1` (метрику и событие
  * пишет пул /database, AC-4.5); `HttpException` без тела 400/401/403/404/413/415/429 — код по статусу, `warn`; прочее —
  * 500 `INTERNAL_ERROR`, `error`, GlitchTip ровно раз. Текст исходной ошибки, стек и SQL в ответ не попадают.
- * `createHttpApp` регистрирует фильтр сам; BFF собирает свой фильтр на `DomainError` и словаре (различие по роли).
+ * `createHttpApp` регистрирует фильтр сам; свой фильтр сервиса — опция `exceptionFilter` с делегированием сюда
+ * (`kit.catch(exception, host)`, различие по роли, BFF).
  */
 @Catch()
 @Injectable()

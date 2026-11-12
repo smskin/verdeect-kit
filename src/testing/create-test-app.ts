@@ -2,11 +2,12 @@
 // (адаптер, хуки, фильтр, участники остановки), модуль — Test.createTestingModule, overrides подменяют провайдеры.
 // Эталон — O test/support/app.ts (createTestingModule → overrideProvider → compile → createNestApplication(adapter) →
 // init → ready). @nestjs/testing — опциональный peer: грузится при вызове, /testing импортируется и без него (NFR-3).
+// v1.22: http — тот же объект опций, что bootstrapService({http}) (KitHttpOptions из /http, AC-3.14).
 import type { DynamicModule, Type } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type * as NestTesting from '@nestjs/testing';
 import type { Logger } from 'pino';
-import { buildHttpApp } from '../http/create-http-app.js';
+import { buildHttpApp, type KitHttpOptions } from '../http/create-http-app.js';
 import { loadPeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { KIT_LOGGER } from '../internal/tokens.js';
@@ -27,8 +28,8 @@ export interface KitTestAppOptions {
     readonly service: string;
     /** Подмены провайдеров. */
     readonly overrides?: readonly KitTestOverride[];
-    /** Лимит тела запроса, байт. */
-    readonly bodyLimit?: number;
+    /** Опции HTTP — тот же объект, что `bootstrapService({http})` в `main.ts` (§3.8, AC-3.14). */
+    readonly http?: KitHttpOptions;
 }
 
 /**
@@ -42,7 +43,7 @@ export async function createTestApp(options: KitTestAppOptions): Promise<NestFas
     const app = await buildHttpApp({
         module: options.module,
         service: options.service,
-        bodyLimit: options.bodyLimit,
+        ...options.http,
         caller: 'createTestApp',
         compile: async (root, adapter) => {
             const builder = Test.createTestingModule({ imports: [root] });

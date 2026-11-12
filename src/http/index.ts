@@ -2,7 +2,12 @@
 export { bootstrapService } from './bootstrap-service.js';
 export type { KitBootstrapOptions } from './bootstrap-service.js';
 export { createHttpApp } from './create-http-app.js';
-export type { KitHttpAppOptions } from './create-http-app.js';
+export type {
+    KitHttpAppOptions,
+    KitHttpOptions,
+    KitReferrerPolicy,
+    KitSecurityHeaders,
+} from './create-http-app.js';
 export { defineErrors, DomainError, kitErrors } from './errors.js';
 export type { KitErrorDictionary, KitErrorEntry } from './errors.js';
 export { KitExceptionFilter } from './kit-exception.filter.js';

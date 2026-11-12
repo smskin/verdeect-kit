@@ -21,6 +21,8 @@ const ISOLATED: string[] = [
     'test/integration/messaging/ac-5-9-replica-errors.spec.ts',
     // initFakeSentry — процесс-глобальный Sentry.
     'test/integration/messaging/ac-5-19-broker-down.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry; vi.stubEnv — окружение createHttpApp.
+    'test/integration/http/ac-3-14-exception-filter.spec.ts',
 ];
 
 export default defineConfig({

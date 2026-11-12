@@ -21,7 +21,7 @@ import { createLoggerOptions } from '../observability/logger-options.js';
 import { MetricsServer } from '../observability/metrics-server.js';
 import { redactPaths, type KitRedaction } from '../observability/redaction.js';
 import { isValidDsn } from '../observability/sentry.js';
-import { buildHttpApp } from './create-http-app.js';
+import { buildHttpApp, type KitHttpOptions } from './create-http-app.js';
 import type { KitHttpLoggerOptions } from './kit-http-core.module.js';
 
 /** Схема окружения сервиса: результат содержит ключи `envBase`. */
@@ -37,8 +37,11 @@ export interface KitBootstrapOptions<S extends ServiceEnvSchema = ServiceEnvSche
     readonly env: S;
     /** Опции логгера по роли: BFF — `trustTraceparent: false`; P, O — `quietRoutes`. */
     readonly logger?: KitHttpLoggerOptions;
-    /** Опции HTTP: `bodyLimit` — лимит тела, байт (по умолчанию — лимит Fastify). */
-    readonly http?: { readonly bodyLimit?: number };
+    /**
+     * Опции HTTP (как у `createHttpApp`): `bodyLimit` — общий лимит тела, байт (по умолчанию — лимит Fastify);
+     * `securityHeaders`, `exceptionFilter`, `configureFastify` — по роли сервиса (§3.5).
+     */
+    readonly http?: KitHttpOptions;
     /** Правила редактирования сервиса (общие с `initSentry` в `instrument.ts`). */
     readonly redaction?: KitRedaction;
 }
@@ -122,7 +125,7 @@ export async function bootstrapService<S extends ServiceEnvSchema>(
         const app = await buildHttpApp({
             module: options.module,
             service: options.service,
-            bodyLimit: options.http?.bodyLimit,
+            ...options.http,
             logger: options.logger,
             redaction: options.redaction,
             caller: 'bootstrapService',

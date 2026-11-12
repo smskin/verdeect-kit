@@ -3,7 +3,15 @@
 // get-ok.controller.ts (/ok, no-store), регистрация фильтра APP_FILTER (O/I/P app.module.ts), O observability.module.ts
 // (LoggerModule на опциях createLoggerOptions). По PRD: окружение — из ConfigService модуля сервиса (KitConfigModule),
 // его нет — Error при сборке.
-import { Controller, Get, Header, Module, type DynamicModule } from '@nestjs/common';
+import {
+    Controller,
+    Get,
+    Header,
+    Module,
+    type DynamicModule,
+    type ExceptionFilter,
+    type Type,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { APP_FILTER } from '@nestjs/core';
 import { LoggerModule, type Params } from 'nestjs-pino';
@@ -35,6 +43,8 @@ export interface KitHttpCoreOptions {
     readonly logger?: KitHttpLoggerOptions;
     /** Правила редактирования сервиса. */
     readonly redaction?: KitRedaction;
+    /** Фильтр ошибок сервиса вместо `KitExceptionFilter` в `APP_FILTER`; `KitExceptionFilter` внедряется в него. */
+    readonly exceptionFilter?: Type<ExceptionFilter>;
 }
 
 /** Ключи окружения, которые читает ядро. */
@@ -137,7 +147,13 @@ export class KitHttpCoreModule {
                     useFactory: (metrics: KitMetrics) => metrics.registry,
                     inject: [KIT_PACKAGE_METRICS],
                 },
-                { provide: APP_FILTER, useClass: KitExceptionFilter },
+                // Провайдер всегда: фильтр сервиса внедряет его и делегирует необработанное (AC-3.14).
+                KitExceptionFilter,
+                {
+                    provide: APP_FILTER,
+                    useExisting: options.exceptionFilter ?? KitExceptionFilter,
+                },
+                ...(options.exceptionFilter === undefined ? [] : [options.exceptionFilter]),
             ],
             exports: [
                 KitLifecycle,
@@ -146,6 +162,7 @@ export class KitHttpCoreModule {
                 KIT_METRICS,
                 KIT_LOGGER,
                 LOGGER_PARAMS,
+                KitExceptionFilter,
             ],
         };
     }
