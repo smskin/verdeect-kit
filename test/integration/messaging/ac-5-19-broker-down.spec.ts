@@ -2,15 +2,15 @@
 // подключении после старта → error + GlitchTip, канал подписчика закрыт, новых попыток объявить топологию нет, relay
 // продолжает работу (prd.md §3.4 v1.15; П8). Брокер «недоступен» — tcpProxy. Проект isolated: initFakeSentry и шпион
 // на прототипе Channel amqplib (объявления очередей подписчика).
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { Db, mainPoolOf } from '../../../src/database/db.js';
+import { Db } from '../../../src/database/db.js';
 import { KIT_LOGGER } from '../../../src/internal/tokens.js';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
-import { countQueries } from '../../../src/testing/count-queries.js';
 import { tcpProxy, type TcpProxy } from '../../../src/testing/tcp-proxy.js';
 import { workerScope } from '../../../src/testing/worker-scope.js';
 import * as fixtureSchema from '../../fixtures/database/schema.js';
@@ -105,20 +105,9 @@ describe('UC-6: брокер при старте и TTL после старта'
             }),
         );
         await waitUntil(() => captured.length === 1, 'relay опубликовал');
-        // Окно — сигнал системы: два тика метрик relay (раз в RELAY_POLL_MS = 1 с) длиннее паузы повтора настройки
-        // RABBITMQ_RETRY_SECONDS = 1 с; за окно kit.retry не объявлялась снова.
-        let ticks = 0;
-        await countQueries(
-            mainPoolOf(app.get(Db)),
-            () => waitUntil(() => ticks >= 2, 'два тика метрик relay'),
-            {
-                onQuery: (text) => {
-                    if (text.includes('as pending')) {
-                        ticks += 1;
-                    }
-                },
-            },
-        );
+        // Окно наблюдения — две паузы повтора настройки канала (RABBITMQ_RECONNECT_SECONDS = 1 с): за окно kit.retry не
+        // объявлялась снова. Цикла метрик больше нет (v1.25) — окно задано временем, оно здесь предмет проверки.
+        await sleep(2 * 1_000 + 200);
         expect(retryDeclarations()).toBe(1);
         assertQueue.mockRestore();
         expect(lines.filter((line) => line['msg'] === FATAL)).toHaveLength(1);
