@@ -55,6 +55,8 @@ describe('UC-14: OpenAPI из кода', () => {
             '/items/{id}',
             '/public/info',
             '/public/limited',
+            '/public/notes',
+            '/public/search',
             '/tenant/settings',
         ]);
     });
@@ -101,6 +103,24 @@ describe('UC-14: OpenAPI из кода', () => {
         const { op } = await operations();
 
         expect(Object.keys(op('/public/info', 'get').responses)).toEqual(['200']);
+    });
+
+    it('AC-3.7: @Body() и @Query() без zod-pipe — нет 400 и 422; expectMatchesApi отклоняет 400 и 422 у такого маршрута', async () => {
+        const { op } = await operations();
+        const failed = { error: { code: 'VALIDATION_FAILED', message: 'x', details: {} } };
+
+        expect(Object.keys(op('/public/notes', 'post').responses)).toEqual(['201']);
+        expect(Object.keys(op('/public/search', 'get').responses)).toEqual(['200']);
+        for (const route of [
+            [PublicController, 'note'],
+            [PublicController, 'search'],
+        ] as const) {
+            for (const status of [400, 422]) {
+                expect(() => expectMatchesApi(response(status, failed), route)).toThrow(
+                    new RegExp(`статус ${String(status)} не описан`),
+                );
+            }
+        }
     });
 
     it("AC-3.7: errors: ['RATE_LIMITED'] — 429 с Retry-After; без zod-pipe — нет 400 и 422", async () => {

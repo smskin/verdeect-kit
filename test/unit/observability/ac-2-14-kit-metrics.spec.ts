@@ -38,11 +38,13 @@ afterEach(() => {
 
 describe('UC-13: реестр метрик сервиса', () => {
     it('AC-2.14: счётчик домена через KIT_METRICS виден в /metrics с меткой service; метрика глобального реестра — нет', async () => {
+        // Глобальная метрика — до сборки: реестр /metrics не должен включать её ни живьём, ни копией (Registry.merge).
+        const global = new Counter({ name: 'probe_global_total', help: 'Глобальный реестр' });
         const app = stand.track(
             await bootstrapService({ module: MetricsModule, service: 'probe', env: probeEnv }),
         );
         app.get(DomainMetrics).created.inc(3);
-        new Counter({ name: 'probe_global_total', help: 'Глобальный реестр' }).inc();
+        global.inc();
         const listening = stand.records().find((record) => record['msg'] === 'сервис слушает');
         const port = listening?.['metricsPort'];
         expect(typeof port).toBe('number');

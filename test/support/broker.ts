@@ -12,6 +12,7 @@ import { inject } from 'vitest';
 import { EVENTS_EXCHANGE, topicPermissionsOf } from '../../src/internal/rabbitmq-definitions.js';
 import type { KitRabbitWorker } from '../../src/testing/rabbitmq-admin.js';
 import { rabbitAdminFromProvided, type RabbitAdmin } from '../../src/testing/rabbitmq-admin.js';
+import { workerScope } from '../../src/testing/worker-scope.js';
 
 /** vhost воркера: `url` — пользователь с правами M3 сервиса kit, `adminUrl` — администратор. */
 export function workerBroker(): KitRabbitWorker {
@@ -39,6 +40,64 @@ export function brokerAdmin(): RabbitAdmin {
     }
 
     return rabbitAdminFromProvided(managementUrl, url);
+}
+
+/** Операция пользователем воркера на одноразовом канале с подтверждениями; ошибка брокера — текст. */
+export async function asWorker(
+    work: (channel: amqp.ConfirmChannel) => Promise<unknown>,
+): Promise<string> {
+    const connection = await amqp.connect(workerScope().rabbitmq.url);
+    connection.on('error', () => undefined);
+    try {
+        const channel = await connection.createConfirmChannel();
+        // Причина закрытия канала (ACCESS_REFUSED) приходит событием; отказ подтверждения — только «channel closed».
+        let closed: Error | undefined;
+        channel.on('error', (error: Error) => {
+            closed = error;
+        });
+        try {
+            await work(channel);
+        } catch (error) {
+            throw closed ?? error;
+        }
+
+        return 'ok';
+    } catch (error) {
+        return String((error as Error).message);
+    } finally {
+        await connection.close().catch(() => undefined);
+    }
+}
+
+/** Topic-права пользователя на vhost из management API (GET api/topic-permissions/<vhost>/<user>). */
+export async function topicPermissions(
+    vhost: string,
+    user: string,
+): Promise<{ exchange: string; write: string; read: string }[]> {
+    const managementUrl = inject('kitRabbitmqManagementUrl');
+    const url = inject('kitRabbitmqUrl');
+    if (managementUrl === undefined || url === undefined) {
+        throw new Error('kitRabbitmqUrl не передан: globalSetup без rabbitmq');
+    }
+    const { username, password } = new URL(url);
+    const auth = Buffer.from(
+        `${decodeURIComponent(username)}:${decodeURIComponent(password)}`,
+    ).toString('base64');
+    const response = await fetch(
+        new URL(
+            `api/topic-permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(user)}`,
+            managementUrl,
+        ),
+        { headers: { authorization: `Basic ${auth}` } },
+    );
+    if (response.status === 404) {
+        return [];
+    }
+    if (!response.ok) {
+        throw new Error(`topic-permissions: статус ${String(response.status)}`);
+    }
+
+    return (await response.json()) as { exchange: string; write: string; read: string }[];
 }
 
 /** Сообщение, пойманное `capture`. */

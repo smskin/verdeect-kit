@@ -73,12 +73,31 @@ describe('UC-4: securityHeaders по роли', () => {
         }
     });
 
-    it('AC-3.5: securityHeaders: false → ни одного заголовка безопасности от пакета', async () => {
+    it("AC-3.5: securityHeaders: 'api' (явно) — как по умолчанию: nosniff и no-referrer", async () => {
+        const api = await withHeaders('api');
+        try {
+            const res = await api.inject({ method: 'GET', url: '/ok' });
+
+            expect(res.headers['x-content-type-options']).toBe('nosniff');
+            expect(res.headers['referrer-policy']).toBe('no-referrer');
+        } finally {
+            await api.close();
+        }
+    });
+
+    it('AC-3.5: securityHeaders: false → ни одного заголовка безопасности от пакета на 200, 422, 404, 500 и /ok', async () => {
         const bare = await withHeaders(false);
         try {
-            for (const url of ['/ok', '/nope']) {
-                const res = await bare.inject({ method: 'GET', url });
+            const responses = await Promise.all([
+                bare.inject({ method: 'POST', url: '/probe', payload: { title: 'a', tags: [] } }),
+                bare.inject({ method: 'POST', url: '/probe', payload: { title: '' } }),
+                bare.inject({ method: 'GET', url: '/nope' }),
+                bare.inject({ method: 'GET', url: '/boom' }),
+                bare.inject({ method: 'GET', url: '/ok' }),
+            ]);
 
+            expect(responses.map((res) => res.statusCode)).toEqual([200, 422, 404, 500, 200]);
+            for (const res of responses) {
                 expect(res.headers['referrer-policy']).toBeUndefined();
                 expect(res.headers['x-content-type-options']).toBeUndefined();
             }

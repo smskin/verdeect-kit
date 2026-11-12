@@ -243,12 +243,15 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
         expect(text).not.toContain('"code":"ADMIN_USER"');
     });
 
-    it('AC-5.10: без --admin администратора в файле нет', async () => {
+    it('AC-5.10: без --admin администратора в файле нет, stderr пуст', async () => {
+        const stderr = vi.mocked(process.stderr.write);
+        stderr.mockClear();
         const { code, json } = await run(['definitions', '--services', 'svc-a'], {
             RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A,
         });
 
         expect(code).toBe(0);
+        expect(stderr).not.toHaveBeenCalled();
         expect(
             (json['users'] as { tags: string[] }[]).some((user) =>
                 user.tags.includes('administrator'),
@@ -285,5 +288,41 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
 
         expect(code).toBe(1);
         expect(json).toMatchObject({ error: { code: 'USAGE' } });
+    });
+
+    it('AC-5.10: повторный --publishes одного сервиса — префиксы объединяются без повторов', async () => {
+        const { code, json } = await run(
+            [
+                'definitions',
+                '--services',
+                'svc-a',
+                '--publishes',
+                'svc-a=alpha.',
+                '--publishes',
+                'svc-a=audit.,alpha.',
+            ],
+            { RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A },
+        );
+        const single = await (async () => {
+            output = [];
+
+            return run(
+                ['definitions', '--services', 'svc-a', '--publishes', 'svc-a=alpha.,audit.'],
+                {
+                    RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A,
+                },
+            );
+        })();
+
+        expect(code, JSON.stringify(json)).toBe(0);
+        const [topic] = json['topic_permissions'] as { write: string }[];
+        const write = new RegExp(topic?.write ?? '^$');
+        expect(['alpha.x', 'audit.x', 'other.x'].map((key) => write.test(key))).toEqual([
+            true,
+            true,
+            false,
+        ]);
+        expect(json['topic_permissions']).toEqual(single.json['topic_permissions']);
+        expect(json['permissions']).toEqual(single.json['permissions']);
     });
 });

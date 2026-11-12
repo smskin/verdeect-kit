@@ -39,6 +39,12 @@ class PlanController {
         throw new DomainError('PLAN_LIMIT', {}, { status: 429 });
     }
 
+    /** Retry-After разрешён коду кроме RATE_LIMITED (v1.23): до ответа доходит как есть. */
+    @Get('retry')
+    retry(): never {
+        throw new DomainError('PLAN_LIMIT', {}, { status: 429, headers: { 'Retry-After': '30' } });
+    }
+
     @Get('no-status')
     noStatus(): never {
         throw new DomainError('PLAN_LIMIT');
@@ -93,6 +99,14 @@ describe('UC-4: DomainError с опциями', () => {
 
         expectProblem(res, { status: 426, code: 'UPGRADE_REQUIRED' });
         expect(res.headers['upgrade']).toBe('websocket');
+        expect(delivered).toHaveLength(0);
+    });
+
+    it("AC-3.15: headers: {'Retry-After': '30'} у PLAN_LIMIT со статусом 429 → retry-after: 30 в ответе", async () => {
+        const res = await get('/plan/retry');
+
+        expectProblem(res, { status: 429, code: 'PLAN_LIMIT' });
+        expect(res.headers['retry-after']).toBe('30');
         expect(delivered).toHaveLength(0);
     });
 

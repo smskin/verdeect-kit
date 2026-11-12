@@ -1,7 +1,8 @@
 // AC-1.14 (UC-14, prd.md §3.8 v1.23; К1 Orchestrator): startTestStack со всеми флагами-адресами на уже поднятых сервисах.
 // Сервисы поднимает сам тест (как service-контейнеры CI) и передаёт адреса; startTestStack не вызывает Testcontainers,
-// отдаёт те же ключи provide, vhost воркеров изолированы, пользователь Redis — ACL SETUSER (AC-8.5 под ACL), teardown
-// удаляет только объекты своего прогона.
+// отдаёт те же ключи provide, vhost воркеров изолированы, пользователь Redis — ACL SETUSER (AC-8.5 под ACL: ключи, каналы,
+// префикс воркера; reset снимает права оставшегося пользователя), teardown удаляет только объекты своего прогона — чужие
+// БД, vhost, пользователи RabbitMQ и Redis, ключи Redis остаются (KT-62).
 import { randomBytes } from 'node:crypto';
 import amqp from 'amqplib';
 import { Redis } from 'ioredis';
@@ -9,6 +10,7 @@ import pg from 'pg';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { KitRabbitWorker } from '../../../src/testing/rabbitmq-admin.js';
+import { hashRabbitPassword } from '../../../src/internal/rabbitmq-definitions.js';
 import { RabbitAdmin } from '../../../src/testing/rabbitmq-admin.js';
 import { TEST_IMAGES } from '../../../src/testing/images.js';
 import { startTestStack } from '../../../src/testing/start-test-stack.js';
@@ -19,6 +21,13 @@ const PG_PASSWORD = randomBytes(8).toString('hex');
 const MINIO_PASSWORD = randomBytes(8).toString('hex');
 /** vhost чужого прогона того же сервиса: teardown его не трогает. */
 const FOREIGN = `${SERVICE}-test-other-w1`;
+/** Пользователи RabbitMQ чужого прогона и без runId: teardown их не трогает. */
+const FOREIGN_RABBIT_USERS = [FOREIGN, SERVICE];
+/** Чужие БД: с префиксом сервиса и без него. */
+const FOREIGN_DATABASES = [`${SERVICE}_other`, 'other_db'];
+/** Чужой пользователь Redis и чужие ключи (свой префикс другого сервиса и без префикса). */
+const FOREIGN_REDIS_USER = 'othersvc';
+const FOREIGN_REDIS_KEYS = ['othersvc:k', 'plain-k'];
 
 const containers: StartedTestContainer[] = [];
 const provided = new Map<string, unknown>();
@@ -94,12 +103,45 @@ beforeAll(async () => {
     await rabbitAdmin.loadDefinitions({
         rabbit_version: '4.3.6',
         vhosts: [{ name: FOREIGN }],
-        users: [],
+        users: FOREIGN_RABBIT_USERS.map((name) => ({
+            name,
+            password_hash: hashRabbitPassword('x'),
+            hashing_algorithm: 'rabbit_password_hashing_sha256',
+            tags: [],
+        })),
         permissions: [],
         topic_permissions: [],
         exchanges: [],
         queues: [],
         bindings: [],
+    });
+    for (const name of FOREIGN_DATABASES) {
+        await adminSql(`CREATE DATABASE ${name}`);
+    }
+    await withRedisAdmin(async (admin) => {
+        await admin.call(
+            'ACL',
+            'SETUSER',
+            FOREIGN_REDIS_USER,
+            'on',
+            'nopass',
+            '~othersvc:*',
+            '+@all',
+        );
+        // Пользователь сервиса, оставшийся от прерванного прогона, с лишними правами: SETUSER … reset их снимает.
+        await admin.call(
+            'ACL',
+            'SETUSER',
+            SERVICE,
+            'on',
+            '>stale-password',
+            '~other:*',
+            '&other:*',
+            '+@all',
+        );
+        for (const key of FOREIGN_REDIS_KEYS) {
+            await admin.set(key, 'foreign');
+        }
     });
 
     containerStarts = vi.spyOn(GenericContainer.prototype, 'start');
@@ -124,6 +166,28 @@ afterAll(async () => {
     containerStarts?.mockRestore();
     await Promise.allSettled(containers.map((container) => container.stop()));
 });
+
+async function adminSql<T extends object = object>(sql: string): Promise<T[]> {
+    const client = new pg.Client({ connectionString: postgresAdminUrl });
+    await client.connect();
+    try {
+        return (await client.query<T>(sql)).rows;
+    } finally {
+        await client.end();
+    }
+}
+
+async function withRedisAdmin<T>(work: (admin: Redis) => Promise<T>): Promise<T> {
+    const admin = new Redis(redisAdminUrl, { lazyConnect: true });
+    admin.on('error', () => undefined);
+    try {
+        await admin.connect();
+
+        return await work(admin);
+    } finally {
+        admin.disconnect();
+    }
+}
 
 function text(key: string): string {
     const value = provided.get(key);
@@ -198,7 +262,7 @@ describe('UC-14: startTestStack на внешних сервисах', () => {
         expect(await amqpOpens(foreign.toString())).toMatch(/ACCESS_REFUSED|403|ConnectionClose/);
     });
 
-    it('AC-1.14: AC-8.5 под ACL через ACL SETUSER — ключи <svc>:* доступны, чужие — NOPERM', async () => {
+    it('AC-1.14: AC-8.5 под ACL через ACL SETUSER — ключи и каналы <svc>:*, префикс воркера доступны, чужие — NOPERM; права оставшегося пользователя сняты (reset)', async () => {
         const redis = new Redis(text('kitRedisUrl'), {
             lazyConnect: true,
             maxRetriesPerRequest: 1,
@@ -207,10 +271,17 @@ describe('UC-14: startTestStack на внешних сервисах', () => {
         try {
             await redis.connect();
             expect(await redis.set(`${SERVICE}:k`, '1')).toBe('OK');
+            expect(await redis.set(`${SERVICE}:w1:k`, '1')).toBe('OK');
             await expect(redis.set('other:k', '1')).rejects.toThrow(/NOPERM/);
+            expect(await redis.publish(`${SERVICE}:events`, 'x')).toBe(0);
+            await expect(redis.publish('other:events', 'x')).rejects.toThrow(/NOPERM/);
         } finally {
             redis.disconnect();
         }
+        // Пароль оставшегося пользователя снят: AUTH им — WRONGPASS.
+        await expect(
+            withRedisAdmin((admin) => admin.call('AUTH', SERVICE, 'stale-password')),
+        ).rejects.toThrow(/WRONGPASS/);
     });
 
     it('AC-1.14: teardown удаляет только объекты своего прогона — vhost воркеров, пользователя ACL, базу-шаблон; чужой vhost остаётся', async () => {
@@ -222,25 +293,23 @@ describe('UC-14: startTestStack на внешних сервисах', () => {
         for (const vhost of own) {
             expect(vhosts).not.toContain(vhost);
         }
-        const admin = new Redis(redisAdminUrl, { lazyConnect: true });
-        admin.on('error', () => undefined);
-        try {
-            await admin.connect();
+        const users = await rabbitAdmin.listUsers();
+        expect(users).toEqual(expect.arrayContaining(FOREIGN_RABBIT_USERS));
+        for (const user of own) {
+            expect(users).not.toContain(user);
+        }
+        await withRedisAdmin(async (admin) => {
             expect(await admin.call('ACL', 'GETUSER', SERVICE)).toBeNull();
-        } finally {
-            admin.disconnect();
-        }
-        const client = new pg.Client({ connectionString: postgresAdminUrl });
-        await client.connect();
-        try {
-            const { rowCount } = await client.query(
-                'select 1 from pg_database where datname = $1',
-                [`${SERVICE}_template`],
-            );
-            expect(rowCount).toBe(0);
-        } finally {
-            await client.end();
-        }
+            expect(await admin.call('ACL', 'GETUSER', FOREIGN_REDIS_USER)).not.toBeNull();
+            for (const key of FOREIGN_REDIS_KEYS) {
+                expect(await admin.get(key), key).toBe('foreign');
+            }
+        });
+        const databases = (
+            await adminSql<{ datname: string }>('select datname from pg_database')
+        ).map((row) => row.datname);
+        expect(databases).not.toContain(`${SERVICE}_template`);
+        expect(databases).toEqual(expect.arrayContaining(FOREIGN_DATABASES));
     });
 
     it('AC-1.14 (контроль шпиона): флаг true — startTestStack вызывает GenericContainer.prototype.start того же экземпляра testcontainers', async () => {
