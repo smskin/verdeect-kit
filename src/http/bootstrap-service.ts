@@ -5,6 +5,7 @@
 // не вызывается).
 import type { DynamicModule, Type } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import type { Registry } from '@prometheus-io/client';
 import * as Sentry from '@sentry/nestjs';
 import { pino, type Logger } from 'pino';
 import { z } from 'zod';
@@ -18,7 +19,6 @@ import { HealthRegistry } from '../observability/health-registry.js';
 import { KitLifecycle } from '../observability/lifecycle.js';
 import { createLoggerOptions } from '../observability/logger-options.js';
 import { MetricsServer } from '../observability/metrics-server.js';
-import type { KitMetrics } from '../observability/metrics.js';
 import { redactPaths, type KitRedaction } from '../observability/redaction.js';
 import { isValidDsn } from '../observability/sentry.js';
 import { buildHttpApp } from './create-http-app.js';
@@ -133,7 +133,8 @@ export async function bootstrapService<S extends ServiceEnvSchema>(
         const lifecycle = app.get(KitLifecycle);
         const metricsServer = new MetricsServer({
             port: env.METRICS_PORT,
-            registry: app.get<KitMetrics>(KIT_METRICS).registry,
+            // Тот же реестр, что внедряют сервисы (KIT_METRICS, AC-2.14).
+            registry: app.get<Registry>(KIT_METRICS),
             health: app.get(HealthRegistry),
             logger,
         });

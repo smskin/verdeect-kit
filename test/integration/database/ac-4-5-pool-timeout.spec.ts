@@ -14,7 +14,7 @@ import { Db, mainPoolOf } from '../../../src/database/db.js';
 import { DRIZZLE, KitDatabaseModule } from '../../../src/database/kit-database.module.js';
 import { loadDrizzle, type NodePgDatabase, type Pool } from '../../../src/database/pg.js';
 import { isPoolTimeout, poolTimeoutOf } from '../../../src/internal/pg-errors.js';
-import { KIT_METRICS } from '../../../src/internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../../../src/internal/tokens.js';
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
 import type { KitMetrics } from '../../../src/observability/metrics.js';
 import { TEST_TIMEOUT_SCALE } from '../../../src/testing/timeout-scale.js';
@@ -104,7 +104,7 @@ describe('UC-4: срок пула через HTTP', () => {
         await app.init();
         await app.getHttpAdapter().getInstance().ready();
         main = mainPoolOf(app.get(Db));
-        metrics = app.get<KitMetrics>(KIT_METRICS);
+        metrics = app.get<KitMetrics>(KIT_PACKAGE_METRICS);
     });
 
     afterAll(async () => {

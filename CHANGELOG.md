@@ -17,6 +17,7 @@
 - CLI `rabbitmq definitions --publishes <svc>=<префикс>[,<префикс>…]` (повторяемая): префиксы ключей публикации; неверный префикс или сервис вне `--services` — `USAGE`.
 - `topic_permissions` на `verdeect.events` в `definitions.json`: write — `^(<префиксы>)`, read — `.*`.
 - `startTestStack({rabbitmq: true, publishes})`: права пользователя воркера с префиксами публикации тем же генератором, что CLI.
+- `/observability`: токен `KIT_METRICS` — реестр метрик экземпляра (`Registry`, тот же, что в `/metrics`) для метрик домена; глобальный реестр `@prometheus-io/client` в `/metrics` не попадает.
 
 ### Fixed
 

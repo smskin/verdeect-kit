@@ -4,7 +4,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Db } from '../../../src/database/db.js';
-import { KIT_METRICS } from '../../../src/internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../../../src/internal/tokens.js';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
@@ -33,7 +33,7 @@ async function gauge(
     app: NestFastifyApplication,
     name: 'outboxLagSeconds' | 'outboxPending',
 ): Promise<number> {
-    const metric = await app.get<KitMetrics>(KIT_METRICS)[name].get();
+    const metric = await app.get<KitMetrics>(KIT_PACKAGE_METRICS)[name].get();
 
     return metric.values[0]?.value ?? 0;
 }

@@ -7,6 +7,7 @@ export { KitLifecycle } from './lifecycle.js';
 export type { KitShutdownParticipant, KitShutdownStep } from './lifecycle.js';
 export { createLoggerOptions } from './logger-options.js';
 export type { KitLoggerOptions, KitLoggerParams } from './logger-options.js';
+export { KIT_METRICS } from '../internal/tokens.js';
 export { MetricsServer } from './metrics-server.js';
 export { alertRulesTemplate, kitMetrics } from './metrics.js';
 export type { KitMetrics } from './metrics.js';

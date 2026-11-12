@@ -168,6 +168,19 @@ export const redaction: KitRedaction = {
 
 **Метрики.** `kitMetrics` построен на `@prometheus-io/client` (обязательный peer `^0.16.1`, PRD v1.12): свой `Registry` на экземпляр приложения, метка `service`, метрики процесса Node.
 
+Реестр экземпляра — токен `KIT_METRICS` из `/observability` (тот же `Registry`, что отдаёт `/metrics`). Метрики домена регистрируйте только в нём; метку `service` ставит реестр — своей не добавляйте. Глобальный реестр `@prometheus-io/client` в `/metrics` не попадает.
+
+```ts
+@Injectable()
+export class FilesMetrics {
+    readonly uploaded: Counter;
+
+    constructor(@Inject(KIT_METRICS) registry: Registry) {
+        this.uploaded = new Counter({ name: 'files_uploaded_total', help: 'Загруженные файлы', registers: [registry] });
+    }
+}
+```
+
 Метрики домена сервис называет с префиксом — именем сервиса без экземпляра: `[a-z][a-z0-9_]*` (`bff_`, `platform_`, `orchestrator_`, `identity_`). Экземпляр (`bff-app`, `bff-admin`) различается меткой `service`, не префиксом.
 
 **Алерты.** `alertRulesTemplate` — путь к `alerts/verdeect-kit.rules.yml` в установленном пакете: правила vmalert для метрик пакета с порогом по умолчанию. Свой порог — recording-правило `verdeect_kit_threshold:<метрика>` с меткой `service` в файле правил сервиса:
@@ -624,6 +637,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?})` — тот же 
 - `HealthRegistry` — пробы `/health`: `register(name, probe, {critical})`, `markStopping()`, `evaluate()`; срок пробы 2 с.
 - `HealthProbe` — тип пробы `() => Promise<boolean>`.
 - `HealthReport` — `{status: 'ok' | 'degraded' | 'unavailable', checks}`.
+- `KIT_METRICS` — токен DI реестра метрик экземпляра (`Registry`, тот же, что в `/metrics`): метрики домена — `registers: [registry]`.
 - `MetricsServer` — `/health` и `/metrics` на `METRICS_PORT`: `listen()`, `address()`, `close()`.
 - `kitMetrics` — `kitMetrics({service})`: свой реестр экземпляра с меткой `service`, метрики процесса Node и `verdeect_*`.
 - `KitMetrics` — тип реестра и метрик пакета.

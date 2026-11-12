@@ -5,7 +5,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { KIT_METRICS } from '../../../src/internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../../../src/internal/tokens.js';
 import type { KitMetrics } from '../../../src/observability/metrics.js';
 import { RateLimiter } from '../../../src/redis/rate-limiter.js';
 import { tcpProxy } from '../../../src/testing/tcp-proxy.js';
@@ -134,7 +134,7 @@ describe('UC-11: RateLimiter на Redis', () => {
         await down.init();
         try {
             await proxy.break();
-            const metrics = down.get<KitMetrics>(KIT_METRICS);
+            const metrics = down.get<KitMetrics>(KIT_PACKAGE_METRICS);
             const before = await unavailable(metrics);
             const started = Date.now();
 

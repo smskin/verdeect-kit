@@ -25,7 +25,7 @@ import {
     type KitMessagingModuleOptions,
 } from '../../src/messaging/kit-messaging.module.js';
 import type { KitTestOverride } from '../../src/testing/create-test-app.js';
-import { KIT_METRICS } from '../../src/internal/tokens.js';
+import { KIT_PACKAGE_METRICS } from '../../src/internal/tokens.js';
 import type { KitMetrics } from '../../src/observability/metrics.js';
 import { TEST_TIMEOUT_SCALE } from '../../src/testing/timeout-scale.js';
 import { workerScope } from '../../src/testing/worker-scope.js';
@@ -325,7 +325,7 @@ export async function consumed(
     result: string,
     type: string = TestNoteCreated.type,
 ): Promise<number> {
-    const metric = await app.get<KitMetrics>(KIT_METRICS).eventsConsumed.get();
+    const metric = await app.get<KitMetrics>(KIT_PACKAGE_METRICS).eventsConsumed.get();
 
     return metric.values
         .filter((item) => {
@@ -385,7 +385,7 @@ export async function messagingCleanupRuns(
     table: 'outbox' | 'inbox',
     result: string,
 ): Promise<number> {
-    const metric = await app.get<KitMetrics>(KIT_METRICS).cleanupRuns.get();
+    const metric = await app.get<KitMetrics>(KIT_PACKAGE_METRICS).cleanupRuns.get();
 
     return metric.values
         .filter((item) => {

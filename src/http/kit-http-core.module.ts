@@ -9,7 +9,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { LoggerModule, type Params } from 'nestjs-pino';
 import { pino, type Logger } from 'pino';
 import type { KitBaseEnv } from '../config/fragments.js';
-import { KIT_LOGGER, KIT_METRICS } from '../internal/tokens.js';
+import { KIT_LOGGER, KIT_METRICS, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import { KitLifecycle } from '../observability/lifecycle.js';
 import {
@@ -17,7 +17,7 @@ import {
     type KitLoggerOptions,
     type KitLoggerParams,
 } from '../observability/logger-options.js';
-import { kitMetrics } from '../observability/metrics.js';
+import { kitMetrics, type KitMetrics } from '../observability/metrics.js';
 import type { KitRedaction } from '../observability/redaction.js';
 import { KitExceptionFilter } from './kit-exception.filter.js';
 
@@ -75,7 +75,7 @@ function coreEnv(config: ConfigService | null | undefined): CoreEnv {
 /** Внутренний глобальный модуль ядра; подключает его `createHttpApp`. */
 @Module({})
 export class KitHttpCoreModule {
-    /** Ядро одного экземпляра приложения; экспортирует KitLifecycle, HealthRegistry, KIT_METRICS, KIT_LOGGER. */
+    /** Ядро одного экземпляра приложения; экспортирует KitLifecycle, HealthRegistry, KIT_PACKAGE_METRICS, KIT_METRICS, KIT_LOGGER. */
     static forRoot(options: KitHttpCoreOptions): DynamicModule {
         const loggerParams = {
             provide: LOGGER_PARAMS,
@@ -129,12 +129,24 @@ export class KitHttpCoreModule {
                     inject: [KIT_LOGGER, HealthRegistry, CORE_ENV],
                 },
                 {
-                    provide: KIT_METRICS,
+                    provide: KIT_PACKAGE_METRICS,
                     useFactory: () => kitMetrics({ service: options.service }),
+                },
+                {
+                    provide: KIT_METRICS,
+                    useFactory: (metrics: KitMetrics) => metrics.registry,
+                    inject: [KIT_PACKAGE_METRICS],
                 },
                 { provide: APP_FILTER, useClass: KitExceptionFilter },
             ],
-            exports: [KitLifecycle, HealthRegistry, KIT_METRICS, KIT_LOGGER, LOGGER_PARAMS],
+            exports: [
+                KitLifecycle,
+                HealthRegistry,
+                KIT_PACKAGE_METRICS,
+                KIT_METRICS,
+                KIT_LOGGER,
+                LOGGER_PARAMS,
+            ],
         };
     }
 }

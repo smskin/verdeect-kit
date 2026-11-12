@@ -6,7 +6,7 @@ import { isAbsolute } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { alertRulesTemplate, kitMetrics } from '../../../src/observability/index.js';
 
-const KIT_METRICS = [
+const KIT_PACKAGE_METRICS = [
     'verdeect_outbox_pending',
     'verdeect_outbox_lag_seconds',
     'verdeect_events_consumed_total',
@@ -37,7 +37,7 @@ describe('UC-13: метрики пакета', () => {
 
         expect(text).toMatch(/^process_cpu_user_seconds_total\{service="kit-test"\}/m);
         expect(text).toMatch(/^nodejs_heap_size_used_bytes\{service="kit-test"\}/m);
-        for (const name of KIT_METRICS) {
+        for (const name of KIT_PACKAGE_METRICS) {
             expect(text).toContain(`# TYPE ${name} `);
         }
         expect(text).toContain('verdeect_outbox_pending{service="kit-test"} 3');
