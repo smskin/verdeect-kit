@@ -185,6 +185,33 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.stdout.trim(), describeResult(result)).toBe('ok');
     });
 
+    it("AC-4.17: verdeect-kit db migrate из архива процессом — БД недоступна → JSON {error: {code: 'DATABASE_UNAVAILABLE'}}, код выхода процесса 1", async () => {
+        // Порт 1 закрыт: соединение отклоняется сразу, без Docker и пауз.
+        const result = await runInConsumer(
+            dir(minimal),
+            'pnpm',
+            [
+                'exec',
+                'verdeect-kit',
+                'db',
+                'migrate',
+                '--folder',
+                'drizzle',
+                '--schema',
+                'consumer',
+            ],
+            {
+                LOG_LEVEL: 'silent',
+                DATABASE_MIGRATOR_URL: 'postgres://consumer_owner:x@127.0.0.1:1/consumer',
+            },
+        );
+
+        expect(result.code, describeResult(result)).toBe(1);
+        expect(JSON.parse(result.stdout.trim()), describeResult(result)).toMatchObject({
+            error: { code: 'DATABASE_UNAVAILABLE' },
+        });
+    });
+
     it('AC-9.1: drizzle-kit загружает схему потребителя с @verdeect/kit/database и /idempotency — «No schema changes»', async () => {
         const result = await runInConsumer(dir(minimal), 'pnpm', [
             'exec',

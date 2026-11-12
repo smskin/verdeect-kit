@@ -1,6 +1,8 @@
-// AC-4.17 (UC-12, prd.md §3.3 v1.23): обрыв соединения с БД во время `db migrate` и `db move-journal` (BEGIN, запрос
-// миграции) → JSON {error: {code: 'DATABASE_UNAVAILABLE'}}, код 1, без необработанного исключения; незавершённая
-// миграция не отмечена в журнале. Обрыв — TcpProxy.blackholeOn по тексту запроса, без пауз.
+// AC-4.17 (UC-12, prd.md §3.3 v1.23): обрыв соединения с БД во время `db migrate` (BEGIN, запрос миграции, COMMIT) и
+// `db move-journal` (запрос) → JSON {error: {code: 'DATABASE_UNAVAILABLE'}}, код 1, без необработанного исключения;
+// незавершённая миграция не отмечена в журнале и не применена. Обрыв на COMMIT: COMMIT мог дойти до сервера — миграции и
+// журнал применены вместе или не применены вместе, повтор migrate доводит до конца (KT-62). Обрыв — TcpProxy.blackholeOn
+// по тексту запроса, без пауз.
 import {
     cpSync,
     mkdtempSync,
@@ -29,6 +31,12 @@ import {
 const FIXTURE = fileURLToPath(new URL('../../fixtures/database/migrations', import.meta.url));
 const OWNER_PASSWORD = 'kitdrop-owner-password-1234';
 const APP_PASSWORD = 'kitdrop-app-password-12345';
+/** Миграций в фикстуре (meta/_journal.json). */
+const MIGRATIONS = (
+    JSON.parse(readFileSync(join(FIXTURE, 'meta', '_journal.json'), 'utf8')) as {
+        entries: unknown[];
+    }
+).entries.length;
 
 /** Копия миграций фикстуры с ролями и схемой kitdrop. */
 function copyMigrations(target: string): void {
@@ -105,6 +113,25 @@ describe('UC-12: обрыв соединения в CLI db', () => {
         await dropDatabase(database);
     });
 
+    /** Строк журнала kitdrop.__migrations (нет таблицы — 0) и есть ли таблица первой миграции. */
+    async function migrationState(): Promise<{ journal: number; applied: boolean }> {
+        const [state] = await adminQuery<{ journal: string | null; setting: string | null }>(
+            owner,
+            "select to_regclass('kitdrop.__migrations')::text as journal, to_regclass('kitdrop.setting')::text as setting",
+        );
+        const journal =
+            state?.journal == null
+                ? 0
+                : ((
+                      await adminQuery<{ count: number }>(
+                          owner,
+                          'select count(*)::int as count from kitdrop.__migrations',
+                      )
+                  )[0]?.count ?? 0);
+
+        return { journal, applied: state?.setting != null };
+    }
+
     it("AC-4.17: обрыв на BEGIN db migrate → {error: {code: 'DATABASE_UNAVAILABLE'}}, код 1, без необработанного исключения; миграция не отмечена в журнале", async () => {
         proxy = await tcpProxy(owner);
         proxy.blackholeOn(/\bbegin\b/i);
@@ -126,6 +153,25 @@ describe('UC-12: обрыв соединения в CLI db', () => {
                   )
                 : [{ count: 0 }];
         expect(applied[0]?.count).toBe(0);
+        await proxy.close();
+    });
+
+    it("AC-4.17: обрыв на запросе миграции db migrate → {error: {code: 'DATABASE_UNAVAILABLE'}}, код 1, без необработанного исключения; миграция откатилась и не отмечена", async () => {
+        proxy = await tcpProxy(owner);
+        // Второй оператор первой миграции: таблица kitdrop.note той же транзакции уже создана.
+        proxy.blackholeOn(/CREATE TABLE "kitdrop"\."setting"/);
+
+        const run = await db(['migrate', '--folder', folder, '--schema', 'kitdrop'], proxy.url);
+
+        expect(run.code).toBe(1);
+        expect(run.result).toMatchObject({ error: { code: 'DATABASE_UNAVAILABLE' } });
+        expect(uncaught).toEqual([]);
+        expect(await migrationState()).toEqual({ journal: 0, applied: false });
+        const [note] = await adminQuery<{ note: string | null }>(
+            owner,
+            "select to_regclass('kitdrop.note')::text as note",
+        );
+        expect(note?.note).toBeNull();
         await proxy.close();
     });
 
@@ -152,5 +198,34 @@ describe('UC-12: обрыв соединения в CLI db', () => {
             'select count(*)::int as count from drizzle.__drizzle_migrations',
         );
         expect(legacy[0]?.count).toBe(1);
+    });
+
+    it("AC-4.17: обрыв на COMMIT db migrate → {error: {code: 'DATABASE_UNAVAILABLE'}}, код 1; миграции и журнал — вместе (все или ни одной), повтор migrate доводит до конца", async () => {
+        proxy = await tcpProxy(owner);
+        proxy.blackholeOn(/\bcommit\b/i);
+
+        const run = await db(['migrate', '--folder', folder, '--schema', 'kitdrop'], proxy.url);
+        await proxy.close();
+
+        expect(run.code).toBe(1);
+        expect(run.result).toMatchObject({ error: { code: 'DATABASE_UNAVAILABLE' } });
+        expect(uncaught).toEqual([]);
+        const after = await migrationState();
+        // COMMIT мог дойти до сервера до обрыва: тогда применено всё, иначе — ничего; частичного состояния нет. На деле
+        // TcpProxy передаёт пакет с COMMIT до обрыва — наблюдается «применено всё» (неоднозначный COMMIT), ветка «ничего»
+        // здесь практически не выполняется.
+        expect([
+            { journal: 0, applied: false },
+            { journal: MIGRATIONS, applied: true },
+        ]).toContainEqual(after);
+
+        const again = await db(['migrate', '--folder', folder, '--schema', 'kitdrop'], owner);
+
+        expect(again.code).toBe(0);
+        expect(again.result).toEqual({
+            schema: 'kitdrop',
+            applied: after.journal === 0 ? MIGRATIONS : 0,
+        });
+        expect(await migrationState()).toEqual({ journal: MIGRATIONS, applied: true });
     });
 });
