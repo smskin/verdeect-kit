@@ -73,12 +73,40 @@ export function pageOf<T>(
     return { items, nextCursor: last === undefined ? null : encodeCursor(keyOf(last)) };
 }
 
+/** Столбец `timestamp`/`timestamptz` Drizzle (режимы `date` и `string`). */
+function timestampColumn(col: AnyColumn): { readonly withTimezone: boolean } | null {
+    const { columnType, withTimezone } = col as AnyColumn & { withTimezone?: unknown };
+    if (columnType !== 'PgTimestamp' && columnType !== 'PgTimestampString') {
+        return null;
+    }
+
+    return { withTimezone: withTimezone === true };
+}
+
+/**
+ * Ключ курсора по столбцу `timestamptz` без потери точности (§3.5, К23): строка ISO UTC с микросекундами
+ * (`2026-11-13T10:00:00.123456Z`) — выбирается вместе со строками и передаётся в `pageOf(…, keyOf)`. JS `Date` хранит
+ * миллисекунды: строки одной миллисекунды с разными микросекундами иначе пропускаются или повторяются.
+ * @example
+ * db.select({ ...getTableColumns(t), cursorAt: cursorTimestamp(t.updatedAt) })…
+ * pageOf(rows, limit, (row) => [row.cursorAt, row.id]);
+ * @throws {TypeError} столбец не `timestamp with time zone`.
+ */
+export function cursorTimestamp(col: AnyColumn): SQL<string> {
+    if (timestampColumn(col)?.withTimezone !== true) {
+        throw new TypeError(`cursorTimestamp: столбец ${col.name} — не timestamp with time zone`);
+    }
+
+    return sql<string>`to_char(${col} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
 /**
  * Условие «после курсора» для `where`: `(c1, …, cn) > (v1, …, vn)` (`desc` — `<`) как ИЛИ-цепочка
  * `c1 > v1 OR (c1 = v1 AND c2 > v2) OR …`. `cursor = null` → `undefined` (первая страница). Последний столбец обязан
  * быть `primaryKey()` или `unique()` — иначе `Error` (ошибка разработчика). Длина курсора ≠ числу столбцов или `null`
- * в ключе → 422 `VALIDATION_FAILED` `path: cursor`. Значения передаются параметрами без кодировщика столбца: строка
- * ISO подходит и столбцу timestamp.
+ * в ключе → 422 `VALIDATION_FAILED` `path: cursor`. Значения передаются параметрами без кодировщика столбца; у столбца
+ * timestamp значение приводится к `timestamptz`/`timestamp` и сравнивается полностью — ключ с микросекундами даёт
+ * `cursorTimestamp` (строка ISO с миллисекундами из `Date.toISOString()` теряет микросекунды, К23).
  */
 export function afterCursor(
     cols: readonly AnyColumn[],
@@ -97,10 +125,20 @@ export function afterCursor(
         throw invalidCursor();
     }
     const op = dir === 'asc' ? sql.raw('>') : sql.raw('<');
+    const value = (col: AnyColumn, raw: CursorValue): SQL => {
+        const timestamp = timestampColumn(col);
+        if (timestamp === null) {
+            return sql`${raw}`;
+        }
+
+        return timestamp.withTimezone ? sql`${raw}::timestamptz` : sql`${raw}::timestamp`;
+    };
     const branches = cols.map((col, index) =>
         and(
-            ...cols.slice(0, index).map((prev, prevIndex) => sql`${prev} = ${cursor[prevIndex]}`),
-            sql`${col} ${op} ${cursor[index]}`,
+            ...cols
+                .slice(0, index)
+                .map((prev, prevIndex) => sql`${prev} = ${value(prev, cursor[prevIndex] ?? null)}`),
+            sql`${col} ${op} ${value(col, cursor[index] ?? null)}`,
         ),
     );
 

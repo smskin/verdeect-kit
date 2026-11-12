@@ -6,7 +6,12 @@
 
 ### Added
 
+- `/http`: `cursorTimestamp(col)` — ключ keyset-курсора по `timestamptz` строкой ISO UTC с микросекундами из БД.
 - `/observability`: `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})` — ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер), `createHttpApp` подключает его сам; типы `KitCoreModuleOptions`, `KitCoreLoggerOptions`.
+
+### Fixed
+
+- `/http` keyset (К23, Orchestrator): курсор по времени терял микросекунды `timestamptz` (JS `Date` — миллисекунды), строки одной миллисекунды пропускались или повторялись между страницами. `afterCursor` сравнивает столбец времени с полным значением курсора (`::timestamptz`); ключ по времени — `cursorTimestamp(col)` (README, «Точность курсора по времени»). Формат курсора не изменился; курсор с миллисекундами (`toISOString()`) по-прежнему принимается, но точен только с `cursorTimestamp`.
 
 ### Changed
 

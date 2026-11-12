@@ -11,7 +11,14 @@ export type {
 export { defineErrors, DomainError, kitErrors } from './errors.js';
 export type { KitDomainErrorOptions, KitErrorDictionary, KitErrorEntry } from './errors.js';
 export { KitExceptionFilter } from './kit-exception.filter.js';
-export { afterCursor, decodeCursor, encodeCursor, pageOf, PageQuerySchema } from './pagination.js';
+export {
+    afterCursor,
+    cursorTimestamp,
+    decodeCursor,
+    encodeCursor,
+    pageOf,
+    PageQuerySchema,
+} from './pagination.js';
 export type { Page } from './pagination.js';
 export { ZodValidationPipe } from './zod-validation.pipe.js';
 export { Api } from './api/api.decorator.js';
