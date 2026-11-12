@@ -1,6 +1,6 @@
 {
   "name": "@verdeect/kit",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "Общий инфраструктурный пакет сервисов Вердикта 2.0: конфигурация, наблюдаемость, HTTP, БД с RLS, идемпотентность, сообщения, шифр, Redis, тестовый контур",
   "keywords": [
     "verdeect",
@@ -64,7 +64,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "verdeect-kit": "./dist/cli/main.js"
+    "verdeect-kit": "dist/cli/main.js"
   },
   "publishConfig": {
     "access": "public"

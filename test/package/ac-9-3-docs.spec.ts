@@ -177,7 +177,7 @@ describe('UC-16: документация пакета', () => {
         expect(compatibility).toMatch(/^\| `1\.0\.0-rc\.N` \(после E8\)/m);
     });
 
-    it('AC-9.3: CHANGELOG — Keep a Changelog, [Unreleased], каждый экспорт в [Unreleased] или разделе version', async () => {
+    it('AC-9.3: CHANGELOG — Keep a Changelog, [Unreleased], каждый экспорт в [Unreleased] или в разделе выпуска', async () => {
         expect(changelog).toContain('keepachangelog.com');
         expect(changelog).toContain('## [Unreleased]');
         const releases = [
@@ -187,9 +187,11 @@ describe('UC-16: документация пакета', () => {
         // Других разделов, кроме [Unreleased] и выпусков с датой, нет.
         expect(headings.filter((heading) => heading !== 'Unreleased')).toEqual(releases);
 
+        // Экспорт описан в [Unreleased] или в разделе любого выпуска (с 1.0.0-rc.2 экспорты E1–E8 — в [1.0.0-rc.1]).
         const pending = [
             section(changelog, '[Unreleased]'),
             releaseSection(changelog, version),
+            ...releases.map((release) => releaseSection(changelog, release ?? '')),
         ].join('\n');
         expect(pending).toContain('### Added');
         const names = (

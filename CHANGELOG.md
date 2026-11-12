@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-11-12
+
+### Fixed
+
+- bin записан без ./ — npm 11 больше не предупреждает при публикации.
+
 ## [1.0.0-rc.1] - 2026-11-12
 
 Первый выпуск: подпути `/config` и `/testing` (этап E1, PRD v1.7), `/observability` (этап E2, PRD v1.11), `/http` и CLI `verdeect-kit` (этап E3, PRD v1.13), `/database`, `/idempotency` и CLI `db` (этап E4, PRD v1.14), `/messaging` и CLI `rabbitmq` (этап E5, PRD v1.14), `/crypto` и CLI `crypto` (этап E7, PRD v1.16), `/redis` и CLI `redis` (этап E8, PRD v1.17).

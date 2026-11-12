@@ -136,8 +136,8 @@ describe('AC-1.1: точки входа пакета (E1–E8)', () => {
         });
     });
 
-    it('AC-1.1: bin — ровно {verdeect-kit: ./dist/cli/main.js}, нет main и корневого "."', () => {
-        expect(manifest.bin).toEqual({ 'verdeect-kit': './dist/cli/main.js' });
+    it('AC-1.1: bin — ровно {verdeect-kit: dist/cli/main.js} (без ./ — npm 11 не нормализует), нет main и корневого "."', () => {
+        expect(manifest.bin).toEqual({ 'verdeect-kit': 'dist/cli/main.js' });
         expect(manifest.main).toBeUndefined();
         expect(manifest.exports['.']).toBeUndefined();
     });
