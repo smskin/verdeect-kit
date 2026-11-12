@@ -61,6 +61,7 @@ function parseOptions(args: readonly string[]): {
     services?: string;
     out?: string;
     publishes?: string[];
+    admin?: string;
 } {
     try {
         return parseArgs({
@@ -70,6 +71,7 @@ function parseOptions(args: readonly string[]): {
                 services: { type: 'string' },
                 out: { type: 'string' },
                 publishes: { type: 'string', multiple: true },
+                admin: { type: 'string' },
             },
         }).values;
     } catch (error) {
@@ -133,6 +135,25 @@ async function publishesOf(
     return result;
 }
 
+/** `--admin <user>`: имя в формате сервиса и не совпадает с `--services` (§3.4 v1.24, только dev и e2e). */
+async function adminOf(
+    raw: string | undefined,
+    services: readonly string[],
+): Promise<string | undefined> {
+    if (raw === undefined) {
+        return undefined;
+    }
+    const { SERVICE_NAME_PATTERN } = await import('../../internal/service-name.js');
+    if (!SERVICE_NAME_PATTERN.test(raw)) {
+        throw new CommandError('USAGE', `--admin: имя «${raw}» вне формата ^[a-z][a-z0-9-]{1,31}$`);
+    }
+    if (services.includes(raw)) {
+        throw new CommandError('USAGE', `--admin: имя «${raw}» совпадает с сервисом из --services`);
+    }
+
+    return raw;
+}
+
 async function definitions(
     args: readonly string[],
     context: RabbitmqCommandContext,
@@ -141,6 +162,7 @@ async function definitions(
     const values = parseOptions(args);
     const services = await servicesOf(values.services);
     const publishes = await publishesOf(values.publishes ?? [], services);
+    const admin = await adminOf(values.admin, services);
     const { buildDefinitions, passwordHashKey } =
         await import('../../internal/rabbitmq-definitions.js');
     // Только имена ключей в ошибке: значения хешей не выводятся.
@@ -154,10 +176,25 @@ async function definitions(
 
         return { service, passwordHash: hash, publishes: publishes.get(service) ?? [] };
     });
+    let adminUser: { user: string; passwordHash: string } | undefined;
+    if (admin !== undefined) {
+        const key = passwordHashKey(admin);
+        const hash = context.env[key] ?? '';
+        if (hash.length < MIN_HASH_LENGTH || !HASH_FORMAT.test(hash)) {
+            keys.push(key);
+        }
+        adminUser = { user: admin, passwordHash: hash };
+    }
     if (keys.length > 0) {
         throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
     }
-    const json = `${JSON.stringify(buildDefinitions({ users }), null, 2)}\n`;
+    if (adminUser !== undefined) {
+        // Не зависит от LOG_LEVEL: файл с администратором не должен уйти в production незамеченным.
+        process.stderr.write(
+            `${JSON.stringify({ level: 'warn', code: 'ADMIN_USER', user: adminUser.user, message: 'rabbitmq definitions --admin: файл только для dev и e2e, в production не использовать' })}\n`,
+        );
+    }
+    const json = `${JSON.stringify(buildDefinitions({ users, ...(adminUser === undefined ? {} : { admin: adminUser }) }), null, 2)}\n`;
     if (values.out === undefined) {
         context.write(json);
         logger.info({ services }, 'rabbitmq definitions: собрано');

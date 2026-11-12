@@ -3,7 +3,8 @@
 // query и path — из ZodValidationPipe в ROUTE_ARGS_METADATA, z.toJSONSchema без $schema (io: input/output), operationId,
 // ErrorResponse, схемы serviceToken/userToken. По PRD: обход метаданных модулей (imports, DynamicModule, промисы forRoot,
 // forwardRef; controllers) вместо ModulesContainer; только маршруты с @Api; ошибки — errors маршрута (статусы из реестра
-// defineErrors) + стандартные 400, 422, 429 и 401/403 у защищённых; защита — @UseGuards(VerdeectAuthGuard) и Require*
+// defineErrors) + стандартные по факту (v1.24): 400/422 — zod-pipe тела или query, 422 — пути, 401/403 у защищённых, 429 —
+// только из errors; защита — @UseGuards(VerdeectAuthGuard) и Require*
 // @verdeect/auth; X-On-Behalf-Of не переносится (домен I); Idempotency-Key — по метаданным @Idempotent (internal/metadata.ts,
 // E4); extra — глубокое слияние.
 import type { DynamicModule, Type } from '@nestjs/common';
@@ -260,13 +261,40 @@ function idempotentOf(route: ApiRoute): KitIdempotentOptions | null {
         : null;
 }
 
-/** Ошибки операции: статус → коды. */
+/** Какие zod-pipe у маршрута: тела или query, пути (стандартные ошибки по факту, AC-3.7). */
+function pipesOf(route: ApiRoute): { readonly bodyOrQuery: boolean; readonly path: boolean } {
+    const args = (Reflect.getMetadata(ROUTE_ARGS_METADATA, route.controller, route.handlerName) ??
+        {}) as Record<string, RouteArgument>;
+    let bodyOrQuery = false;
+    let path = false;
+    for (const [key, argument] of Object.entries(args)) {
+        if (zodPipeOf(argument) === null) {
+            continue;
+        }
+        const paramtype = Number(key.split(':', 1)[0]);
+        if (paramtype === RouteParamtypes.BODY || paramtype === RouteParamtypes.QUERY) {
+            bodyOrQuery = true;
+        } else if (paramtype === RouteParamtypes.PARAM) {
+            path = true;
+        }
+    }
+
+    return { bodyOrQuery, path };
+}
+
+/**
+ * Ошибки операции: статус → коды. Стандартные — по факту (§3.5 v1.24): 400/422 — zod-pipe тела или query, 422 — zod-pipe
+ * пути, 401/403 — декораторы `@verdeect/auth`; 429 `RATE_LIMITED` — только из `@Api({errors})`.
+ */
 function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, string[]> {
-    const errors = new Map<number, string[]>([
-        [400, ['BAD_REQUEST']],
-        [422, ['VALIDATION_FAILED']],
-        [429, ['RATE_LIMITED']],
-    ]);
+    const errors = new Map<number, string[]>();
+    const pipes = pipesOf(route);
+    if (pipes.bodyOrQuery) {
+        errors.set(400, ['BAD_REQUEST']);
+    }
+    if (pipes.bodyOrQuery || pipes.path) {
+        errors.set(422, ['VALIDATION_FAILED']);
+    }
     if (security !== null) {
         errors.set(401, ['UNAUTHENTICATED']);
         errors.set(

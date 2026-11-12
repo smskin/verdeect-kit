@@ -1,7 +1,8 @@
 // Фикстура AC-3.7 (prd.md §3.5): модуль сервиса с @Api — список с keyset (envelope page, query PageQuerySchema),
 // создание (тело, errors VERSION_CONFLICT), карточка по :id; класс под @UseGuards(VerdeectAuthGuard) +
 // @RequireScope('items:read'); незащищённый маршрут; маршрут без @Api; @RequireTenant() (409 TENANT_REQUIRED, KT-17);
-// наследование @Api от абстрактного базового контроллера и переопределение метода (KT-17). Приложение не создаётся.
+// наследование @Api от абстрактного базового контроллера и переопределение метода (KT-17); v1.24 — маршрут с
+// errors: ['RATE_LIMITED'] (стандартные ошибки по факту). Приложение не создаётся.
 import 'reflect-metadata';
 import { Body, Controller, Get, Module, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { RequireScope, RequireTenant, VerdeectAuthGuard } from '@verdeect/auth/nest';
@@ -57,6 +58,17 @@ export class PublicController {
     @Api({ summary: 'Открытые сведения', response: z.object({ name: z.string() }) })
     info(): { name: string } {
         return { name: 'api-app' };
+    }
+
+    /** Лимитер у маршрута: 429 — только из errors (AC-3.7 v1.24). */
+    @Get('limited')
+    @Api({
+        summary: 'Под лимитером',
+        response: z.object({ ok: z.boolean() }),
+        errors: ['RATE_LIMITED'],
+    })
+    limited(): { ok: true } {
+        return { ok: true };
     }
 
     @Get('hidden')

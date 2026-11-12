@@ -54,6 +54,7 @@ describe('UC-14: OpenAPI из кода', () => {
             '/items',
             '/items/{id}',
             '/public/info',
+            '/public/limited',
             '/tenant/settings',
         ]);
     });
@@ -88,25 +89,43 @@ describe('UC-14: OpenAPI из кода', () => {
         });
     });
 
-    it('AC-3.7: ошибки маршрута (409) и стандартные 400/401/403/422/429', async () => {
+    it('AC-3.7: ошибки маршрута (409) и стандартные по факту — zod-pipe тела: 400 и 422, @verdeect/auth: 401/403, 429 нет', async () => {
         const { op } = await operations();
         const create = op('/items', 'post');
 
-        expect(Object.keys(create.responses)).toEqual([
-            '201',
+        expect(Object.keys(create.responses)).toEqual(['201', '400', '401', '403', '409', '422']);
+        expect(create.responses['409']?.description).toBe('VERSION_CONFLICT');
+    });
+
+    it('AC-3.7: маршрут без zod-pipe, errors и аутентификации — без стандартных ошибок (нет 400, 422, 429)', async () => {
+        const { op } = await operations();
+
+        expect(Object.keys(op('/public/info', 'get').responses)).toEqual(['200']);
+    });
+
+    it("AC-3.7: errors: ['RATE_LIMITED'] — 429 с Retry-After; без zod-pipe — нет 400 и 422", async () => {
+        const { op } = await operations();
+        const limited = op('/public/limited', 'get');
+
+        expect(Object.keys(limited.responses)).toEqual(['200', '429']);
+        expect(limited.responses['429']?.description).toBe('RATE_LIMITED');
+    });
+
+    it('AC-3.7: zod-pipe только пути — 422 VALIDATION_FAILED без 400; query (keyset) — 400 и 422', async () => {
+        const { op } = await operations();
+
+        expect(Object.keys(op('/items/{id}', 'get').responses)).toEqual([
+            '200',
+            '401',
+            '403',
+            '422',
+        ]);
+        expect(Object.keys(op('/items', 'get').responses)).toEqual([
+            '200',
             '400',
             '401',
             '403',
-            '409',
             '422',
-            '429',
-        ]);
-        expect(create.responses['409']?.description).toBe('VERSION_CONFLICT');
-        expect(Object.keys(op('/public/info', 'get').responses)).toEqual([
-            '200',
-            '400',
-            '422',
-            '429',
         ]);
     });
 

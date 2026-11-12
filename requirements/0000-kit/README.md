@@ -2,13 +2,13 @@
 
 Общий инфраструктурный npm-пакет сервисов Вердикт 2.0: конфигурация, наблюдаемость и запуск, HTTP-каркас, БД с RLS, идемпотентность, outbox/inbox и RabbitMQ, шифр секретов, Redis, тестовый контур. Код переносится из копий в Identity, BFF, Platform, Orchestrator (эталон — `files/inventory.md`).
 
-> Режим: INIT · Ревизия: r18 · 2026-11-12 · PRD v1.23 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
+> Режим: INIT · Ревизия: r19 · 2026-11-12 · PRD v1.24 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
 
 ## Файлы
 
 | Файл | Что внутри |
 |---|---|
-| `prd.md` | PRD v1.23 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
+| `prd.md` | PRD v1.24 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
 | `files/inventory.md` | Инвентаризация копий в сервисах: модуль × сервис, столбец «Эталон», тесты эквивалентности, точные версии зависимостей и образов. §4 — расхождения на момент инвентаризации; решения по ним — в `prd.md` (при расхождении действует `prd.md`) |
 
 UI нет, макетов нет. Пакет `@verdeect/events` — отдельный PRD и отдельный репозиторий (`verdeect2/verdeect-events`), не входит сюда.
@@ -68,3 +68,4 @@ UI нет, макетов нет. Пакет `@verdeect/events` — отдель
 - r16 — 2026-11-12: по находкам BFF-58 — HTTP-опции по роли: createHttpApp и bootstrapService({http}) — securityHeaders: 'api' | {referrerPolicy} | false (AC-3.5), exceptionFilter с делегированием в KitExceptionFilter — ошибки маршрутов, 404 ROUTE_NOT_FOUND и хуков Fastify через фильтр сервиса (AC-3.14), configureFastify до регистрации маршрутов — onRoute, bodyLimit маршрута (AC-3.12) (§3.5); экспорт реестра метрик KIT_METRICS, метрики домена только в нём (§3.2, AC-2.14); drizzle-orm обязателен и сервису без БД (NFR-3); PRD v1.21.
 - r17 — 2026-11-12: ответ на вопрос review KT-42 — createTestApp принимает те же опции http, что bootstrapService ({bodyLimit, securityHeaders, exceptionFilter, configureFastify}; сервис передаёт в тест тот же объект, что в main.ts) (§3.8); AC-3.14 — через createTestApp({http: {exceptionFilter}}) фильтр сервиса работает так же, как в приложении из bootstrapService; PRD v1.22.
 - r18 — 2026-11-12: находки переходов (Orchestrator OR-139/143 К1, К2, К4, К7, К9; BFF-60; Platform PL-48) — DomainError(code, details?, {message?, headers?, status?, cause?}), status словаря — число или список объявленных (§3.5, AC-3.15); сериализатор res лога — только statusCode (§3.2, AC-2.1); KitRedisModule.forRoot({critical?}) (§3.7, AC-8.2); флаги startTestStack — true или адреса уже поднятых сервисов, MinIO с KMS (§3.8, AC-1.12, AC-1.14); обрыв соединения в миграциях — DATABASE_UNAVAILABLE (AC-4.17); setLocal('app.tenant') — TypeError (AC-4.16); уточнения CLI db, ifNewer, openapi, §10 Platform; PRD v1.23.
+- r19 — 2026-11-12: по находкам BFF-64 — стандартные ошибки OpenAPI по факту: 400/422 только у маршрута с zod-pipe тела или query, 401/403 — по декораторам @verdeect/auth, 429 — только из @Api({errors}) (§3.5, AC-3.7); CLI rabbitmq definitions --admin <user> — администратор для dev и e2e, хеш RABBITMQ_PASSWORD_HASH_<USER> (§3.4, AC-5.10); уточнение headers DomainError (§3.5, AC-3.15); PRD v1.24.

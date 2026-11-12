@@ -100,7 +100,8 @@ describe('UC-14: OpenAPI идемпотентности', () => {
         expect(optional['409']?.description).toBe('IDEMPOTENCY_IN_PROGRESS');
         expect(optional['422']?.description).toBe('VALIDATION_FAILED, IDEMPOTENCY_KEY_REUSED');
         expect(optional['400']?.description).toBe('BAD_REQUEST');
-        expect(strict['400']?.description).toBe('BAD_REQUEST, IDEMPOTENCY_KEY_REQUIRED');
+        // Без zod-pipe тела BAD_REQUEST не добавляется (стандартные ошибки по факту, v1.24).
+        expect(strict['400']?.description).toBe('IDEMPOTENCY_KEY_REQUIRED');
     });
 
     it('AC-3.7: маршрут без @Idempotent — без этих заголовков', async () => {

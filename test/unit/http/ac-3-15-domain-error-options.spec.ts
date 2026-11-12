@@ -99,6 +99,8 @@ describe('UC-4: DomainError с опциями', () => {
     it.each([
         ['set-cookie', 'UPGRADE_REQUIRED'],
         ['Set-Cookie', 'UPGRADE_REQUIRED'],
+        ['SET-COOKIE', 'PLAN_LIMIT'],
+        ['Retry-After', 'RATE_LIMITED'],
         ['retry-after', 'RATE_LIMITED'],
         ['referrer-policy', 'UPGRADE_REQUIRED'],
         ['x-content-type-options', 'UPGRADE_REQUIRED'],

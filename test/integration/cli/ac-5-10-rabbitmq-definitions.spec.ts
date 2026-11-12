@@ -4,7 +4,7 @@
 // ACCESS_REFUSED — test/integration/messaging/ac-5-10-permissions.spec.ts.
 import { randomBytes } from 'node:crypto';
 import amqp from 'amqplib';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, inject, it, vi } from 'vitest';
 import { rabbitmqCommand } from '../../../src/cli/commands/rabbitmq.js';
 import {
     EVENTS_EXCHANGE,
@@ -27,16 +27,25 @@ describe('UC-12: definitions.json в брокере', () => {
     async function withCliUser(
         args: readonly string[],
         services: readonly string[],
-        work: (channel: amqp.ConfirmChannel, service: string) => Promise<void>,
+        work: (channel: amqp.ConfirmChannel, service: string, password: string) => Promise<void>,
+        /** Администратор `--admin`: пароль тот же, проверяется вместе с сервисами. */
+        adminUser?: string,
     ): Promise<void> {
         const password = randomBytes(8).toString('hex');
         const env: Record<string, string> = { LOG_LEVEL: 'silent' };
-        for (const service of services) {
+        const users = adminUser === undefined ? services : [...services, adminUser];
+        for (const service of users) {
             env[passwordHashKey(service)] = hashRabbitPassword(password);
         }
         const output: string[] = [];
         const code = await rabbitmqCommand(
-            ['definitions', '--services', services.join(','), ...args],
+            [
+                'definitions',
+                '--services',
+                services.join(','),
+                ...args,
+                ...(adminUser === undefined ? [] : ['--admin', adminUser]),
+            ],
             { cwd: process.cwd(), write: (text) => void output.push(text), env },
         );
         expect(code).toBe(0);
@@ -54,7 +63,7 @@ describe('UC-12: definitions.json в брокере', () => {
                 })),
                 exchanges: definitions.exchanges.map((item) => ({ ...item, vhost })),
             });
-            for (const service of services) {
+            for (const service of users) {
                 const url = new URL(workerBroker().url);
                 url.username = service;
                 url.password = password;
@@ -64,14 +73,14 @@ describe('UC-12: definitions.json в брокере', () => {
                 try {
                     const channel = await connection.createConfirmChannel();
                     channel.on('error', () => undefined);
-                    await work(channel, service);
+                    await work(channel, service, password);
                 } finally {
                     await connection.close().catch(() => undefined);
                 }
             }
         } finally {
             await admin.deleteVhost(vhost);
-            await Promise.all(services.map((service) => admin.deleteUser(service)));
+            await Promise.all(users.map((service) => admin.deleteUser(service)));
         }
     }
 
@@ -126,6 +135,33 @@ describe('UC-12: definitions.json в брокере', () => {
                     );
                 }
             },
+        );
+    });
+
+    it('AC-5.10: --admin kitcli-adm — администратор в брокере: тег administrator (management API 200), любая очередь объявляется и публикация с любым ключом проходит', async () => {
+        await withCliUser(
+            [],
+            ['kitcli'],
+            async (channel, user, password) => {
+                if (user !== 'kitcli-adm') {
+                    return;
+                }
+                await expect(
+                    channel.assertQueue('kitcli-adm-any', { exclusive: true }),
+                ).resolves.toBeDefined();
+                expect(await publish(channel, 'identity.user.created')).toBe('ok');
+                const managementUrl = inject('kitRabbitmqManagementUrl') ?? '';
+                const response = await fetch(new URL('api/whoami', managementUrl), {
+                    headers: {
+                        authorization: `Basic ${Buffer.from(`kitcli-adm:${password}`).toString('base64')}`,
+                    },
+                });
+                expect(response.status).toBe(200);
+                expect(((await response.json()) as { tags: string[] | string }).tags).toContain(
+                    'administrator',
+                );
+            },
+            'kitcli-adm',
         );
     });
 

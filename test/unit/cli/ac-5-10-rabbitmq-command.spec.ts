@@ -198,4 +198,92 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
             ],
         });
     });
+
+    it('AC-5.10: --admin dev — пользователь dev с тегом administrator, права .* на vhost, topic-права без ограничения, хеш из RABBITMQ_PASSWORD_HASH_DEV; предупреждение в stderr', async () => {
+        const stderr = vi.mocked(process.stderr.write);
+        stderr.mockClear();
+        const { code, json, text } = await run(
+            ['definitions', '--services', 'svc-a', '--admin', 'dev'],
+            { RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A, RABBITMQ_PASSWORD_HASH_DEV: HASH_B },
+        );
+
+        expect(code).toBe(0);
+        expect(json['users']).toEqual([
+            {
+                name: 'svc-a',
+                password_hash: HASH_A,
+                hashing_algorithm: 'rabbit_password_hashing_sha256',
+                tags: [],
+            },
+            {
+                name: 'dev',
+                password_hash: HASH_B,
+                hashing_algorithm: 'rabbit_password_hashing_sha256',
+                tags: ['administrator'],
+            },
+        ]);
+        expect(json['permissions']).toContainEqual({
+            user: 'dev',
+            vhost: '/',
+            configure: '.*',
+            write: '.*',
+            read: '.*',
+        });
+        expect(json['topic_permissions']).toContainEqual({
+            user: 'dev',
+            vhost: '/',
+            exchange: 'verdeect.events',
+            write: '.*',
+            read: '.*',
+        });
+        const warnings = stderr.mock.calls.map(([chunk]) => String(chunk)).join('');
+        expect(warnings).toContain('"code":"ADMIN_USER"');
+        expect(warnings).toContain('только для dev и e2e');
+        expect(warnings).not.toContain(HASH_B);
+        expect(text).not.toContain('"code":"ADMIN_USER"');
+    });
+
+    it('AC-5.10: без --admin администратора в файле нет', async () => {
+        const { code, json } = await run(['definitions', '--services', 'svc-a'], {
+            RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A,
+        });
+
+        expect(code).toBe(0);
+        expect(
+            (json['users'] as { tags: string[] }[]).some((user) =>
+                user.tags.includes('administrator'),
+            ),
+        ).toBe(false);
+        expect(JSON.stringify(json['permissions'])).not.toContain('".*"');
+    });
+
+    it('AC-5.10: --admin dev без RABBITMQ_PASSWORD_HASH_DEV → INVALID_ENVIRONMENT с именем ключа, без значений, выход 1', async () => {
+        const { code, json, text } = await run(
+            ['definitions', '--services', 'svc-a', '--admin', 'dev'],
+            { RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A },
+        );
+
+        expect(code).toBe(1);
+        expect(json).toEqual({
+            error: {
+                code: 'INVALID_ENVIRONMENT',
+                message: 'Неверное окружение',
+                keys: ['RABBITMQ_PASSWORD_HASH_DEV'],
+            },
+        });
+        expect(text).not.toContain(HASH_A);
+    });
+
+    it.each([
+        ['имя вне формата', 'Dev_1'],
+        ['совпадает с сервисом', 'svc-a'],
+    ])('AC-5.10: --admin, %s → USAGE, выход 1', async (_name, admin) => {
+        const { code, json } = await run(['definitions', '--services', 'svc-a', '--admin', admin], {
+            RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A,
+            RABBITMQ_PASSWORD_HASH_DEV_1: HASH_B,
+        });
+
+        expect(code).toBe(1);
+        expect(json).toMatchObject({ error: { code: 'USAGE' } });
+    });
 });
