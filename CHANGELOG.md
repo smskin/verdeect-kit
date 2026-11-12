@@ -14,6 +14,7 @@
 
 - `/http`: запись словаря `defineErrors` — `{status: number | number[], message}`: код с несколькими статусами; в OpenAPI и `expectMatchesApi` — все объявленные статусы кода. Код с одним статусом работает как прежде.
 - `/testing`: база-шаблон `<svc>_template` создаётся, если её нет, и удаляется в teardown.
+- README: реестр префиксов id (`ses`, `prf`, `fld`, `rep`, `fil`, `pln`, `pmb`), таблица совместимости peer (`drizzle-orm 0.45.4`), `db move-journal` до первого `db migrate`, строгое `ifNewer`, `openapi --module` с динамическим модулем, `UNKNOWN_COMMAND`, UI управления RabbitMQ только в dev-definitions, каналы `KIT_REDIS` без префикса, `process.env` не меняется.
 
 ### Fixed
 

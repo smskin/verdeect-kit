@@ -10,6 +10,13 @@
 
 Инфраструктура: Redis ≥ 7.0 (лимитер `/redis` использует `PEXPIRE … NX`), PostgreSQL 17, RabbitMQ 4. Тесты — образы `TEST_IMAGES` (Redis 7.4.11).
 
+| Peer          | Версия   | Кому                                                                               |
+| ------------- | -------- | ---------------------------------------------------------------------------------- |
+| `drizzle-orm` | `0.45.4` | всем сервисам, и без БД: его статически импортируют `/http` и `/messaging` (NFR-3) |
+| `@nestjs/*`   | `12.x`   | всем                                                                               |
+| `fastify`     | `5.x`    | всем                                                                               |
+| `zod`         | `4.x`    | всем                                                                               |
+
 Промежуточных версий по этапам нет (G14): E1–E8 копятся в `[Unreleased]`, после E8 выходит `1.0.0-rc.1` (метка npm `next`), дальше `1.0.0-rc.N`. `1.0.0` (метка `latest`) — после перехода Identity. `@verdeect/events` выходит тем же порядком: `1.0.0-rc.N` после `@verdeect/kit 1.0.0-rc.1`, `1.0.0` — вместе с `@verdeect/kit 1.0.0` (prd.md §3.9). С `1.0.0` поддерживается только последний мажор (NFR-5): исправления выходят патчем последнего мажора, без бэкпортов.
 
 ## Установка
@@ -111,7 +118,7 @@ export class AppModule {}
 - значений окружения в ошибке нет никогда — только пути ключей (NFR-4);
 - переименования ключей идут без псевдонимов: старое имя не читается (C0, P0);
 - ключ пакета, переопределённый несовместимым типом, — ошибка компиляции (AC-1.6);
-- `KitConfigModule` (через `@nestjs/config`) дописывает в `process.env` умолчания разобранных ключей. В тестах с несколькими контекстами Nest окружение сохраняется и восстанавливается целиком, а не через `vi.unstubAllEnvs()`.
+- `KitConfigModule` (через `@nestjs/config`, `skipProcessEnv: true`) `process.env` не меняет: умолчания в него не дописываются, `ConfigService` читает только разобранные значения (AC-1.7).
 
 ## Наблюдаемость
 
@@ -313,7 +320,7 @@ throw new DomainError('UPGRADE_REQUIRED', {}, { headers: { upgrade: 'websocket' 
 
 **Пагинация.** `PageQuerySchema` (`cursor`, `limit` 1–200, умолчание 100), чтение `limit + 1` строк, `pageOf(rows, limit, keyOf)` → `{items, nextCursor}`; условие — `afterCursor([t.createdAt, t.id], decodeCursor(query.cursor, 2), 'desc')`. Последний ключ сортировки — `primaryKey()` или `unique()`, все ключи сортировки — `NOT NULL` (`null` в курсоре — 422); неверный курсор — 422 `path: cursor`.
 
-**OpenAPI.** `@Api({summary, response?, envelope?, errors?, extra?})` на маршруте; `verdeect-kit openapi --out contracts/openapi.json --module dist/app.module.js#AppModule` строит OpenAPI 3.1 по метаданным без запуска приложения (окружение не нужно), `info` — из `package.json`. Тело, query и path — из `ZodValidationPipe`, ответ — `response`, ошибки — `errors` + стандартные 400/422/429 (401/403 — у защищённых; 409 `TENANT_REQUIRED` — у маршрутов с `@RequireTenant()`, тело guard'а `{error: {code: 'TENANT_REQUIRED', message: 'Не выбрана компания', details: {}}}`). `security` — по `@UseGuards(VerdeectAuthGuard)` и `Require*` из `@verdeect/auth/nest`; защиту через `APP_GUARD` генерация не видит, поэтому `@UseGuards` ставится на контроллер, а маршрут без guard'а документируется без `security`. Наследование — как у Nest при регистрации маршрутов: методы собираются по цепочке прототипов, `@Api` базового (в том числе абстрактного, без `@Controller`) контроллера попадает в документ с путём наследника, метод наследника с тем же именем заменяет метод предка — один маршрут. Метод наследника переопределяет и `@Api`: без своего `@Api` он в документ не попадает. Расхождений с регистрацией маршрутов Nest нет. Что генерация не выражает (SSE, сырой прокси) — `extra` или `contracts/openapi.extra.json` рядом с `--out`. Снимок `contracts/openapi.json` коммитится; тест сравнивает его с документом из кода байт в байт, поэтому добавьте его в `.prettierignore` сервиса — иначе форматирование Prettier разойдётся с выводом CLI:
+**OpenAPI.** `@Api({summary, response?, envelope?, errors?, extra?})` на маршруте; `verdeect-kit openapi --out contracts/openapi.json --module dist/app.module.js#AppModule` строит OpenAPI 3.1 по метаданным без запуска приложения (окружение не нужно), `info` — из `package.json`. Тело, query и path — из `ZodValidationPipe`, ответ — `response`, ошибки — `errors` + стандартные 400/422/429 (401/403 — у защищённых; 409 `TENANT_REQUIRED` — у маршрутов с `@RequireTenant()`, тело guard'а `{error: {code: 'TENANT_REQUIRED', message: 'Не выбрана компания', details: {}}}`). `security` — по `@UseGuards(VerdeectAuthGuard)` и `Require*` из `@verdeect/auth/nest`; защиту через `APP_GUARD` генерация не видит, поэтому `@UseGuards` ставится на контроллер, а маршрут без guard'а документируется без `security`. Наследование — как у Nest при регистрации маршрутов: методы собираются по цепочке прототипов, `@Api` базового (в том числе абстрактного, без `@Controller`) контроллера попадает в документ с путём наследника, метод наследника с тем же именем заменяет метод предка — один маршрут. Метод наследника переопределяет и `@Api`: без своего `@Api` он в документ не попадает. Расхождений с регистрацией маршрутов Nest нет. Что генерация не выражает (SSE, сырой прокси) — `extra` или `contracts/openapi.extra.json` рядом с `--out`. Модуль сервиса с `register(…)` (динамический модуль) — отдельный файл с экспортом значения, например `export const openapiModule = AppModule.register({entry: 'http'})`, и `--module dist/openapi.module.js#openapiModule`. Снимок `contracts/openapi.json` коммитится; тест сравнивает его с документом из кода байт в байт, поэтому добавьте его в `.prettierignore` сервиса — иначе форматирование Prettier разойдётся с выводом CLI:
 
 ```gitignore
 # .prettierignore
@@ -330,7 +337,7 @@ contracts/openapi.json
 | `INVALID_EXTRA`        | `contracts/openapi.extra.json` — не объект JSON                                      |
 | `INVALID_ENVIRONMENT`  | неверные `LOG_LEVEL` или `REPLICA_ID` (в `keys` — имена, без значений)               |
 | `OPENAPI_FAILED`       | прочий сбой сборки документа (например, код из `errors` не зарегистрирован)          |
-| `UNKNOWN_COMMAND`      | команда не `openapi` и не `db`                                                       |
+| `UNKNOWN_COMMAND`      | команда не из `openapi`, `db`, `rabbitmq`, `crypto`, `redis`                         |
 
 ## База данных
 
@@ -360,7 +367,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON "files"."file" TO "files_app";
 - `prepareDatabase({service, adminUrl, ownerPassword, appPassword})` — идемпотентно: роли `<svc>_owner` (миграции), `<svc>_app` (приложение, без `CREATE` на базе и схеме), `<svc>_directory` (`NOLOGIN`, `BYPASSRLS`, владелец функций `SECURITY DEFINER`), схема `<svc>`; повтор — `created: []`. `runMigrations({url, folder, schema})` — миграции под `<svc>_owner`, журнал — `<svc>.__migrations` (схемы `drizzle` нет), повтор — `{applied: 0}`.
 - `deleteInBatches({db, sql, batchSize, maxBatches, shouldContinue?, connection?})` — транзакция на пачку до неполной пачки или `maxBatches`; `sql(batchSize)` возвращает одну строку с целой колонкой `deleted` (`WITH d AS (DELETE … LIMIT n RETURNING 1) SELECT count(*)::int AS deleted FROM d`); строки компаний системный контекст не видит — их удаляет функция `SECURITY DEFINER`. Остановка `Db` (шаг 3) ждёт текущую пачку, новая не начинается. `connection` — соединение блокировки `runExclusive`: пачки идут на нём, второе соединение пула не берётся.
 - `runExclusive(db, key, (connection) => …)` — `pg_try_advisory_lock` без ожидания: `fn` в одной реплике, занято — `{ran: false}`. Блокировка держит соединение основного пула и передаётся в `fn`: работа на нём (`deleteInBatches({…, connection})`) не берёт второе соединение — очистка работает и при `DB_POOL_MAX = 1`; транзакции `Db` внутри `fn` берут другие соединения пула.
-- `occurredAtColumn(name)` и `ifNewer(column, occurredAt)` — обновление только событием новее сохранённого (`rowCount` 0 — нормальный итог).
+- `occurredAtColumn(name)` и `ifNewer(column, occurredAt)` — обновление только событием новее сохранённого: `column IS NULL OR column < $occurredAt`, сравнение строгое — событие с тем же `occurredAt` не применяется (`rowCount` 0 — нормальный итог).
 - `newId(prefix)` и `ulid()` — id `<prefix>_<ulid>` (реестр префиксов — ниже). `isUniqueViolation(err, constraint?)`, `isConnectionError(err)`, `isPoolTimeout(err)` — распознавание ошибок pg по форме с обходом `cause`.
 - Срок пула: `verdeect_db_pool_wait_timeouts_total{pool="main"|"read"}` и `captureThrottled` пишет пул `/database` при ошибке получения соединения — и для `Db`, и для прямых `DRIZZLE`/`DRIZZLE_READ`; фильтр `/http` отвечает 503.
 
@@ -520,7 +527,7 @@ if (!result.allowed) {
 }
 ```
 
-- `KIT_REDIS` — `Redis` ioredis основного соединения с `keyPrefix <svc>:`: ключ `k` в Redis — `<svc>:k`. Префикс не ставится шаблонам `KEYS`/`SCAN` и не снимается в их ответах — сервис пишет префикс в шаблон сам. Срок команды — 500 мс; соединение ленивое, закрывается на шаге 4 остановки.
+- `KIT_REDIS` — `Redis` ioredis основного соединения с `keyPrefix <svc>:`: ключ `k` в Redis — `<svc>:k`. Префикс не ставится шаблонам `KEYS`/`SCAN` и не снимается в их ответах — сервис пишет префикс в шаблон сам. `KIT_REDIS.publish/subscribe` префикс к каналам **не** добавляют (`keyPrefix` ioredis на каналы не действует, под ACL `&<svc>:*` — `NOPERM`): каналы — только через `KitRedisChannels`. Срок команды — 500 мс; соединение ленивое, закрывается на шаге 4 остановки.
 - `KitRedisChannels` — `publish('x', message)` → канал `<svc>:x`, `subscribe('x', handler)` → функция отписки; сообщение — строка. Подписки требуют `subscriber: true` — второе соединение (срок команды 5 с); без флага второго соединения нет, `subscribe` — `Error`.
 - `RateLimiter.hit(key, {limit, windowMs})` считает попадание, `peek` — только читает. Окно фиксированное от первого попадания (`INCR`, `PEXPIRE … NX`, `PTTL` одним `MULTI`), ключ — `<svc>:rl:<key>`, итог — `{allowed, remaining, retryAfterMs}`.
 - Redis недоступен — лимитер пропускает запрос (fail-open: `allowed: true`, `remaining = limit`), `verdeect_rate_limit_unavailable_total` +1 на каждую проверку, `warn` не чаще раза в 60 с, алерт `VerdeectRateLimitUnavailable`.
@@ -636,8 +643,8 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `REPLICA_ID` не задавать ни в compose, ни в `env_file`: умолчание — `hostname()` контейнера.
 - `stop_grace_period: 15s` при `SHUTDOWN_TIMEOUT_MS` 10000: срок Docker должен быть больше срока остановки сервиса.
 - Пул соединений PostgreSQL: сервис открывает до `2 × DB_POOL_MAX × реплики` соединений (основной пул и пул чтения) — `max_connections` считается по этой формуле.
-- БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>`.
-- RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `amq.default` и свои очереди, `verdeect.events` — только у сервиса с `--publishes`, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно.
+- БД при каждом выкате: `verdeect-kit db prepare --service <svc>` → `verdeect-kit db migrate --folder drizzle --schema <svc>` (отдельные шаги до запуска приложения). Переход сервиса с журнала `drizzle.__drizzle_migrations` — один раз `verdeect-kit db move-journal --from drizzle --to <svc>` **до первого** `db migrate` на существующей БД: иначе `migrate` создаст пустой журнал в схеме сервиса и упадёт на повторном применении миграций. Обрыв соединения во время `migrate` или `move-journal` — `{error: {code: 'DATABASE_UNAVAILABLE'}}`, выход 1, незавершённая миграция в журнале не отмечена.
+- RabbitMQ: `verdeect-kit rabbitmq definitions --services <svc,…> [--out definitions.json]` — `definitions.json` (vhost, пользователи сервисов, права, exchange `verdeect.events` topic durable); хеш пароля — из `RABBITMQ_PASSWORD_HASH_<SVC>` (`bff-app` → `RABBITMQ_PASSWORD_HASH_BFF_APP`, значение — `rabbitmqctl hash_password <пароль>`). Брокер грузит файл при старте (`load_definitions`). Права: configure `^<svc>(\..*)?$`, write — `amq.default` и свои очереди, `verdeect.events` — только у сервиса с `--publishes`, read — `verdeect.events` и свои очереди. Exchange объявляет файл, сервисы проверяют его пассивно. UI управления RabbitMQ (`:15672`) в разработке — пользователь с тегом `administrator` только в dev-definitions (свой файл `definitions.dev.json` или `RABBITMQ_DEFAULT_USER` контура разработки); в production-definitions администратора нет.
 - RabbitMQ, публикация: `--publishes <svc>=<префикс>[,<префикс>…]` (повторяемая) — ключи, с которыми сервис публикует в `verdeect.events` (`topic_permissions`: write `^(<префиксы>)`, без `--publishes` — `^$`, сервис не публикует; read — `.*`, чтение по ключам не ограничено — его задают привязки подписчика). Префикс оканчивается точкой, формат `^[a-z][a-z0-9.]*\.$`; неверный префикс или сервис вне `--services` — `USAGE`, выход 1. Префиксы сервисов: Identity — `identity.`, Platform — `platform.`, Orchestrator — `agent.`, `audit.agent.`, BFF — без `--publishes` (не публикует). Exchange `verdeect.events` вручную не удалять: брокер удаляет topic-права вместе с ним, и пересозданный exchange пускает публикацию с любым ключом до повторной загрузки `definitions.json`:
 
   ```bash
@@ -665,6 +672,13 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 | `jup`   | загрузка журнала           | orchestrator |
 | `chm`   | сообщение канала           | orchestrator |
 | `chr`   | запрос канала              | orchestrator |
+| `ses`   | диалог (session)           | orchestrator |
+| `prf`   | профиль ассистента         | orchestrator |
+| `fld`   | папка диалогов             | orchestrator |
+| `rep`   | отчёт об ответе            | orchestrator |
+| `fil`   | файл                       | files        |
+| `pln`   | тариф                      | platform     |
+| `pmb`   | приглашённый участник      | platform     |
 
 ## API
 
