@@ -1,5 +1,6 @@
 // AC-8.2 (UC-11 шаги 1, 3): Redis не отвечает — команда основного соединения завершается ошибкой не позже ~0,5 с
-// (commandTimeout), проба /health redis — down и статус degraded (некритичная), лимитер — fail-open в тот же срок
+// (commandTimeout), проба /health redis — down и статус degraded (некритичная; critical: true — unavailable, 503), лимитер —
+// fail-open в тот же срок
 // (prd.md §3.7; D9, D11 плана E8). Недоступность — tcpProxy.blackhole() (поведение реального драйвера), сторож времени —
 // timingGuard в globalSetup.
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -81,5 +82,27 @@ describe('UC-11: Redis недоступен', () => {
 
         expect(result).toEqual({ allowed: true, remaining: 1, retryAfterMs: 0 });
         expect(duration).toBeLessThanOrEqual(800 * TEST_TIMEOUT_SCALE);
+    });
+});
+
+describe('UC-11: Redis недоступен, critical: true', () => {
+    it('AC-8.2: с critical: true проба redis критичная — Redis недоступен → unavailable (/health 503), redis: down', async () => {
+        const criticalProxy = await tcpProxy(redisUrl());
+        const criticalApp = await createRedisApp({
+            options: { critical: true },
+            env: { REDIS_URL: criticalProxy.url },
+        });
+        try {
+            await criticalApp.init();
+            criticalProxy.blackhole();
+
+            expect(await criticalApp.get(HealthRegistry).evaluate()).toEqual({
+                status: 'unavailable',
+                checks: { redis: 'down' },
+            });
+        } finally {
+            await criticalApp.close();
+            await criticalProxy.close();
+        }
     });
 });

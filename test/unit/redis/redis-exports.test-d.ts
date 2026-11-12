@@ -11,6 +11,7 @@ describe('UC-1: типы /redis', () => {
         expectTypeOf<KitRedisModuleOptions>().toEqualTypeOf<{
             readonly service: string;
             readonly subscriber?: true;
+            readonly critical?: boolean;
         }>();
         expectTypeOf<RateLimitOptions>().toEqualTypeOf<{
             readonly limit: number;

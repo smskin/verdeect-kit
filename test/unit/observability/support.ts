@@ -3,7 +3,17 @@
 // nestjs-pino держит один pino-http на процесс (rootLogger.js: первая конфигурация выигрывает), поэтому Nest-стенд
 // поднимается один раз на файл; случаи с другой конфигурацией идут через стенд pino-http — тот же middleware, что
 // монтирует nestjs-pino. Запросы — inject Fastify, без порта.
-import { Body, Controller, Get, Headers, HttpCode, Module, Post, Query } from '@nestjs/common';
+import {
+    Body,
+    Controller,
+    Get,
+    Headers,
+    HttpCode,
+    Module,
+    Post,
+    Query,
+    Redirect,
+} from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -84,6 +94,13 @@ class ProbeController {
     @Get('fail')
     fail(): never {
         throw new ServiceError('отказ сервиса');
+    }
+
+    /** Редирект с секретами в Location (AC-2.1, BFF-60): в журнал доступа — только statusCode. */
+    @Get('redirect')
+    @Redirect('/cb?state=s3cr3t&id_token_hint=MARK_HINT', 302)
+    redirect(): void {
+        return undefined;
     }
 
     @Get('trace')

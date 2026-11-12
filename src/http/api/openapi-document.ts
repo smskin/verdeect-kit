@@ -21,7 +21,7 @@ import { VerdeectAuthGuard } from '@verdeect/auth/nest';
 import { IDEMPOTENT_METADATA, type KitIdempotentOptions } from '../../internal/metadata.js';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import { errorStatus } from '../errors.js';
+import { errorStatuses } from '../errors.js';
 import { ZodValidationPipe } from '../zod-validation.pipe.js';
 import { API_METADATA, type KitApiOptions } from './api.decorator.js';
 
@@ -279,13 +279,16 @@ function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, 
         }
     }
     for (const code of route.api.errors ?? []) {
-        const status = errorStatus(code);
-        if (status === undefined) {
+        const statuses = errorStatuses(code);
+        if (statuses === undefined) {
             throw new Error(
                 `openapi: ${route.controller.name}.${route.handlerName} — код ${code} не зарегистрирован в defineErrors`,
             );
         }
-        errors.set(status, [...(errors.get(status) ?? []), code]);
+        // Все объявленные статусы кода (AC-3.15).
+        for (const status of statuses) {
+            errors.set(status, [...(errors.get(status) ?? []), code]);
+        }
     }
     const idempotent = idempotentOf(route);
     if (idempotent !== null) {

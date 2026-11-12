@@ -6,6 +6,8 @@
 // E5: rabbitmq — definitions.json (internal/rabbitmq-definitions, как CLI), vhost и пользователь на воркер (эталон B
 // test/support/broker.ts), удаление по префиксу <svc>-test-.
 // E8: redis — aclfile из internal/redis-acl (как CLI redis acl) + администратор теста; пользователей на воркер нет.
+// v1.23 (К1, AC-1.14): флаг — true (контейнер) или адреса уже поднятого сервиса; testcontainers — лениво; на внешнем Redis —
+// ACL SETUSER/DELUSER вместо aclfile; на внешнем брокере — очистка только своего прогона <svc>-test-<runId>-*. К2: MinIO с KMS.
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
@@ -14,10 +16,11 @@ import type Pg from 'pg';
 import type * as Testcontainers from 'testcontainers';
 import type { StartedTestContainer } from 'testcontainers';
 import type { TestProject } from 'vitest/node';
-import { loadPeer } from '../internal/peer.js';
+import { loadPeer, requirePeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { PUBLISH_PREFIX_PATTERN } from '../internal/rabbitmq-definitions.js';
-import { buildRedisAclFile, redisPasswordHash } from '../internal/redis-acl.js';
+import type * as IORedis from 'ioredis';
+import { buildRedisAclFile, redisPasswordHash, redisUserRules } from '../internal/redis-acl.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import type { KitEvent } from '../messaging/define-event.js';
 import { TEST_IMAGES } from './images.js';
@@ -25,41 +28,90 @@ import { assertOutboxCoverage, setCoverageDir } from './outbox-coverage.js';
 import {
     deleteTestVhosts,
     prepareWorkerVhosts,
+    rabbitAdminFromProvided,
     RabbitAdmin,
     type KitRabbitWorker,
 } from './rabbitmq-admin.js';
 
-const { GenericContainer, Wait } = await loadPeer<typeof Testcontainers>(
-    'testcontainers',
-    'testing',
-);
+// Наличие testcontainers — синхронно при импорте (AC-1.2, как pg в /database); загрузка — лениво, только при флаге `true`.
+requirePeer('testcontainers', 'testing');
+
+/** testcontainers — только при флаге `true` (внешние сервисы без Docker, AC-1.14). */
+let testcontainers: Promise<typeof Testcontainers> | undefined;
+function containers(): Promise<typeof Testcontainers> {
+    testcontainers ??= loadPeer<typeof Testcontainers>('testcontainers', 'testing');
+
+    return testcontainers;
+}
 
 const MINIO_USER = 'kit-test';
 const RABBIT_ADMIN = 'kit-admin';
 const REDIS_ADMIN = 'kit-test-admin';
 const REDIS_ACL_PATH = '/usr/local/etc/redis/users.acl';
 
-/** Параметры startTestStack в E1 (§3.8). */
+/** Уже поднятый PostgreSQL: суперпользователь (§3.8, AC-1.14). */
+export interface KitExternalPostgres {
+    /** postgres://<суперпользователь>:<пароль>@<host>:<port>/<БД> */
+    readonly adminUrl: string;
+}
+
+/** Уже поднятый RabbitMQ с management plugin: пользователь с тегом `administrator`. */
+export interface KitExternalRabbitmq {
+    /** amqp://<администратор>:<пароль>@<host>:<port> */
+    readonly amqpUrl: string;
+    /** http://<host>:<port 15672>/ — management API. */
+    readonly managementUrl: string;
+}
+
+/** Уже поднятый Redis: пользователь с правом `+acl`. */
+export interface KitExternalRedis {
+    /** redis://[<пользователь>:<пароль>@]<host>:<port> */
+    readonly adminUrl: string;
+}
+
+/** Уже поднятый MinIO (с KMS — для SSE-S3). */
+export interface KitExternalMinio {
+    /** http://<host>:<port> — S3 API. */
+    readonly endpoint: string;
+    /** Пользователь (access key). */
+    readonly accessKey: string;
+    /** Пароль (secret key). */
+    readonly secretKey: string;
+}
+
+/** Уже поднятый mailpit. */
+export interface KitExternalMailpit {
+    /** smtp://<host>:<port> */
+    readonly smtpUrl: string;
+    /** http://<host>:<port> — HTTP API. */
+    readonly httpUrl: string;
+}
+
+/**
+ * Параметры startTestStack (§3.8). Флаг сервиса — `true` (контейнер `TEST_IMAGES`) или адреса уже поднятого сервиса:
+ * только одноразовые service-контейнеры CI, общие долгоживущие серверы не поддерживаются.
+ */
 export interface TestStackOptions {
     /** Имя экземпляра сервиса (^[a-z][a-z0-9-]{1,31}$); метка verdeect.kit.service контейнеров. */
     readonly service: string;
-    /** PostgreSQL TEST_IMAGES.postgres, суперпользователь — kitPostgresUrl; с E4 — prepareDatabase и шаблон БД. */
-    readonly postgres?: boolean;
+    /** PostgreSQL TEST_IMAGES.postgres или `{adminUrl}`; суперпользователь — kitPostgresUrl; prepareDatabase и шаблон БД. */
+    readonly postgres?: boolean | KitExternalPostgres;
     /**
      * Папка миграций drizzle-kit относительно `process.cwd()`: применяется к шаблону под ролью `<svc>_owner`, журнал —
-     * `<svc>.__migrations`; без `postgres: true` — `TypeError` при вызове `startTestStack`.
+     * `<svc>.__migrations`; без `postgres` — `TypeError` при вызове `startTestStack`.
      */
     readonly migrations?: string;
-    /** mailpit — kitSmtpUrl, kitMailpitUrl. */
-    readonly mailpit?: boolean;
-    /** MinIO — kitS3Endpoint, kitS3AccessKey, kitS3SecretKey. */
-    readonly minio?: boolean;
+    /** mailpit (или `{smtpUrl, httpUrl}`) — kitSmtpUrl, kitMailpitUrl. */
+    readonly mailpit?: boolean | KitExternalMailpit;
+    /** MinIO с KMS (или `{endpoint, accessKey, secretKey}`) — kitS3Endpoint, kitS3AccessKey, kitS3SecretKey. */
+    readonly minio?: boolean | KitExternalMinio;
     /**
      * RabbitMQ TEST_IMAGES.rabbitmq: definitions.json сервиса (как `verdeect-kit rabbitmq definitions`), vhost и
      * пользователь на воркер; адреса — kitRabbitmqUrl, kitRabbitmqManagementUrl, kitRabbitmqWorkers. Teardown удаляет
-     * vhost и пользователей с префиксом `<svc>-test-` (AC-5.18).
+     * vhost и пользователей с префиксом `<svc>-test-` (AC-5.18); внешний брокер (`{amqpUrl, managementUrl}`) — только своего
+     * прогона `<svc>-test-<runId>-`.
      */
-    readonly rabbitmq?: boolean;
+    readonly rabbitmq?: boolean | KitExternalRabbitmq;
     /**
      * Префиксы ключей публикации пользователя воркера в `verdeect.events` (как `--publishes` CLI, `['identity.']`); без
      * них воркер не публикует. `publishTestEvent` ходит от администратора vhost и не ограничивается.
@@ -68,9 +120,10 @@ export interface TestStackOptions {
     /**
      * Redis TEST_IMAGES.redis с aclfile (тот же генератор, что `verdeect-kit redis acl`): пользователь сервиса
      * `~<svc>:* &<svc>:*` — kitRedisUrl, администратор теста — kitRedisAdminUrl, имя сервиса — kitRedisService. Пользователей
-     * на воркер нет: префикс воркера `<svc>:w<N>:` лежит внутри прав сервиса (AC-8.5).
+     * на воркер нет: префикс воркера `<svc>:w<N>:` лежит внутри прав сервиса (AC-8.5). Внешний Redis (`{adminUrl}`) —
+     * `ACL SETUSER <svc>` через администратора, в teardown — `ACL DELUSER`.
      */
-    readonly redis?: boolean;
+    readonly redis?: boolean | KitExternalRedis;
     /**
      * События, которые публикует сервис: каталог покрытия прогона (`kitOutboxCoverageDir`); при `KIT_OUTBOX_COVERAGE=1`
      * teardown падает со списком событий без успешного `expectOutbox` (GAP-2, AC-5.13).
@@ -122,16 +175,53 @@ declare module 'vitest' {
     }
 }
 
-/** Сервис стека: имя для сообщения, запуск контейнера и передача адресов после старта. */
+/** Сервис стека: имя для сообщения, запуск контейнера (внешний — `null`) и передача адресов после старта. */
 interface StackPart {
     readonly name: string;
-    readonly start: () => Promise<StartedTestContainer>;
-    readonly provide: (
-        container: StartedTestContainer,
-        project: TestProject,
-    ) => Promise<void> | void;
+    readonly start: () => Promise<StartedTestContainer | null>;
+    readonly provide: (project: TestProject) => Promise<void> | void;
     /** Очистка до остановки контейнера; ошибки — в stderr, teardown не падает. */
     readonly teardown?: () => Promise<void>;
+}
+
+/** Адрес контейнера `host:port` для внутреннего порта. */
+function hostPort(container: StartedTestContainer, port: number): string {
+    return `${container.getHost()}:${container.getMappedPort(port)}`;
+}
+
+/** Контейнер части после `start()` (провайдер вызывается только после успешного старта). */
+function startedOf(container: StartedTestContainer | null): StartedTestContainer {
+    if (container === null) {
+        throw new Error('startTestStack: контейнер части не запущен');
+    }
+
+    return container;
+}
+
+/**
+ * Значение флага: `true` — контейнер, объект — внешние адреса со строковыми полями `keys`.
+ * @throws {TypeError} значение вне `boolean | {…}` или поле не непустая строка.
+ */
+function externalOf<T extends object>(
+    name: string,
+    value: boolean | T | undefined,
+    keys: readonly (keyof T & string)[],
+): T | null {
+    if (value === undefined || typeof value === 'boolean') {
+        return null;
+    }
+    for (const key of keys) {
+        const field: unknown = (value as Record<string, unknown>)[key];
+        if (typeof field !== 'string' || field === '') {
+            throw new TypeError(`startTestStack: ${name}.${key} — нужна непустая строка адреса`);
+        }
+    }
+
+    return value;
+}
+
+function enabled(value: unknown): boolean {
+    return value === true || (typeof value === 'object' && value !== null);
 }
 
 /** Ошибка шага подготовки БД: в stderr — имя шага и код, без текста pg (адрес, имя роли); у migrate — и текст SQL. */
@@ -192,9 +282,22 @@ async function prepareStackDatabase(
     const appPassword = randomBytes(16).toString('hex');
     const template = `${service}_template`;
     const templateAdmin = withDatabase(adminUrl, template);
-    await step('create-template', () =>
-        adminExec(pg, adminUrl, `CREATE DATABASE ${quoteIdentifier(template)}`),
-    );
+    await step('create-template', async () => {
+        // IF NOT EXISTS (в PostgreSQL его нет у CREATE DATABASE): внешний сервер мог остаться от прерванного прогона.
+        const client = new pg.Client({ connectionString: adminUrl });
+        client.on('error', () => undefined);
+        await client.connect();
+        try {
+            const exists = await client.query('select 1 from pg_database where datname = $1', [
+                template,
+            ]);
+            if (exists.rowCount === 0) {
+                await client.query(`CREATE DATABASE ${quoteIdentifier(template)}`);
+            }
+        } finally {
+            await client.end();
+        }
+    });
     await step('prepare', () =>
         prepareDatabase({ service, adminUrl: templateAdmin, ownerPassword, appPassword }),
     );
@@ -239,13 +342,20 @@ function postgresPart(
     labels: Record<string, string>,
     service: string,
     migrations: string | undefined,
+    external: KitExternalPostgres | null,
 ): StackPart {
     const password = randomBytes(16).toString('hex');
+    let container: StartedTestContainer | null = null;
+    let adminUrl: string | null = null;
 
     return {
         name: 'postgres',
-        start: () =>
-            new GenericContainer(TEST_IMAGES.postgres)
+        start: async () => {
+            if (external !== null) {
+                return null;
+            }
+            const { GenericContainer, Wait } = await containers();
+            container = await new GenericContainer(TEST_IMAGES.postgres)
                 .withLabels(labels)
                 .withEnvironment({
                     POSTGRES_USER: 'postgres',
@@ -268,56 +378,100 @@ function postgresPart(
                     Wait.forLogMessage(/database system is ready to accept connections/, 2),
                 )
                 .withStartupTimeout(120_000)
-                .start(),
-        provide: async (container, project) => {
-            const host = container.getHost();
-            const port = container.getMappedPort(5432);
-            const url = `postgres://postgres:${password}@${host}:${port}/postgres`;
-            project.provide('kitPostgresUrl', url);
-            await prepareStackDatabase(url, service, migrations, project);
+                .start();
+
+            return container;
+        },
+        provide: async (project) => {
+            adminUrl =
+                external?.adminUrl ??
+                `postgres://postgres:${password}@${hostPort(startedOf(container), 5432)}/postgres`;
+            project.provide('kitPostgresUrl', adminUrl);
+            await prepareStackDatabase(adminUrl, service, migrations, project);
+        },
+        teardown: async () => {
+            if (adminUrl === null) {
+                return;
+            }
+            const pg = (await loadPeer<{ default: typeof Pg }>('pg', 'testing')).default;
+            await adminExec(
+                pg,
+                adminUrl,
+                `DROP DATABASE IF EXISTS ${quoteIdentifier(`${service}_template`)} WITH (FORCE)`,
+            );
         },
     };
 }
 
-function mailpitPart(labels: Record<string, string>): StackPart {
+function mailpitPart(
+    labels: Record<string, string>,
+    external: KitExternalMailpit | null,
+): StackPart {
+    let container: StartedTestContainer | null = null;
+
     return {
         name: 'mailpit',
-        start: () =>
-            new GenericContainer(TEST_IMAGES.mailpit)
+        start: async () => {
+            if (external !== null) {
+                return null;
+            }
+            const { GenericContainer, Wait } = await containers();
+            container = await new GenericContainer(TEST_IMAGES.mailpit)
                 .withLabels(labels)
                 .withExposedPorts(1025, 8025)
                 .withWaitStrategy(Wait.forHttp('/livez', 8025).forStatusCode(200))
                 .withStartupTimeout(120_000)
-                .start(),
-        provide: (container, project) => {
-            const host = container.getHost();
-            project.provide('kitSmtpUrl', `smtp://${host}:${container.getMappedPort(1025)}`);
-            project.provide('kitMailpitUrl', `http://${host}:${container.getMappedPort(8025)}`);
+                .start();
+
+            return container;
+        },
+        provide: (project) => {
+            project.provide(
+                'kitSmtpUrl',
+                external?.smtpUrl ?? `smtp://${hostPort(startedOf(container), 1025)}`,
+            );
+            project.provide(
+                'kitMailpitUrl',
+                external?.httpUrl ?? `http://${hostPort(startedOf(container), 8025)}`,
+            );
         },
     };
 }
 
-function minioPart(labels: Record<string, string>): StackPart {
+function minioPart(labels: Record<string, string>, external: KitExternalMinio | null): StackPart {
     const password = randomBytes(16).toString('hex');
+    let container: StartedTestContainer | null = null;
 
     return {
         name: 'minio',
-        start: () =>
-            new GenericContainer(TEST_IMAGES.minio)
+        start: async () => {
+            if (external !== null) {
+                return null;
+            }
+            const { GenericContainer, Wait } = await containers();
+            container = await new GenericContainer(TEST_IMAGES.minio)
                 .withLabels(labels)
-                .withEnvironment({ MINIO_ROOT_USER: MINIO_USER, MINIO_ROOT_PASSWORD: password })
+                .withEnvironment({
+                    MINIO_ROOT_USER: MINIO_USER,
+                    MINIO_ROOT_PASSWORD: password,
+                    // KMS со статическим ключом на прогон: SSE-S3 (AES256) работает (§3.8, AC-1.12, К2).
+                    MINIO_KMS_SECRET_KEY: `kit-test:${randomBytes(32).toString('base64')}`,
+                })
                 .withExposedPorts(9000)
                 .withCommand(['server', '/data'])
                 .withWaitStrategy(Wait.forHttp('/minio/health/live', 9000))
                 .withStartupTimeout(120_000)
-                .start(),
-        provide: (container, project) => {
+                .start();
+
+            return container;
+        },
+        provide: (project) => {
             project.provide(
                 'kitS3Endpoint',
-                `http://${container.getHost()}:${container.getMappedPort(9000)}`,
+                external?.endpoint ?? `http://${hostPort(startedOf(container), 9000)}`,
             );
-            project.provide('kitS3AccessKey', MINIO_USER);
-            project.provide('kitS3SecretKey', password);
+            project.provide('kitS3AccessKey', external?.accessKey ?? MINIO_USER);
+            project.provide('kitS3SecretKey', external?.secretKey ?? password);
         },
     };
 }
@@ -335,15 +489,23 @@ function rabbitmqPart(
     labels: Record<string, string>,
     service: string,
     publishes: readonly string[] | undefined,
+    external: KitExternalRabbitmq | null,
 ): StackPart {
     const password = randomBytes(16).toString('hex');
-    const prefix = `${service}-test-`;
+    const runId = randomBytes(4).toString('hex');
+    // Внешний брокер: удаляются только объекты своего прогона (К1).
+    const prefix = external === null ? `${service}-test-` : `${service}-test-${runId}-`;
+    let container: StartedTestContainer | null = null;
     let admin: RabbitAdmin | undefined;
 
     return {
         name: 'rabbitmq',
-        start: () =>
-            new GenericContainer(TEST_IMAGES.rabbitmq)
+        start: async () => {
+            if (external !== null) {
+                return null;
+            }
+            const { GenericContainer, Wait } = await containers();
+            container = await new GenericContainer(TEST_IMAGES.rabbitmq)
                 .withLabels(labels)
                 .withEnvironment({
                     RABBITMQ_DEFAULT_USER: RABBIT_ADMIN,
@@ -352,12 +514,20 @@ function rabbitmqPart(
                 .withExposedPorts(5672, 15672)
                 .withWaitStrategy(Wait.forLogMessage(/Server startup complete/))
                 .withStartupTimeout(120_000)
-                .start(),
-        provide: async (container, project) => {
-            const host = container.getHost();
-            const url = `amqp://${RABBIT_ADMIN}:${password}@${host}:${container.getMappedPort(5672)}`;
-            const managementUrl = `http://${host}:${container.getMappedPort(15672)}/`;
-            admin = new RabbitAdmin(managementUrl, RABBIT_ADMIN, password);
+                .start();
+
+            return container;
+        },
+        provide: async (project) => {
+            const url =
+                external?.amqpUrl ??
+                `amqp://${RABBIT_ADMIN}:${password}@${hostPort(startedOf(container), 5672)}`;
+            const managementUrl =
+                external?.managementUrl ?? `http://${hostPort(startedOf(container), 15672)}/`;
+            admin =
+                external === null
+                    ? new RabbitAdmin(managementUrl, RABBIT_ADMIN, password)
+                    : rabbitAdminFromProvided(managementUrl, url);
             await admin.waitReady();
             const workers = maxWorkersOf([
                 project.config,
@@ -367,8 +537,9 @@ function rabbitmqPart(
                 service,
                 ...(publishes === undefined ? {} : { publishes }),
                 workers,
-                runId: randomBytes(4).toString('hex'),
+                runId,
                 amqpAdminUrl: url,
+                removeLeftovers: external === null,
             });
             if (prepared.removed.length > 0) {
                 process.stderr.write(
@@ -391,18 +562,41 @@ function rabbitmqPart(
     };
 }
 
-function redisPart(labels: Record<string, string>, service: string): StackPart {
+/** Команда администратора внешнего Redis (ioredis — лениво, peer /redis). */
+async function redisAdminCommand(adminUrl: string, args: readonly string[]): Promise<void> {
+    const { Redis } = await loadPeer<typeof IORedis>('ioredis', 'testing');
+    const client = new Redis(adminUrl, { lazyConnect: true, maxRetriesPerRequest: 1 });
+    client.on('error', () => undefined);
+    try {
+        await client.connect();
+        await client.call(args[0] ?? '', ...args.slice(1));
+    } finally {
+        client.disconnect();
+    }
+}
+
+function redisPart(
+    labels: Record<string, string>,
+    service: string,
+    external: KitExternalRedis | null,
+): StackPart {
     const password = randomBytes(16).toString('hex');
     const adminPassword = randomBytes(16).toString('hex');
-    const aclfile = buildRedisAclFile({
-        users: [{ service, passwordHash: redisPasswordHash(password) }],
-        extra: [`user ${REDIS_ADMIN} on #${redisPasswordHash(adminPassword)} ~* &* +@all`],
-    });
+    let container: StartedTestContainer | null = null;
+    let created = false;
 
     return {
         name: 'redis',
-        start: () =>
-            new GenericContainer(TEST_IMAGES.redis)
+        start: async () => {
+            if (external !== null) {
+                return null;
+            }
+            const { GenericContainer, Wait } = await containers();
+            const aclfile = buildRedisAclFile({
+                users: [{ service, passwordHash: redisPasswordHash(password) }],
+                extra: [`user ${REDIS_ADMIN} on #${redisPasswordHash(adminPassword)} ~* &* +@all`],
+            });
+            container = await new GenericContainer(TEST_IMAGES.redis)
                 .withLabels(labels)
                 .withCopyContentToContainer([
                     { content: aclfile, target: REDIS_ACL_PATH, mode: 0o644 },
@@ -419,15 +613,38 @@ function redisPart(labels: Record<string, string>, service: string): StackPart {
                 .withExposedPorts(6379)
                 .withWaitStrategy(Wait.forLogMessage(/Ready to accept connections/))
                 .withStartupTimeout(120_000)
-                .start(),
-        provide: (container, project) => {
-            const address = `${container.getHost()}:${container.getMappedPort(6379)}`;
+                .start();
+
+            return container;
+        },
+        provide: async (project) => {
+            let address: string;
+            let adminUrl: string;
+            if (external === null) {
+                address = hostPort(startedOf(container), 6379);
+                adminUrl = `redis://${REDIS_ADMIN}:${adminPassword}@${address}`;
+            } else {
+                // Внешний Redis: пользователь сервиса — ACL SETUSER (aclfile не перечитывается), user default не трогаем.
+                const url = new URL(external.adminUrl);
+                address = url.host;
+                adminUrl = external.adminUrl;
+                await redisAdminCommand(adminUrl, [
+                    'ACL',
+                    'SETUSER',
+                    service,
+                    'reset',
+                    ...redisUserRules(service, redisPasswordHash(password)),
+                ]);
+                created = true;
+            }
             project.provide('kitRedisUrl', `redis://${service}:${password}@${address}`);
-            project.provide(
-                'kitRedisAdminUrl',
-                `redis://${REDIS_ADMIN}:${adminPassword}@${address}`,
-            );
+            project.provide('kitRedisAdminUrl', adminUrl);
             project.provide('kitRedisService', service);
+        },
+        teardown: async () => {
+            if (external !== null && created) {
+                await redisAdminCommand(external.adminUrl, ['ACL', 'DELUSER', service]);
+            }
         },
     };
 }
@@ -441,12 +658,26 @@ export function startTestStack(
     options: TestStackOptions,
 ): (project: TestProject) => Promise<() => Promise<void>> {
     assertServiceName(options.service, 'startTestStack');
-    if (options.migrations !== undefined && options.postgres !== true) {
-        throw new TypeError('startTestStack: migrations требует postgres: true');
+    if (options.migrations !== undefined && !enabled(options.postgres)) {
+        throw new TypeError('startTestStack: migrations требует postgres');
     }
-    if (options.publishes !== undefined && options.rabbitmq !== true) {
-        throw new TypeError('startTestStack: publishes требует rabbitmq: true');
+    if (options.publishes !== undefined && !enabled(options.rabbitmq)) {
+        throw new TypeError('startTestStack: publishes требует rabbitmq');
     }
+    const external = {
+        postgres: externalOf<KitExternalPostgres>('postgres', options.postgres, ['adminUrl']),
+        mailpit: externalOf<KitExternalMailpit>('mailpit', options.mailpit, ['smtpUrl', 'httpUrl']),
+        minio: externalOf<KitExternalMinio>('minio', options.minio, [
+            'endpoint',
+            'accessKey',
+            'secretKey',
+        ]),
+        rabbitmq: externalOf<KitExternalRabbitmq>('rabbitmq', options.rabbitmq, [
+            'amqpUrl',
+            'managementUrl',
+        ]),
+        redis: externalOf<KitExternalRedis>('redis', options.redis, ['adminUrl']),
+    };
     const badPrefix = options.publishes?.find((prefix) => !PUBLISH_PREFIX_PATTERN.test(prefix));
     if (badPrefix !== undefined) {
         throw new TypeError(
@@ -457,19 +688,19 @@ export function startTestStack(
 
     return async (project) => {
         const parts = [
-            ...(options.postgres === true
-                ? [postgresPart(labels, options.service, options.migrations)]
+            ...(enabled(options.postgres)
+                ? [postgresPart(labels, options.service, options.migrations, external.postgres)]
                 : []),
-            ...(options.mailpit === true ? [mailpitPart(labels)] : []),
-            ...(options.minio === true ? [minioPart(labels)] : []),
-            ...(options.rabbitmq === true
-                ? [rabbitmqPart(labels, options.service, options.publishes)]
+            ...(enabled(options.mailpit) ? [mailpitPart(labels, external.mailpit)] : []),
+            ...(enabled(options.minio) ? [minioPart(labels, external.minio)] : []),
+            ...(enabled(options.rabbitmq)
+                ? [rabbitmqPart(labels, options.service, options.publishes, external.rabbitmq)]
                 : []),
-            ...(options.redis === true ? [redisPart(labels, options.service)] : []),
+            ...(enabled(options.redis) ? [redisPart(labels, options.service, external.redis)] : []),
         ];
         const results = await Promise.allSettled(parts.map((part) => part.start()));
         const started = results.flatMap((result) =>
-            result.status === 'fulfilled' ? [result.value] : [],
+            result.status === 'fulfilled' && result.value !== null ? [result.value] : [],
         );
         const failed = parts.filter((_, index) => results[index]?.status === 'rejected');
         const firstFailure = results.find((result) => result.status === 'rejected');
@@ -482,15 +713,12 @@ export function startTestStack(
         }
         let preparing = '';
         try {
-            for (const [index, part] of parts.entries()) {
-                const container = started[index];
-                if (container !== undefined) {
-                    preparing = part.name;
-                    await part.provide(container, project);
-                }
+            for (const part of parts) {
+                preparing = part.name;
+                await part.provide(project);
             }
         } catch (error) {
-            await Promise.allSettled(started.map((container) => container.stop()));
+            await stopParts();
             const message = `[startTestStack] не удалось подготовить ${preparing}: ${errorMessage(error)}`;
             process.stderr.write(`${message}\n`);
             throw new Error(message, {

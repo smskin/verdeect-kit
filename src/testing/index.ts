@@ -6,6 +6,14 @@ export { expectProblem } from './expect-problem.js';
 export type { KitExpectedProblem, KitTestResponse } from './expect-problem.js';
 export { TEST_IMAGES } from './images.js';
 export { startTestStack } from './start-test-stack.js';
+export type {
+    KitExternalMailpit,
+    KitExternalMinio,
+    KitExternalPostgres,
+    KitExternalRabbitmq,
+    KitExternalRedis,
+    TestStackOptions,
+} from './start-test-stack.js';
 export { tcpProxy } from './tcp-proxy.js';
 export type { TcpProxy } from './tcp-proxy.js';
 export { TEST_TIMEOUT_SCALE } from './timeout-scale.js';

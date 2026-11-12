@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-11-12
+
+Находки переходов сервисов (PRD v1.23): Orchestrator OR-139/143 (К1, К2, К4, К7, К9), BFF-60, Platform PL-48.
+
+### Added
+
+- `/http`: `DomainError(code, details?, {message?, headers?, status?, cause?})` — текст случая, заголовки ответа (имена — к нижнему регистру; `set-cookie`, заголовки безопасности и `retry-after` у `RATE_LIMITED` — `TypeError`), статус из объявленных; тип `KitDomainErrorOptions`.
+- `/redis`: `KitRedisModule.forRoot({critical})` — проба `redis` критичная: Redis недоступен → `/health` 503.
+- `/testing`: флаги `startTestStack` — `true` или адреса уже поднятых сервисов (`postgres: {adminUrl}`, `rabbitmq: {amqpUrl, managementUrl}`, `redis: {adminUrl}`, `minio: {endpoint, accessKey, secretKey}`, `mailpit: {smtpUrl, httpUrl}`) для одноразовых service-контейнеров CI; `testcontainers` загружается только при `true`; на внешнем Redis — `ACL SETUSER`/`DELUSER`, на брокере — очистка только своего прогона; типы `TestStackOptions`, `KitExternalPostgres`, `KitExternalRabbitmq`, `KitExternalRedis`, `KitExternalMinio`, `KitExternalMailpit`.
+
+### Changed
+
+- `/http`: запись словаря `defineErrors` — `{status: number | number[], message}`: код с несколькими статусами; в OpenAPI и `expectMatchesApi` — все объявленные статусы кода. Код с одним статусом работает как прежде.
+- `/testing`: база-шаблон `<svc>_template` создаётся, если её нет, и удаляется в teardown.
+- README: реестр префиксов id (`ses`, `prf`, `fld`, `rep`, `fil`, `pln`, `pmb`), таблица совместимости peer (`drizzle-orm 0.45.4`), `db move-journal` до первого `db migrate`, строгое `ifNewer`, `openapi --module` с динамическим модулем, `UNKNOWN_COMMAND`, UI управления RabbitMQ только в dev-definitions, каналы `KIT_REDIS` без префикса, `process.env` не меняется.
+
+### Fixed
+
+- `/observability`: сериализатор `res` журнала доступа — только `statusCode`: заголовки ответа (`Location` с `state`, `Set-Cookie`) в лог не попадают.
+- `/testing`: MinIO стека — с KMS (`MINIO_KMS_SECRET_KEY`): `PutObject` с `ServerSideEncryption: AES256` проходит.
+- CLI `db migrate`, `db move-journal`: обрыв соединения с БД — `{error: {code: 'DATABASE_UNAVAILABLE'}}` и выход 1 вместо необработанного исключения.
+
 ## [1.0.0-rc.3] - 2026-11-12
 
 Права публикации RabbitMQ по префиксам (PRD v1.20, находки BFF-55); HTTP-опции по роли и реестр метрик `KIT_METRICS` (PRD v1.21, находки BFF-58).

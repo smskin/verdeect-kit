@@ -9,7 +9,13 @@ import {
     type DecryptErrorReason,
     type KitCipher,
 } from '@verdeect/kit/crypto';
-import { DomainError, type KitBootstrapOptions, type Page } from '@verdeect/kit/http';
+import {
+    DomainError,
+    type KitBootstrapOptions,
+    type KitDomainErrorOptions,
+    type KitErrorEntry,
+    type Page,
+} from '@verdeect/kit/http';
 import {
     createLoggerOptions,
     HealthRegistry,
@@ -76,6 +82,19 @@ export const bootstrapOptions: KitBootstrapOptions<typeof schema> = {
 };
 export const page: Page<{ id: string }> = { items: [{ id: 'a' }], nextCursor: null };
 export const status: number = new DomainError('FORBIDDEN').status;
+// v1.23 (AC-3.15): опции DomainError и запись словаря со списком статусов.
+const domainOptions: KitDomainErrorOptions = {
+    message: 'Лимит тарифа',
+    headers: { upgrade: 'websocket' },
+    status: 429,
+    cause: new Error('исходная'),
+};
+export const headers: Readonly<Record<string, string>> = new DomainError(
+    'FORBIDDEN',
+    {},
+    domainOptions,
+).headers;
+export const multiStatus: KitErrorEntry = { status: [403, 429], message: 'Лимит тарифа' };
 
 // /database, /idempotency, /testing (E4, E5): типы контекста, опций @Idempotent и области воркера (rabbitmq — E5, redisPrefix — E8).
 export const dbContext: DbContext = { tenant: null, traceId: 't', actor: { channel: 'system' } };

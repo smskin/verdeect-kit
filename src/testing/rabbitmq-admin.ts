@@ -229,11 +229,18 @@ export async function prepareWorkerVhosts(
         readonly workers: number;
         readonly runId: string;
         readonly amqpAdminUrl: string;
+        /** Удалить остатки прошлых прогонов `<svc>-test-` (контейнер); внешний брокер — `false`: только свой прогон. */
+        readonly removeLeftovers?: boolean;
     },
 ): Promise<{ readonly removed: readonly string[]; readonly workers: readonly KitRabbitWorker[] }> {
     const prefix = `${options.service}-test-`;
-    const leftovers = (await admin.listVhosts()).filter((name) => name.startsWith(prefix));
-    await deleteTestVhosts(admin, prefix);
+    const leftovers =
+        options.removeLeftovers === false
+            ? []
+            : (await admin.listVhosts()).filter((name) => name.startsWith(prefix));
+    if (leftovers.length > 0) {
+        await deleteTestVhosts(admin, prefix);
+    }
     const admins = new URL(options.amqpAdminUrl);
     const adminPassword = decodeURIComponent(admins.password);
     const workers: KitRabbitWorker[] = [];
