@@ -72,8 +72,8 @@ export interface KitSubscriberDeps {
     readonly inbox?: KitInboxTable;
     /** `Db` при `dedupe: 'inbox'`. */
     readonly db?: Db;
-    /** Соединение. */
-    readonly connection: RabbitConnection;
+    /** Соединение; `null` — режим CLI (`listen: false`): обработчики принимаются, подписчик не запускается. */
+    readonly connection: RabbitConnection | null;
     /** TTL `.retry` и пауза повтора, с. */
     readonly retrySeconds: number;
     /** Метрики. */
@@ -138,10 +138,28 @@ export class KitSubscriber {
         );
     }
 
+    /** Соединение режима прослушивания; в режиме CLI сюда не доходит (подписчик не запускается). */
+    private connectionOf(): RabbitConnection {
+        const { connection } = this.deps;
+        if (connection === null) {
+            throw new Error('KitSubscriber: listen: false — соединения с брокером нет');
+        }
+
+        return connection;
+    }
+
     /** Топология, потребители и проверка TTL `.retry` до прослушивания порта (AC-5.19). */
     async onApplicationBootstrap(): Promise<void> {
         this.started = true;
         const { connection } = this.deps;
+        if (connection === null) {
+            this.log.debug(
+                { handlers: this.handlers.size },
+                'messaging: listen: false — подписчик не запускается',
+            );
+
+            return;
+        }
         const types = [...this.handlers.keys()];
         this.main = connection.createChannel({
             name: MAIN_CHANNEL,
@@ -192,7 +210,7 @@ export class KitSubscriber {
 
             return true as const;
         });
-        const done = await Promise.race([steps, this.deps.connection.shutdownDeadline()]);
+        const done = await Promise.race([steps, this.connectionOf().shutdownDeadline()]);
         if (!done) {
             this.main = null;
             this.replica = null;
@@ -227,7 +245,8 @@ export class KitSubscriber {
      * отказ запуска; брокер недоступен или другая ошибка стадии — запуск продолжается (`/health` rabbitmq down).
      */
     private async awaitStartupOutcome(): Promise<void> {
-        const { connection, retrySeconds } = this.deps;
+        const { retrySeconds } = this.deps;
+        const connection = this.connectionOf();
         const limit = (): Promise<'timeout'> =>
             sleep(retrySeconds * 1000, 'timeout' as const, { ref: false });
         const attempt = await Promise.race([connection.firstAttempt(), limit()]);
@@ -276,7 +295,7 @@ export class KitSubscriber {
     private openReplica(): void {
         const queue = replicaQueueOf(this.deps.service, this.deps.replica);
         const types = [...this.replicaHandlers.keys()];
-        this.replica = this.deps.connection.createChannel({
+        this.replica = this.connectionOf().createChannel({
             name: REPLICA_CHANNEL,
             confirm: false,
             setup: async (channel) => {

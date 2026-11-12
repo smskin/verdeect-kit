@@ -45,6 +45,12 @@ export interface KitMessagingModuleOptions {
     /** Имя экземпляра (`^[a-z][a-z0-9-]{1,31}$`): очереди `<svc>`, `<svc>.retry`, `<svc>.dlq`. */
     readonly service: string;
     /**
+     * Прослушивание брокера (умолч. `true`). `false` — режим CLI сервиса (§3.4 v1.25): без соединения с брокером,
+     * подписчика, relay и очистки; `OutboxStore.add` пишет строки (публикует relay реплики API), `subscriber.on`
+     * принимается и не выполняется — общий модуль сервиса подходит API и CLI.
+     */
+    readonly listen?: boolean;
+    /**
      * Outbox: таблица `createOutboxTable(schema, {tenantNullable})` и все события, которые сервис публикует
      * (`OutboxStore.add` события вне списка — `TypeError`). `tenantNullable` читается из таблицы.
      */
@@ -300,6 +306,48 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
     ];
 }
 
+/**
+ * Провайдеры режима CLI (`listen: false`): `OutboxStore` без relay (`wake` — пусто) и подписчик без соединения — `on`
+ * принимается, `onApplicationBootstrap` ничего не запускает. Окружение брокера не читается.
+ */
+function cliProviders(config: KitMessagingConfig): Provider[] {
+    const { outbox, database } = config;
+    const providers: Provider[] = [];
+    if (outbox !== undefined && database !== undefined) {
+        providers.push({
+            provide: OutboxStore,
+            useFactory: (db: Database.Db, log: MessagingLog): OutboxStore =>
+                new OutboxStore({
+                    db,
+                    table: outbox,
+                    events: config.events,
+                    wake: () => undefined,
+                    log,
+                }),
+            inject: [database.Db, KIT_MESSAGING_LOG],
+        });
+    }
+    if (config.subscriber) {
+        providers.push({
+            provide: KitSubscriber,
+            useFactory: (log: MessagingLog, metrics?: KitMetrics): KitSubscriber =>
+                new KitSubscriber({
+                    service: config.service,
+                    replica: '',
+                    dedupe: config.dedupe,
+                    ...(config.inbox === undefined ? {} : { inbox: config.inbox }),
+                    connection: null,
+                    retrySeconds: 0,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
+                    log,
+                }),
+            inject: [KIT_MESSAGING_LOG, { token: KIT_PACKAGE_METRICS, optional: true }],
+        });
+    }
+
+    return providers;
+}
+
 /** Store, построенный фабрикой relay. */
 const relayStores = new WeakMap<OutboxRelay, OutboxStore>();
 
@@ -328,6 +376,10 @@ export class KitMessagingModule {
         if (dedupe === 'none' && options.subscriber?.inbox !== undefined) {
             throw new TypeError("KitMessagingModule: inbox не используется при dedupe: 'none'");
         }
+        const listen = options.listen ?? true;
+        if (typeof listen !== 'boolean') {
+            throw new TypeError('KitMessagingModule: listen — true или false');
+        }
         const schema = schemaOf([options.outbox?.table, options.subscriber?.inbox]);
         const events = eventsOf(options, schema);
         let database: typeof Database | undefined;
@@ -345,6 +397,24 @@ export class KitMessagingModule {
             inbox: options.subscriber?.inbox,
             database,
         };
+        const log: Provider = {
+            provide: KIT_MESSAGING_LOG,
+            useFactory: (logger?: PinoLogger): MessagingLog => logger ?? nestLog('KitMessaging'),
+            inject: [{ token: KIT_LOGGER, optional: true }],
+        };
+        if (!listen) {
+            const cli = cliProviders(config);
+
+            return {
+                module: KitMessagingModule,
+                global: true,
+                providers: [{ provide: KIT_MESSAGING_OPTIONS, useValue: config }, log, ...cli],
+                exports: [
+                    ...(config.outbox === undefined ? [] : [OutboxStore]),
+                    ...(config.subscriber ? [KitSubscriber] : []),
+                ],
+            };
+        }
 
         const outbox = outboxProviders(config);
         const subscriberList = subscriberProviders(config);
@@ -359,12 +429,7 @@ export class KitMessagingModule {
                     useFactory: messagingEnv,
                     inject: [{ token: ConfigService, optional: true }],
                 },
-                {
-                    provide: KIT_MESSAGING_LOG,
-                    useFactory: (logger?: PinoLogger): MessagingLog =>
-                        logger ?? nestLog('KitMessaging'),
-                    inject: [{ token: KIT_LOGGER, optional: true }],
-                },
+                log,
                 {
                     provide: KIT_RABBIT_CONNECTION,
                     useFactory: (env: KitMessagingRuntimeEnv, log: MessagingLog) =>
