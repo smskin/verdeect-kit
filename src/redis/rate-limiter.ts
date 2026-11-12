@@ -3,6 +3,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import { KIT_PACKAGE_METRICS, KIT_REDIS_LOG } from '../internal/tokens.js';
+import { requireKitCore } from '../internal/kit-core-required.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { DomainError } from '../http/errors.js';
@@ -73,12 +74,15 @@ function valuesOf(result: ExecResult): unknown[] {
 @Injectable()
 export class RateLimiter {
     #lastUnavailableWarnAt: number | undefined;
+    private readonly metrics: KitMetrics;
 
     constructor(
         @Inject(KIT_REDIS) private readonly redis: Redis,
         @Inject(KIT_REDIS_LOG) private readonly log: RedisLog,
-        @Optional() @Inject(KIT_PACKAGE_METRICS) private readonly metrics?: KitMetrics,
-    ) {}
+        @Optional() @Inject(KIT_PACKAGE_METRICS) metrics?: KitMetrics,
+    ) {
+        this.metrics = requireKitCore(metrics, 'RateLimiter');
+    }
 
     /** Считает попадание: `INCR`, `PEXPIRE … NX`, `PTTL` одним `MULTI`; `allowed = count ≤ limit`. */
     async hit(key: string, options: RateLimitOptions): Promise<RateLimitResult> {
@@ -136,7 +140,7 @@ export class RateLimiter {
     }
 
     private failOpen(error: unknown, limit: number): RateLimitResult {
-        this.metrics?.rateLimitUnavailable.inc();
+        this.metrics.rateLimitUnavailable.inc();
         const now = Date.now();
         // ponytail: один таймер warn на процесс, по ключам — если понадобится разбор по scope.
         if (

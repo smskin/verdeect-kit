@@ -3,6 +3,8 @@ export { failStartup } from './fail-startup.js';
 export type { StartupFailure } from './fail-startup.js';
 export { HealthRegistry } from './health-registry.js';
 export type { HealthProbe, HealthReport } from './health-registry.js';
+export { KitCoreModule } from './kit-core.module.js';
+export type { KitCoreLoggerOptions, KitCoreModuleOptions } from './kit-core.module.js';
 export { KitLifecycle } from './lifecycle.js';
 export type { KitShutdownParticipant, KitShutdownStep } from './lifecycle.js';
 export { createLoggerOptions } from './logger-options.js';

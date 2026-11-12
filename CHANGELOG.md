@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/observability`: `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})` — ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер), `createHttpApp` подключает его сам; типы `KitCoreModuleOptions`, `KitCoreLoggerOptions`.
+
+### Changed
+
+- **Модули пакета требуют ядро:** `KitDatabaseModule`, `KitMessagingModule`, `KitRedisModule`, `KitIdempotencyModule` и `RateLimiter` без `KitCoreModule`/`createHttpApp` — ошибка при сборке контекста «подключите `KitCoreModule.forRoot` или запускайте через `bootstrapService`/`createHttpApp`» (раньше пробы `/health` и метрики молча отключались).
+
 ## [1.0.0-rc.5] - 2026-11-12
 
 Находки BFF-64 (PRD v1.24): стандартные ошибки OpenAPI по факту, администратор в dev-definitions.

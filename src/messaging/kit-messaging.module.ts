@@ -18,6 +18,7 @@ import type { Logger as PinoLogger } from 'pino';
 import type * as Database from '../database/index.js';
 import { requirePeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
+import { requireKitCore } from '../internal/kit-core-required.js';
 import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import type { KitMetrics } from '../observability/metrics.js';
@@ -129,17 +130,21 @@ function eventsOf(
 /** Старт соединения, проба `/health` и шаг 4 остановки (внутренний). */
 @Injectable()
 class MessagingLifecycle implements OnModuleInit, OnApplicationShutdown {
+    private readonly health: HealthRegistry;
+
     constructor(
         @Inject(KIT_RABBIT_CONNECTION) private readonly connection: RabbitConnection,
         @Inject(KIT_MESSAGING_OPTIONS) private readonly config: KitMessagingConfig,
         @Inject(KIT_MESSAGING_LOG) private readonly log: MessagingLog,
-        @Optional() private readonly health?: HealthRegistry,
-    ) {}
+        @Optional() health?: HealthRegistry,
+    ) {
+        this.health = requireKitCore(health, 'KitMessagingModule');
+    }
 
     /** Соединение в фоне; проба `rabbitmq` некритичная (П11). */
     async onModuleInit(): Promise<void> {
         await this.connection.start();
-        this.health?.register(
+        this.health.register(
             'rabbitmq',
             () => Promise.resolve(this.connection.isConnected() && this.connection.topologyReady()),
             { critical: false },
@@ -190,7 +195,7 @@ function outboxProviders(config: KitMessagingConfig): Provider[] {
                     store,
                     connection,
                     events: config.events,
-                    metrics,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 });
                 relayStores.set(relay, store);
@@ -244,7 +249,7 @@ function subscriberProviders(config: KitMessagingConfig): Provider[] {
                     ...(db === undefined ? {} : { db }),
                     connection,
                     retrySeconds: env.RABBITMQ_RETRY_SECONDS,
-                    metrics,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 }),
             inject: [
@@ -283,7 +288,7 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
                         ...(config.outbox === undefined ? {} : { outbox: config.outbox }),
                         ...(config.inbox === undefined ? {} : { inbox: config.inbox }),
                     },
-                    metrics,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 }),
             inject: [

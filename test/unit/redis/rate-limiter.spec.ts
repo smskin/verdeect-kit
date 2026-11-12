@@ -53,7 +53,7 @@ describe('UC-11: RateLimiter', () => {
                 [null, 60_000],
             ]),
         );
-        const limiter = new RateLimiter(redis, spyLog());
+        const limiter = new RateLimiter(redis, spyLog(), kitMetrics({ service: 'kit' }));
 
         const result = await limiter.hit('login:1.2.3.4', OPTIONS);
 
@@ -76,7 +76,7 @@ describe('UC-11: RateLimiter', () => {
             ]),
         );
         const log = spyLog();
-        const limiter = new RateLimiter(redis, log);
+        const limiter = new RateLimiter(redis, log, kitMetrics({ service: 'kit' }));
 
         expect(await limiter.hit('login:1.2.3.4', OPTIONS)).toEqual({
             allowed: false,
@@ -94,7 +94,7 @@ describe('UC-11: RateLimiter', () => {
                 [null, 500],
             ]),
         );
-        const limiter = new RateLimiter(redis, spyLog());
+        const limiter = new RateLimiter(redis, spyLog(), kitMetrics({ service: 'kit' }));
 
         const result = await limiter.peek('login:x', OPTIONS);
 
@@ -110,7 +110,12 @@ describe('UC-11: RateLimiter', () => {
             ]),
         );
 
-        expect(await new RateLimiter(redis, spyLog()).peek('k', OPTIONS)).toEqual({
+        expect(
+            await new RateLimiter(redis, spyLog(), kitMetrics({ service: 'kit' })).peek(
+                'k',
+                OPTIONS,
+            ),
+        ).toEqual({
             allowed: true,
             remaining: 3,
             retryAfterMs: 0,
@@ -194,9 +199,17 @@ describe('UC-11: RateLimiter', () => {
         ['k', { limit: 1, windowMs: Number.NaN }],
     ])('§3.7: key %j, опции %j — TypeError', async (key, options) => {
         const { redis } = fakeRedis(() => Promise.resolve([]));
-        const limiter = new RateLimiter(redis, spyLog());
+        const limiter = new RateLimiter(redis, spyLog(), kitMetrics({ service: 'kit' }));
 
         await expect(limiter.hit(key, options)).rejects.toThrow(TypeError);
         await expect(limiter.peek(key, options)).rejects.toThrow(TypeError);
+    });
+
+    it('AC-2.15: без ядра пакета (нет KIT_PACKAGE_METRICS) — ошибка с текстом про KitCoreModule', () => {
+        const { redis } = fakeRedis(() => Promise.resolve([]));
+
+        expect(() => new RateLimiter(redis, spyLog())).toThrow(
+            /RateLimiter: нет ядра пакета — подключите KitCoreModule\.forRoot или запускайте через bootstrapService\/createHttpApp/,
+        );
     });
 });

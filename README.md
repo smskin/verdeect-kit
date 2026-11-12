@@ -739,6 +739,9 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `alertRulesTemplate` — абсолютный путь к `alerts/verdeect-kit.rules.yml`.
 - `failStartup` — `failStartup(raw, logger)`: `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`.
 - `StartupFailure` — интерфейс ошибки запуска сервиса `{startupCode, startupDetails()}`.
+- `KitCoreModule` — `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})`: ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер; `cli` — stderr), требует `KitConfigModule`; `createHttpApp` подключает его сам; в `cli` сервера метрик и `/health` нет. Модули `/database`, `/messaging`, `/redis`, `/idempotency` и лимитер без ядра — ошибка при сборке контекста. См. «CLI сервиса».
+- `KitCoreModuleOptions` — тип опций `KitCoreModule.forRoot`.
+- `KitCoreLoggerOptions` — `{trustTraceparent?, quietRoutes?, extraBase?}`: опции логгера по роли, общие у `bootstrapService`, `createTestApp` и `KitCoreModule`.
 - `KitLifecycle` — остановка по шагам 1–5: `register`, `listen()` (сигнал ОС, сторож срока), `close()` (без сторожа).
 - `KitShutdownParticipant` — участник `{name, stop()}`.
 - `KitShutdownStep` — шаг участника `2 | 3 | 4 | 5`.
