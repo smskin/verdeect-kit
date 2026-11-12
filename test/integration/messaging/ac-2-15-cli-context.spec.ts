@@ -117,6 +117,16 @@ describe('UC-13: контекст CLI сервиса', () => {
         });
     });
 
+    it('AC-2.15: awaitPublished — неизвестный id считается неопубликованным, повтор id — один раз', async () => {
+        const [row] = await outboxRows();
+
+        expect(
+            await cli.get(OutboxStore).awaitPublished(['evt_nope', row?.id ?? '', row?.id ?? ''], {
+                timeoutMs: 0,
+            }),
+        ).toEqual({ published: 0, pending: 2 });
+    });
+
     it('AC-2.15: реплика API публикует строку CLI — awaitPublished по id и по traceId → pending: 0', async () => {
         const [row] = await outboxRows();
         let api: NestFastifyApplication | undefined;

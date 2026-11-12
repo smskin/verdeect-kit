@@ -391,11 +391,18 @@ function trackedFiles(root: string): ReadonlySet<string> | null {
             cwd: root,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
+            // Большой репозиторий: по умолчанию 1 МБ — ENOBUFS молча включил бы неотслеживаемые .env.
+            maxBuffer: 256 * 1024 * 1024,
         });
 
         return new Set(output.split('\0').filter(Boolean));
-    } catch {
-        return null;
+    } catch (error) {
+        const { code, status } = error as { code?: unknown; status?: unknown };
+        // Нет git (ENOENT) или не git-репозиторий (выход 128) — читаются все файлы; прочее — ошибка.
+        if (code === 'ENOENT' || status === 128) {
+            return null;
+        }
+        throw error;
     }
 }
 

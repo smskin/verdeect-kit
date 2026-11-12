@@ -185,6 +185,8 @@ export class OutboxStore {
     /**
      * Ждёт, пока relay реплики опубликует строки (опрос `published_at` раз в 100 мс): по `id` или по `traceId`. По сроку
      * исключения нет — `pending > 0`. Работает при любом `listen`; сам не публикует (порядок по `seq` — у relay).
+     * Вызывать после COMMIT транзакции `add`: id невидимой строки считается неопубликованным, по `traceId` невидимые
+     * строки не учитываются.
      * @throws {TypeError} пустой `traceId` или `timeoutMs` не целое ≥ 0.
      */
     async awaitPublished(
@@ -197,11 +199,15 @@ export class OutboxStore {
         }
         const t = this.deps.table;
         let where;
+        // Ожидаемых строк по id — столько, сколько уникальных id: невидимые (не закоммичены, неверный id) — pending.
+        let expected: number | null = null;
         if (Array.isArray(target)) {
-            if (target.length === 0) {
+            const ids = [...new Set(target as readonly string[])];
+            if (ids.length === 0) {
                 return { published: 0, pending: 0 };
             }
-            where = inArray(t.id, [...(target as readonly string[])]);
+            expected = ids.length;
+            where = inArray(t.id, ids);
         } else {
             const { traceId } = target as { readonly traceId: string };
             if (typeof traceId !== 'string' || traceId === '') {
@@ -221,7 +227,12 @@ export class OutboxStore {
                     .from(t)
                     .where(where);
 
-                return { published: row?.published ?? 0, pending: row?.pending ?? 0 };
+                const published = row?.published ?? 0;
+
+                return {
+                    published,
+                    pending: expected === null ? (row?.pending ?? 0) : expected - published,
+                };
             });
             if (counts.pending === 0 || Date.now() >= deadline) {
                 return counts;

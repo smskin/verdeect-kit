@@ -320,15 +320,23 @@ function cliProviders(config: KitMessagingConfig): Provider[] {
     if (outbox !== undefined && database !== undefined) {
         providers.push({
             provide: OutboxStore,
-            useFactory: (db: Database.Db, log: MessagingLog): OutboxStore =>
-                new OutboxStore({
+            useFactory: (db: Database.Db, log: MessagingLog, metrics?: KitMetrics): OutboxStore => {
+                // Ядро обязательно и в режиме CLI (§3.2, AC-2.15), даже без подписчика.
+                requireKitCore(metrics, 'KitMessagingModule');
+
+                return new OutboxStore({
                     db,
                     table: outbox,
                     events: config.events,
                     wake: () => undefined,
                     log,
-                }),
-            inject: [database.Db, KIT_MESSAGING_LOG],
+                });
+            },
+            inject: [
+                database.Db,
+                KIT_MESSAGING_LOG,
+                { token: KIT_PACKAGE_METRICS, optional: true },
+            ],
         });
     }
     if (config.subscriber) {
