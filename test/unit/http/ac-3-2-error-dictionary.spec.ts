@@ -75,4 +75,28 @@ describe('AC-3.2: словарь ошибок', () => {
         expect(kitErrors.UNAUTHENTICATED.message).toBe('Требуется вход');
         expect(kitErrors.FORBIDDEN.message).toBe('Доступ запрещён');
     });
+
+    it('AC-3.2: status списком — тот же набор в другом порядке не ошибка, другой набор или число — ошибка при определении', () => {
+        defineErrors({ DICT_MULTI: { status: [429, 403], message: 'x' } });
+        expect(() =>
+            defineErrors({ DICT_MULTI: { status: [403, 429], message: 'x' } }),
+        ).not.toThrow();
+        expect(() => defineErrors({ DICT_MULTI: { status: [403], message: 'x' } })).toThrow(
+            /DICT_MULTI уже зарегистрирован со статусом 403, 429/,
+        );
+        expect(() => defineErrors({ DICT_MULTI: { status: 403, message: 'x' } })).toThrow();
+        expect(() => defineErrors({ DICT_EMPTY: { status: [], message: 'x' } })).toThrow(
+            /пустой список/,
+        );
+    });
+
+    it('§3.5: DomainError кода со списком статусов: status из объявленных — он, без status или вне — 500', () => {
+        defineErrors({ DICT_PAIR: { status: [403, 429], message: 'x' } });
+
+        expect(new DomainError('DICT_PAIR', {}, { status: 429 }).status).toBe(429);
+        expect(new DomainError('DICT_PAIR').status).toBe(500);
+        expect(new DomainError('DICT_PAIR', {}, { status: 404 }).status).toBe(500);
+        expect(new DomainError('DICT_FIRST', {}, { status: 409 }).status).toBe(409);
+        expect(new DomainError('DICT_FIRST', {}, { status: 400 }).status).toBe(500);
+    });
 });

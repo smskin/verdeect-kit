@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/http`: `DomainError(code, details?, {message?, headers?, status?, cause?})` — текст случая, заголовки ответа (имена — к нижнему регистру; `set-cookie`, заголовки безопасности и `retry-after` у `RATE_LIMITED` — `TypeError`), статус из объявленных; тип `KitDomainErrorOptions`.
+
+### Changed
+
+- `/http`: запись словаря `defineErrors` — `{status: number | number[], message}`: код с несколькими статусами; в OpenAPI и `expectMatchesApi` — все объявленные статусы кода. Код с одним статусом работает как прежде.
+
 ## [1.0.0-rc.3] - 2026-11-12
 
 Права публикации RabbitMQ по префиксам (PRD v1.20, находки BFF-55); HTTP-опции по роли и реестр метрик `KIT_METRICS` (PRD v1.21, находки BFF-58).

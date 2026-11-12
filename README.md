@@ -286,6 +286,18 @@ export class EventsStream implements OnModuleInit {
 
 **Ошибки.** Словарь — `defineErrors({...kitErrors, ITEM_NOT_FOUND: {status: 404, message: 'Запись не найдена'}})` один раз на процесс; повторный вызов объединяет словари, тот же код с другим статусом — ошибка при определении, код пакета с другим статусом — ошибка компиляции. `throw new DomainError('ITEM_NOT_FOUND', {id})` → `{error: {code, message, details}}`, статус словаря, `warn` без GlitchTip. Доменные 4xx — только `DomainError`: `HttpException` без тела с другим статусом, чем 400/401/403/404/413/415/429, — 500 `INTERNAL_ERROR` (ошибка разработчика). Тело `{error}` guard'ов `@verdeect/auth` и `@verdeect/platform-client` проходит без изменений. Срок пула БД (в том числе в `cause`) — 503 `SERVICE_UNAVAILABLE` + `Retry-After: 1` без метрики и события в фильтре: срок пулов `KitDatabaseModule` учитывает сам пул — `verdeect_db_pool_wait_timeouts_total{pool="main"|"read"}` и одно событие `captureThrottled`; срок собственного пула сервиса — 503 без метрики.
 
+Третий аргумент — `{message?, headers?, status?, cause?}` (AC-3.15): `message` — текст этого случая вместо текста словаря; `headers` — заголовки ответа (имена приводятся к нижнему регистру; `set-cookie`, заголовки безопасности пакета и `retry-after` у `RATE_LIMITED` запрещены — `TypeError` при создании); `cause` — исходная ошибка. Код может законно отвечать несколькими статусами — `{status: [403, 429], message}` в словаре; тогда статус экземпляра выбирает `status` из объявленных. Без `status` или со статусом вне объявленных — 500 `INTERNAL_ERROR` и событие GlitchTip (ошибка разработчика); у кода с одним статусом `status` не передаётся. В OpenAPI и `expectMatchesApi` попадают все объявленные статусы кода.
+
+```ts
+defineErrors({
+    ...kitErrors,
+    PLAN_LIMIT: { status: [403, 429], message: 'Лимит тарифа' },
+    UPGRADE_REQUIRED: { status: 426, message: 'Нужно обновить клиент' },
+});
+throw new DomainError('PLAN_LIMIT', { limit: 3 }, { status: 429, headers: { 'retry-after': '60' } });
+throw new DomainError('UPGRADE_REQUIRED', {}, { headers: { upgrade: 'websocket' } });
+```
+
 | Код                      | Статус | Код                        | Статус |
 | ------------------------ | ------ | -------------------------- | ------ |
 | `UNAUTHENTICATED`        | 401    | `RATE_LIMITED`             | 429    |
@@ -699,10 +711,11 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `KitReferrerPolicy` — стандартные значения `Referrer-Policy`.
 - `KitHttpAppOptions` — тип опций `createHttpApp`.
 - `kitErrors` — общие коды пакета `{status, message}`.
-- `defineErrors` — `defineErrors({...kitErrors, …})`: словарь сервиса на процесс.
+- `defineErrors` — `defineErrors({...kitErrors, …})`: словарь сервиса на процесс; `status` — число или список объявленных статусов.
 - `KitErrorDictionary` — тип словаря `код → {status, message}`.
 - `KitErrorEntry` — тип записи словаря.
-- `DomainError` — `new DomainError(code, details?, {cause}?)`: ошибка домена со статусом из словаря, `toBody()`.
+- `DomainError` — `new DomainError(code, details?, {message?, headers?, status?, cause?})`: ошибка домена со статусом из словаря, `headers`, `toBody()`.
+- `KitDomainErrorOptions` — тип третьего аргумента `DomainError`.
 - `KitExceptionFilter` — фильтр ошибок (регистрирует `createHttpApp`; фильтр сервиса — `exceptionFilter` с делегированием в `kit.catch(exception, host)`).
 - `ZodValidationPipe` — `new ZodValidationPipe(schema)`: 422 `VALIDATION_FAILED`.
 - `PageQuerySchema` — `{cursor?, limit}` (умолчание 100, максимум 200).

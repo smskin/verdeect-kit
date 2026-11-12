@@ -17,7 +17,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { isPoolTimeout } from '../internal/pg-errors.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError } from '../observability/sentry.js';
-import { DomainError, errorMessage, errorStatus } from './errors.js';
+import { DomainError, errorMessage, errorStatuses } from './errors.js';
 
 /** Код ответа HttpException без своего тела (Nest FastifyAdapter.mapException: FastifyError → HttpException). */
 const HTTP_CODES: Readonly<Record<number, string>> = {
@@ -116,8 +116,15 @@ export class KitExceptionFilter implements ExceptionFilter {
             return;
         }
 
-        if (exception instanceof DomainError && errorStatus(exception.code) !== undefined) {
+        // Код зарегистрирован и статус экземпляра — из объявленных; иначе — ошибка разработчика (500, GlitchTip).
+        if (
+            exception instanceof DomainError &&
+            errorStatuses(exception.code)?.includes(exception.status) === true
+        ) {
             this.warn(exception.code, exception.status, request);
+            for (const [name, value] of Object.entries(exception.headers)) {
+                void reply.header(name, value);
+            }
             const retryAfterSec = rateLimitRetryAfter(exception);
             if (retryAfterSec !== undefined) {
                 void reply.header('Retry-After', String(retryAfterSec));
