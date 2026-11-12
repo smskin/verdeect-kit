@@ -48,10 +48,15 @@ export const envDatabase = {
     DB_POOL_ACQUIRE_TIMEOUT_MS: positiveInt(5000),
 };
 
-/** RabbitMQ (§3.1): RABBITMQ_URL (обязателен), RABBITMQ_RETRY_SECONDS (30, целое ≥ 1). */
+/**
+ * RabbitMQ (§3.1): RABBITMQ_URL (обязателен), RABBITMQ_RETRY_SECONDS (30, целое ≥ 1) — только TTL `<svc>.retry`,
+ * RABBITMQ_RECONNECT_SECONDS (5, целое ≥ 1) — пауза переподключения и повтора настройки канала, срок ожидания первого
+ * подключения (v1.25).
+ */
 export const envMessaging = {
     RABBITMQ_URL: z.url(),
     RABBITMQ_RETRY_SECONDS: positiveInt(30),
+    RABBITMQ_RECONNECT_SECONDS: positiveInt(5),
 };
 
 /** Redis (§3.1): REDIS_URL (обязателен). */

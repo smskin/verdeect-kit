@@ -77,6 +77,7 @@ function messagingEnv(config: ConfigService | undefined): KitMessagingRuntimeEnv
     return {
         RABBITMQ_URL: config.getOrThrow<string>('RABBITMQ_URL'),
         RABBITMQ_RETRY_SECONDS: config.getOrThrow<number>('RABBITMQ_RETRY_SECONDS'),
+        RABBITMQ_RECONNECT_SECONDS: config.getOrThrow<number>('RABBITMQ_RECONNECT_SECONDS'),
         REPLICA_ID: config.getOrThrow<string>('REPLICA_ID'),
         SHUTDOWN_TIMEOUT_MS: config.getOrThrow<number>('SHUTDOWN_TIMEOUT_MS'),
         SHUTDOWN_DRAIN_MS: config.getOrThrow<number>('SHUTDOWN_DRAIN_MS'),
@@ -255,6 +256,7 @@ function subscriberProviders(config: KitMessagingConfig): Provider[] {
                     ...(db === undefined ? {} : { db }),
                     connection,
                     retrySeconds: env.RABBITMQ_RETRY_SECONDS,
+                    reconnectSeconds: env.RABBITMQ_RECONNECT_SECONDS,
                     metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 }),
@@ -338,6 +340,7 @@ function cliProviders(config: KitMessagingConfig): Provider[] {
                     ...(config.inbox === undefined ? {} : { inbox: config.inbox }),
                     connection: null,
                     retrySeconds: 0,
+                    reconnectSeconds: 0,
                     metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 }),
@@ -435,7 +438,7 @@ export class KitMessagingModule {
                     useFactory: (env: KitMessagingRuntimeEnv, log: MessagingLog) =>
                         new RabbitConnection({
                             url: env.RABBITMQ_URL,
-                            retrySeconds: env.RABBITMQ_RETRY_SECONDS,
+                            reconnectSeconds: env.RABBITMQ_RECONNECT_SECONDS,
                             deadlineMs: handlersDeadlineMs(env),
                             log,
                         }),

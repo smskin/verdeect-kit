@@ -93,24 +93,25 @@ export class AppModule {}
 
 Ключи пакета (prd.md §3.1):
 
-| Фрагмент         | Ключ                                                 | Умолчание                                              |
-| ---------------- | ---------------------------------------------------- | ------------------------------------------------------ |
-| `envBase`        | `NODE_ENV`                                           | `production` (`development`, `test`)                   |
-| `envBase`        | `LOG_LEVEL`                                          | `info` (`fatal` … `trace`, `silent`)                   |
-| `envBase`        | `PORT`                                               | 3000                                                   |
-| `envBase`        | `METRICS_PORT`                                       | 9100; не равен `PORT`, кроме 0                         |
-| `envBase`        | `REPLICA_ID`                                         | `hostname()`                                           |
-| `envBase`        | `SHUTDOWN_TIMEOUT_MS`                                | 10000                                                  |
-| `envBase`        | `SHUTDOWN_DRAIN_MS`                                  | 0; меньше `SHUTDOWN_TIMEOUT_MS`                        |
-| `envDatabase`    | `DATABASE_URL`                                       | обязателен                                             |
-| `envDatabase`    | `DB_POOL_MAX`                                        | 10                                                     |
-| `envDatabase`    | `DB_POOL_ACQUIRE_TIMEOUT_MS`                         | 5000 (минимум 1)                                       |
-| `envMessaging`   | `RABBITMQ_URL`                                       | обязателен                                             |
-| `envMessaging`   | `RABBITMQ_RETRY_SECONDS`                             | 30 (целое ≥ 1)                                         |
-| `envRedis`       | `REDIS_URL`                                          | обязателен                                             |
-| `envSentry`      | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | пусто → `null`                                         |
-| `envCrypto`      | `ENCRYPTION_KEYS`                                    | JSON `[{version, secret}]`, секрет base64url ≥ 32 байт |
-| `envServiceUrls` | `SERVICE_URLS`                                       | JSON `{имя: http(s)-URL}`, названные имена обязательны |
+| Фрагмент         | Ключ                                                 | Умолчание                                                                       |
+| ---------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `envBase`        | `NODE_ENV`                                           | `production` (`development`, `test`)                                            |
+| `envBase`        | `LOG_LEVEL`                                          | `info` (`fatal` … `trace`, `silent`)                                            |
+| `envBase`        | `PORT`                                               | 3000                                                                            |
+| `envBase`        | `METRICS_PORT`                                       | 9100; не равен `PORT`, кроме 0                                                  |
+| `envBase`        | `REPLICA_ID`                                         | `hostname()`                                                                    |
+| `envBase`        | `SHUTDOWN_TIMEOUT_MS`                                | 10000                                                                           |
+| `envBase`        | `SHUTDOWN_DRAIN_MS`                                  | 0; меньше `SHUTDOWN_TIMEOUT_MS`                                                 |
+| `envDatabase`    | `DATABASE_URL`                                       | обязателен                                                                      |
+| `envDatabase`    | `DB_POOL_MAX`                                        | 10                                                                              |
+| `envDatabase`    | `DB_POOL_ACQUIRE_TIMEOUT_MS`                         | 5000 (минимум 1)                                                                |
+| `envMessaging`   | `RABBITMQ_URL`                                       | обязателен                                                                      |
+| `envMessaging`   | `RABBITMQ_RETRY_SECONDS`                             | 30 (целое ≥ 1); только TTL `<svc>.retry`                                        |
+| `envMessaging`   | `RABBITMQ_RECONNECT_SECONDS`                         | 5 (целое ≥ 1); пауза переподключения и повтора канала, срок первого подключения |
+| `envRedis`       | `REDIS_URL`                                          | обязателен                                                                      |
+| `envSentry`      | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | пусто → `null`                                                                  |
+| `envCrypto`      | `ENCRYPTION_KEYS`                                    | JSON `[{version, secret}]`, секрет base64url ≥ 32 байт                          |
+| `envServiceUrls` | `SERVICE_URLS`                                       | JSON `{имя: http(s)-URL}`, названные имена обязательны                          |
 
 Правила:
 

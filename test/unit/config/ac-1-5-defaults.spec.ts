@@ -60,6 +60,16 @@ describe('UC-1: умолчания окружения', () => {
         ).toEqual(['RABBITMQ_RETRY_SECONDS']);
     });
 
+    it('§3.1: RABBITMQ_RECONNECT_SECONDS — умолчание 5, 0 → ошибка (v1.25)', () => {
+        const messaging = defineEnv({ ...envMessaging });
+        const url = { RABBITMQ_URL: 'amqp://rabbit:5672' };
+
+        expect(parseEnv(messaging, url).RABBITMQ_RECONNECT_SECONDS).toBe(5);
+        expect(
+            errorOf(() => parseEnv(messaging, { ...url, RABBITMQ_RECONNECT_SECONDS: '0' })).keys,
+        ).toEqual(['RABBITMQ_RECONNECT_SECONDS']);
+    });
+
     it('§3.1: LOG_LEVEL вне списка → ошибка; NODE_ENV вне списка → ошибка', () => {
         expect(errorOf(() => parseEnv(schema, { ...DB, LOG_LEVEL: 'verbose' })).keys).toEqual([
             'LOG_LEVEL',

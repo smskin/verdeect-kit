@@ -9,7 +9,7 @@ export const DLQ_REASON_HEADER = 'x-dlq-reason';
 export const CONSUMER_PREFETCH = 10;
 /** Повторов по `x-death`, затем DLQ (§3.4). */
 export const MAX_RETRIES = 5;
-/** Heartbeat, с; пауза переподключения — RABBITMQ_RETRY_SECONDS. */
+/** Heartbeat, с; пауза переподключения — RABBITMQ_RECONNECT_SECONDS. */
 export const HEARTBEAT_SECONDS = 10;
 /** Ожидание ответа брокера на закрытие канала, мс. */
 export const CHANNEL_CLOSE_TIMEOUT_MS = 2_000;

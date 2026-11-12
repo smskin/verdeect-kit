@@ -52,6 +52,7 @@ function startService(overrides: Record<string, string> = {}): Service {
                 DATABASE_URL: databaseUrl ?? '',
                 RABBITMQ_URL: workerScope().rabbitmq.url,
                 RABBITMQ_RETRY_SECONDS: '1',
+                RABBITMQ_RECONNECT_SECONDS: '1',
                 REDIS_URL: inject('kitRedisUrl') ?? '',
                 AUTH_ISSUER: 'https://id.verdeect.ru',
                 AUTH_JWKS_URI: 'http://127.0.0.1:9/jwks',

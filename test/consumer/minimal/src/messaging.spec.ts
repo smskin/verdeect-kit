@@ -33,6 +33,7 @@ describe('UC-5: сообщения потребителя', () => {
         vi.stubEnv('RABBITMQ_URL', workerScope().rabbitmq.url);
         vi.stubEnv('REDIS_URL', inject('kitRedisUrl') ?? '');
         vi.stubEnv('RABBITMQ_RETRY_SECONDS', '1');
+        vi.stubEnv('RABBITMQ_RECONNECT_SECONDS', '1');
         vi.stubEnv('AUTH_ISSUER', 'https://id.verdeect.ru');
         vi.stubEnv('AUTH_JWKS_URI', 'http://127.0.0.1:9/jwks');
         vi.stubEnv('AUTH_RESOURCE', 'https://api.verdeect.ru');

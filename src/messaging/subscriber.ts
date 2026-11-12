@@ -74,8 +74,10 @@ export interface KitSubscriberDeps {
     readonly db?: Db;
     /** Соединение; `null` — режим CLI (`listen: false`): обработчики принимаются, подписчик не запускается. */
     readonly connection: RabbitConnection | null;
-    /** TTL `.retry` и пауза повтора, с. */
+    /** TTL `.retry`, с (RABBITMQ_RETRY_SECONDS). */
     readonly retrySeconds: number;
+    /** Срок ожидания первого подключения и настройки канала, с (RABBITMQ_RECONNECT_SECONDS). */
+    readonly reconnectSeconds: number;
     /** Метрики. */
     readonly metrics?: KitMetrics;
     /** Логгер. */
@@ -241,14 +243,14 @@ export class KitSubscriber {
     }
 
     /**
-     * Первый исход подключения и настройки канала, не дольше RABBITMQ_RETRY_SECONDS (П8): другой TTL `.retry` —
+     * Первый исход подключения и настройки канала, не дольше RABBITMQ_RECONNECT_SECONDS (П8, v1.25): другой TTL `.retry` —
      * отказ запуска; брокер недоступен или другая ошибка стадии — запуск продолжается (`/health` rabbitmq down).
      */
     private async awaitStartupOutcome(): Promise<void> {
-        const { retrySeconds } = this.deps;
+        const { reconnectSeconds } = this.deps;
         const connection = this.connectionOf();
         const limit = (): Promise<'timeout'> =>
-            sleep(retrySeconds * 1000, 'timeout' as const, { ref: false });
+            sleep(reconnectSeconds * 1000, 'timeout' as const, { ref: false });
         const attempt = await Promise.race([connection.firstAttempt(), limit()]);
         if (attempt !== 'connected') {
             return;

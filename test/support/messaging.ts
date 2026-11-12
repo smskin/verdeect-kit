@@ -36,13 +36,17 @@ import { adminQuery, appUrl, createDbApp } from './database.js';
 /** Схема окружения стенда. */
 export const messagingEnvSchema = defineEnv({ ...envBase, ...envDatabase, ...envMessaging });
 
-/** Окружение стенда: vhost воркера, RABBITMQ_RETRY_SECONDS = 1 (AC-5.7 «в тесте 1»), реплика kit-1. */
+/**
+ * Окружение стенда: vhost воркера, RABBITMQ_RETRY_SECONDS = 1 (AC-5.7 «в тесте 1»), RABBITMQ_RECONNECT_SECONDS = 1
+ * (короткое переподключение, §3.8 v1.25), реплика kit-1.
+ */
 export function messagingEnv(overrides: Record<string, string> = {}): Record<string, string> {
     return {
         LOG_LEVEL: 'silent',
         DATABASE_URL: appUrl(),
         RABBITMQ_URL: workerScope().rabbitmq.url,
         RABBITMQ_RETRY_SECONDS: '1',
+        RABBITMQ_RECONNECT_SECONDS: '1',
         SHUTDOWN_TIMEOUT_MS: '10000',
         REPLICA_ID: 'kit-1',
         ...overrides,
