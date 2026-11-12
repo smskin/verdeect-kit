@@ -4,23 +4,34 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.6] - 2026-11-13
+
+Находки переходов сервисов (PRD v1.25): BFF-67, OR-145, PL-50; К23 Orchestrator (keyset); усиление тестов по аудиту KT-61.
+
+### Changed
+
+- **Модули пакета требуют ядро (ломающее для rc):** `KitDatabaseModule`, `KitMessagingModule`, `KitRedisModule`, `KitIdempotencyModule` и `RateLimiter` без `KitCoreModule`/`createHttpApp` — ошибка при сборке контекста «подключите `KitCoreModule.forRoot` или запускайте через `bootstrapService`/`createHttpApp`» (раньше пробы `/health` и метрики молча отключались). Как перейти: свои контексты без HTTP (CLI, `NestFactory.createApplicationContext` в тестах) — добавить `KitCoreModule.forRoot({service, entry: 'cli'})`.
+- **Метрики outbox без цикла (ломающее для rc):** `verdeect_outbox_pending` и `verdeect_outbox_lag_seconds` считаются при запросе `/metrics` (`collect()`): запрос к БД со сроком 1 с, при сбое или превышении срока — последнее значение и `debug` не чаще раза в минуту; цикл раз в секунду удалён; при `listen: false` не считаются. Тесты, которые ждали обновления метрик без запроса, — читайте метрику (`get()` или `/metrics`).
+- **Переподключение к брокеру — `RABBITMQ_RECONNECT_SECONDS`** (умолч. 5): пауза переподключения, повтор настройки канала и срок ожидания первого подключения; `RABBITMQ_RETRY_SECONDS` — только TTL `<svc>.retry`. В тестах сервиса — короткое значение (`RABBITMQ_RECONNECT_SECONDS=1`).
+- **`idempotencyPurgeSql` — новая миграция сервиса:** текст начинается с `DROP FUNCTION IF EXISTS <svc>.idempotency_purge(integer)` (замена функции сервиса с тем же именем и другим именем параметра — без 42P13), права `<svc>_directory` сужены до `DELETE` и `SELECT (ctid, created_at)` (`REVOKE SELECT` на таблицу) — ответы и ключи запросов роль не видит. Как перейти: `drizzle-kit generate --custom`, в файл — `idempotencyPurgeSql(schema)`.
+- `assertRepoConventions`: файлы `env_file:` — только отслеживаемые git (`git ls-files`; вне git — все); compose-файл со своим буквальным `name:`, отличным от имени базового, — отдельный проект, с `compose.yml` не сливается; `REPLICA_ID: ${REPLICA_ID:-}` — по-прежнему нарушение.
+- `KitMessagingModule`: таблица `subscriber.inbox` при `dedupe: 'none'` модуля разрешена — для обработчиков с `{dedupe: 'inbox'}`.
+- Тесты (KT-62): OpenAPI без zod-pipe и CLI против эталона, topic-права при пересоздании exchange, relay после `ACCESS_REFUSED`, граница окна warn лимитера, очистка внешнего стека, `createTestApp({http})`, обрыв миграций на запросе и `COMMIT`, код выхода CLI процессом, `failStartup` с текстом и событием, `securityHeaders`, `Retry-After` у `PLAN_LIMIT`, `--admin`/`--publishes`.
+
 ### Added
 
+- `/observability`: `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})` — ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер; `cli` — stderr, без сервера метрик и `/health`), `createHttpApp` подключает его сам; типы `KitCoreModuleOptions`, `KitCoreLoggerOptions`. README, «CLI сервиса».
+- `/messaging`: `KitMessagingModule.forRoot({listen: false})` — режим CLI: без соединения с брокером, подписчика, relay и очистки; `OutboxStore.add` пишет строки, `subscriber.on` принимается и не выполняется. `OutboxStore.awaitPublished(ids | {traceId}, {timeoutMs})` → `{published, pending}`, по сроку без исключения.
+- `/messaging`: `subscriber.on(Event, handler, {dedupe})` — опция обработчика переопределяет `dedupe` модуля: `'none'` — без inbox и транзакции пакета, `(event, null)`; `'inbox'` без таблицы inbox — отказ запуска.
+- `/config`: `RABBITMQ_RECONNECT_SECONDS` в `envMessaging`.
 - `/http`: `errorBody(code, details?)` — тело ошибки `{error: {code, message, details}}` с текстом из словаря.
+- `/http`: `cursorTimestamp(col)` — ключ keyset-курсора по `timestamptz` строкой ISO UTC с микросекундами из БД.
 - `/testing`: `createTestApp({logger, redaction, extraProviders, env})` — те же `logger`/`redaction`, что у `bootstrapService`; `extraProviders` видны модулям сервиса; `env` объектом — `process.env` не читается и не меняется; `overrides` — ещё `{provide, useClass}` и `{provide, useFactory, inject?}` (тип `KitTestOverride`).
 - `/testing`: `waitForBrokerReady(app, {timeoutMs?})` — ожидание пробы `rabbitmq: up` после рестарта брокера.
-- `/http`: `cursorTimestamp(col)` — ключ keyset-курсора по `timestamptz` строкой ISO UTC с микросекундами из БД.
-- `/observability`: `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})` — ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер), `createHttpApp` подключает его сам; типы `KitCoreModuleOptions`, `KitCoreLoggerOptions`.
 
 ### Fixed
 
 - `/http` keyset (К23, Orchestrator): курсор по времени терял микросекунды `timestamptz` (JS `Date` — миллисекунды), строки одной миллисекунды пропускались или повторялись между страницами. `afterCursor` сравнивает столбец времени с полным значением курсора (`::timestamptz`); ключ по времени — `cursorTimestamp(col)` (README, «Точность курсора по времени»). Формат курсора не изменился; курсор с миллисекундами (`toISOString()`) по-прежнему принимается, но точен только с `cursorTimestamp`.
-
-### Changed
-
-- `assertRepoConventions`: файлы `env_file:` — только отслеживаемые git (`git ls-files`; вне git — все); compose-файл со своим буквальным `name:`, отличным от имени базового, — отдельный проект, с `compose.yml` не сливается.
-- **`idempotencyPurgeSql` — новая миграция сервиса:** текст начинается с `DROP FUNCTION IF EXISTS <svc>.idempotency_purge(integer)` (замена функции сервиса с тем же именем и другим именем параметра — без 42P13), права `<svc>_directory` сужены до `DELETE` и `SELECT (ctid, created_at)` (`REVOKE SELECT` на таблицу) — ответы и ключи запросов роль не видит. Как перейти: `drizzle-kit generate --custom`, в файл — `idempotencyPurgeSql(schema)`.
-- **Модули пакета требуют ядро:** `KitDatabaseModule`, `KitMessagingModule`, `KitRedisModule`, `KitIdempotencyModule` и `RateLimiter` без `KitCoreModule`/`createHttpApp` — ошибка при сборке контекста «подключите `KitCoreModule.forRoot` или запускайте через `bootstrapService`/`createHttpApp`» (раньше пробы `/health` и метрики молча отключались).
 
 ## [1.0.0-rc.5] - 2026-11-12
 
