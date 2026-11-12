@@ -79,10 +79,10 @@ describe('UC-1: БД потребителя', () => {
         }
     });
 
-    it('AC-9.1: 0001_force_grants_purge.sql содержит idempotencyPurgeSql(consumer) без изменений', () => {
-        const file = readdirSync(DRIZZLE).find((name) => name.startsWith('0001_'));
+    it('AC-9.1: 0005_idempotency_purge_v125.sql (поверх 0001) содержит idempotencyPurgeSql(consumer) без изменений', () => {
+        const file = readdirSync(DRIZZLE).find((name) => name.startsWith('0005_'));
 
-        expect(file).toBe('0001_force_grants_purge.sql');
+        expect(file).toBe('0005_idempotency_purge_v125.sql');
         expect(readFileSync(`${DRIZZLE}/${String(file)}`, 'utf8')).toContain(
             idempotencyPurgeSql(consumer),
         );
