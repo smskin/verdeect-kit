@@ -2,8 +2,9 @@
 // http.bodyLimit; O — redaction (одно правило для лога и GlitchTip); v1.21 — http.configureFastify (onRoute bodyLimit маршрута,
 // ошибка → failStartup). nestjs-pino держит один pino-http на процесс,
 // поэтому файл запускает все приложения с одной конфигурацией роли; умолчания — ac-3-12-role-defaults.spec.ts.
+import { createServer, connect } from 'node:net';
 import * as Sentry from '@sentry/nestjs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { bootstrapService } from '../../../src/http/index.js';
 import type { KitRedaction } from '../../../src/observability/redaction.js';
 import { expectProblem } from '../../../src/testing/index.js';
@@ -18,6 +19,28 @@ const redaction: KitRedaction = { sensitiveKeys: ['projectSecret'] };
 const TRACE = '0af7651916cd43dd8448eb211c80319c';
 
 let delivered: DeliveredEvent[];
+
+/** Свободный порт: слушать 0, запомнить, закрыть. */
+async function freePort(): Promise<number> {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    return typeof address === 'object' && address !== null ? address.port : 0;
+}
+
+/** Открыт ли порт: соединение принято — true, ECONNREFUSED — false. */
+function connects(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = connect(port, '127.0.0.1');
+        socket.once('connect', () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once('error', () => resolve(false));
+    });
+}
 
 beforeAll(() => {
     delivered = initFakeSentry({ redaction }).delivered;
@@ -136,7 +159,10 @@ describe('UC-3: configureFastify', () => {
         expect((await app.inject({ method: 'POST', url: '/echo', payload })).statusCode).toBe(200);
     });
 
-    it('AC-3.12: ошибка в configureFastify → failStartup (fatal, exit 1), порт не открыт', async () => {
+    it('AC-3.12: ошибка в configureFastify → failStartup: fatal STARTUP_FAILED с текстом ошибки, событие GlitchTip, exit 1, порт не открыт', async () => {
+        const port = await freePort();
+        vi.stubEnv('PORT', String(port));
+        const before = delivered.length;
         const exit = await expectExit(
             bootstrapService({
                 module: RoleModule,
@@ -152,9 +178,36 @@ describe('UC-3: configureFastify', () => {
             }),
         );
         const records = stand.records();
+        const fatal = records.filter((record) => record['level'] === 60);
 
         expect(exit.code).toBe(1);
-        expect(records.some((record) => record['level'] === 60)).toBe(true);
+        expect(fatal).toHaveLength(1);
+        expect(fatal[0]).toMatchObject({ code: 'STARTUP_FAILED', msg: 'Отказ запуска' });
+        expect(JSON.stringify(fatal[0]?.['err'])).toContain('configureFastify сломан');
+        await Sentry.flush(1000);
+        expect(delivered.slice(before).map((event) => event.tags['code'])).toEqual([
+            'STARTUP_FAILED',
+        ]);
         expect(records.some((record) => record['msg'] === 'сервис слушает')).toBe(false);
+        expect(await connects(port)).toBe(false);
+    });
+});
+
+describe('UC-3: securityHeaders через bootstrapService', () => {
+    it("AC-3.5: bootstrapService({http: {securityHeaders: {referrerPolicy: 'same-origin'}}}) — политика доходит до ответов", async () => {
+        const app = stand.track(
+            await bootstrapService({
+                module: RoleModule,
+                service: 'probe',
+                env: probeEnv,
+                logger: { trustTraceparent: false, quietRoutes: ['/probe'] },
+                http: { securityHeaders: { referrerPolicy: 'same-origin' } },
+                redaction,
+            }),
+        );
+        const res = await app.inject({ method: 'GET', url: '/ok' });
+
+        expect(res.headers['referrer-policy']).toBe('same-origin');
+        expect(res.headers['x-content-type-options']).toBe('nosniff');
     });
 });

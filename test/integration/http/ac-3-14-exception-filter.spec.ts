@@ -1,7 +1,7 @@
 // AC-3.14 (UC-4, prd.md §3.5 v1.21): exceptionFilter — фильтр сервиса вместо KitExceptionFilter в APP_FILTER. Через него
 // идут ошибка маршрута Nest, 404 ROUTE_NOT_FOUND и ошибка хука Fastify (configureFastify); свой случай — свой ответ как есть,
 // остальное — делегирование в kit.catch: 429 + Retry-After, 413, 500 и ровно одно событие GlitchTip. v1.22: тот же объект
-// опций http в createTestApp — фильтр сервиса работает так же.
+// опций http в createTestApp — фильтр сервиса работает так же: все сценарии — на обеих сборках (KT-62).
 import 'reflect-metadata';
 import {
     Body,
@@ -20,7 +20,12 @@ import * as Sentry from '@sentry/nestjs';
 import type { FastifyReply } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defineEnv, envBase, KitConfigModule } from '../../../src/config/index.js';
-import { createHttpApp, DomainError, KitExceptionFilter } from '../../../src/http/index.js';
+import {
+    createHttpApp,
+    DomainError,
+    KitExceptionFilter,
+    type KitHttpOptions,
+} from '../../../src/http/index.js';
 import { createTestApp, expectProblem } from '../../../src/testing/index.js';
 import { initFakeSentry, type DeliveredEvent } from '../../support/fake-sentry.js';
 
@@ -89,32 +94,41 @@ afterAll(async () => {
     await Sentry.close(1000);
 });
 
-beforeEach(async () => {
-    vi.stubEnv('LOG_LEVEL', 'silent');
-    vi.stubEnv('SHUTDOWN_DRAIN_MS', '0');
-    seen.splice(0);
-    delivered.splice(0);
-    app = await createHttpApp({
-        module: FilterModule,
-        service: 'probe',
-        bodyLimit: 64,
-        exceptionFilter: ServiceFilter,
-        configureFastify: (fastify) => {
-            fastify.addHook('onRequest', async (request) => {
-                if (request.headers['x-hook-boom'] !== undefined) {
-                    throw new TeapotError('ошибка хука');
-                }
-            });
-        },
+/** Один объект опций http — как в main.ts сервиса и в его тестах. */
+const http: KitHttpOptions = {
+    bodyLimit: 64,
+    exceptionFilter: ServiceFilter,
+    configureFastify: (fastify) => {
+        fastify.addHook('onRequest', async (request) => {
+            if (request.headers['x-hook-boom'] !== undefined) {
+                throw new TeapotError('ошибка хука');
+            }
+        });
+    },
+};
+
+const BUILDS = [
+    ['createHttpApp', () => createHttpApp({ module: FilterModule, service: 'probe', ...http })],
+    [
+        'createTestApp({http})',
+        () => createTestApp({ module: FilterModule, service: 'probe', http }),
+    ],
+] as const;
+
+describe.each(BUILDS)('UC-4: фильтр ошибок сервиса — %s', (_name, build) => {
+    beforeEach(async () => {
+        vi.stubEnv('LOG_LEVEL', 'silent');
+        vi.stubEnv('SHUTDOWN_DRAIN_MS', '0');
+        app = await build();
+        seen.splice(0);
+        delivered.splice(0);
     });
-});
 
-afterEach(async () => {
-    await app.close();
-    vi.unstubAllEnvs();
-});
+    afterEach(async () => {
+        await app.close();
+        vi.unstubAllEnvs();
+    });
 
-describe('UC-4: фильтр ошибок сервиса', () => {
     it('AC-3.14: ошибка маршрута — фильтр сервиса, свой ответ 418 как есть', async () => {
         const res = await app.inject({ method: 'GET', url: '/teapot' });
 
@@ -148,6 +162,7 @@ describe('UC-4: фильтр ошибок сервиса', () => {
 
         expectProblem(res, { status: 429, code: 'RATE_LIMITED' });
         expect(res.headers['retry-after']).toBe('7');
+        expect(seen).toEqual(['DomainError']);
     });
 
     it('AC-3.14: делегирование — тело больше лимита → 413 PAYLOAD_TOO_LARGE', async () => {
@@ -158,7 +173,7 @@ describe('UC-4: фильтр ошибок сервиса', () => {
         });
 
         expectProblem(res, { status: 413, code: 'PAYLOAD_TOO_LARGE' });
-        expect(seen).toHaveLength(1);
+        expect(seen).toEqual(['HttpException']);
     });
 
     it('AC-3.14: делегирование необработанной ошибки → 500 INTERNAL_ERROR и ровно одно событие GlitchTip', async () => {
@@ -169,28 +184,5 @@ describe('UC-4: фильтр ошибок сервиса', () => {
         expect(res.body).not.toContain('MARK_SECRET');
         expect(seen).toEqual(['Error']);
         expect(delivered).toHaveLength(1);
-    });
-});
-
-describe('UC-4: фильтр ошибок сервиса в createTestApp', () => {
-    it('AC-3.14: createTestApp({http: {exceptionFilter}}) — фильтр сервиса ловит ошибку маршрута (свой ответ 418) и делегирует в kit.catch (429 + Retry-After)', async () => {
-        const testApp = await createTestApp({
-            module: FilterModule,
-            service: 'probe',
-            http: { exceptionFilter: ServiceFilter },
-        });
-        try {
-            seen.splice(0);
-            const own = await testApp.inject({ method: 'GET', url: '/teapot' });
-            const delegated = await testApp.inject({ method: 'GET', url: '/limited' });
-
-            expect(own.statusCode).toBe(418);
-            expect(own.json()).toEqual({ own: true });
-            expectProblem(delegated, { status: 429, code: 'RATE_LIMITED' });
-            expect(delegated.headers['retry-after']).toBe('7');
-            expect(seen).toEqual(['TeapotError', 'DomainError']);
-        } finally {
-            await testApp.close();
-        }
     });
 });
