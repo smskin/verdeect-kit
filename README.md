@@ -568,6 +568,29 @@ export default startTestStack({
 
 При `postgres: true` `startTestStack` готовит БД как в production: `prepareDatabase` на шаблоне `<svc>_template`, миграции папки `migrations` (путь от корня проекта; без `postgres` — `TypeError`), затем копия `<svc>`. При `rabbitmq: true` — RabbitMQ с `definitions.json` сервиса (тот же `buildDefinitions`, что CLI) и vhost с пользователем по правам сервиса на каждый воркер Vitest (`<svc>-test-<run>-w<N>`); сервис, который публикует события, передаёт свои префиксы — `publishes: ['identity.']` (как `--publishes` CLI; без них пользователь воркера в `verdeect.events` не публикует, `publishTestEvent` ходит от администратора vhost и не ограничивается; `publishes` без `rabbitmq: true` или с префиксом вне `^[a-z][a-z0-9.]*\.$` — `TypeError` при вызове `startTestStack`); teardown удаляет их, остатки прошлых прогонов удаляются при старте. При `redis: true` — Redis с aclfile (тот же генератор, что CLI `redis acl`): пользователь сервиса с правами `~<svc>:* &<svc>:*` — `kitRedisUrl`, администратор теста — `kitRedisAdminUrl`; пользователей на воркер нет — воркеры разделены префиксом `workerScope().redisPrefix`.
 
+**Внешние сервисы (CI без Docker).** Значение флага — `true` (контейнер `TEST_IMAGES`) или адреса уже поднятого сервиса; выбирает сервис, своих переменных окружения пакет не читает:
+
+```ts
+export default startTestStack({
+    service: 'orchestrator',
+    postgres: env.TEST_DATABASE_ADMIN_URL ? { adminUrl: env.TEST_DATABASE_ADMIN_URL } : true,
+    rabbitmq: env.TEST_RABBITMQ_URL
+        ? { amqpUrl: env.TEST_RABBITMQ_URL, managementUrl: env.TEST_RABBITMQ_MANAGEMENT_URL }
+        : true,
+    redis: env.TEST_REDIS_URL ? { adminUrl: env.TEST_REDIS_URL } : true,
+    minio: env.TEST_S3_ENDPOINT
+        ? { endpoint: env.TEST_S3_ENDPOINT, accessKey: env.TEST_S3_KEY, secretKey: env.TEST_S3_SECRET }
+        : true,
+});
+```
+
+- Права: PostgreSQL — суперпользователь; RabbitMQ — management plugin и тег `administrator`; Redis — право `+acl` (пользователь сервиса создаётся `ACL SETUSER <svc>`, в teardown — `ACL DELUSER`, `user default off` не применяется); MinIO — с KMS.
+- Ключи `provide` те же; `testcontainers` загружается только при флаге `true` (наличие пакета по-прежнему проверяется при импорте `/testing`).
+- База-шаблон `<svc>_template` создаётся, если её нет, и удаляется в teardown; на брокере удаляются только vhost и пользователи своего прогона `<svc>-test-<runId>-*`.
+- **Только одноразовые service-контейнеры CI.** Общие долгоживущие серверы не поддерживаются: роли PostgreSQL и пользователь Redis `<svc>` общие для всего сервера, параллельные job одного сервиса на одном сервере мешают друг другу.
+
+**MinIO** (`minio: true`) поднимается с KMS (статический ключ `MINIO_KMS_SECRET_KEY`, случайный на прогон): `PutObject` с `ServerSideEncryption: AES256` работает. Бакеты создаёт сервис своим клиентом S3; внешний MinIO запускайте с KMS.
+
 - `createScratchDatabase()` — пустая мигрированная БД из шаблона за доли секунды (`{name, url, ownerUrl, adminUrl, drop()}`); тест сам вызывает `drop()`.
 - `workerScope().rabbitmq` — `{vhost, url}` vhost воркера: `url` — значение `RABBITMQ_URL` тестов.
 - `workerScope().redisPrefix` — префикс Redis воркера `<svc>:w<VITEST_POOL_ID>:`; приложение теста получает его через `createTestApp({…, overrides: [redisWorkerOverride()]})`, `REDIS_URL` — `inject('kitRedisUrl')`.
@@ -830,7 +853,13 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 - `KitTestResponse` — тип ответа `{statusCode, json()}`.
 - `expectMatchesApi` — `expectMatchesApi(res, [Controller, 'method'])`: ответ по схеме `@Api`.
 - `TEST_IMAGES` — образы тестов и compose сервисов.
-- `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон, адреса через `provide`; флаги `postgres`, `migrations`, `mailpit`, `minio`, `rabbitmq`, `publishes`, `redis?`, `outboxEvents`.
+- `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон (или адреса внешних сервисов), адреса через `provide`; флаги `postgres`, `migrations`, `mailpit`, `minio`, `rabbitmq`, `publishes`, `redis?`, `outboxEvents`.
+- `TestStackOptions` — тип опций `startTestStack`: флаг сервиса — `true` или адреса внешнего сервиса.
+- `KitExternalPostgres` — `{adminUrl}` уже поднятого PostgreSQL (суперпользователь).
+- `KitExternalRabbitmq` — `{amqpUrl, managementUrl}` уже поднятого RabbitMQ (тег `administrator`).
+- `KitExternalRedis` — `{adminUrl}` уже поднятого Redis (право `+acl`).
+- `KitExternalMinio` — `{endpoint, accessKey, secretKey}` уже поднятого MinIO (с KMS).
+- `KitExternalMailpit` — `{smtpUrl, httpUrl}` уже поднятого mailpit.
 - `assertRepoConventions` — проверка репозитория сервиса по правилам выше.
 - `tcpProxy` — запущенный TCP-прокси к цели.
 - `TcpProxy` — тип прокси: `url`, `break`, `restore`, `blackhole`, `freeze`, `blackholeOn`, `delayOn`, `close`.

@@ -1,9 +1,11 @@
 // AC-1.12 (UC-14): startTestStack поднимает mailpit и minio из TEST_IMAGES только по флагам, адреса — через provide
-// (prd.md §3.8, E1). startTestStack вызывается напрямую с подставным project.
+// (prd.md §3.8, E1). startTestStack вызывается напрямую с подставным project. v1.23: MinIO с KMS — PutObject с
+// ServerSideEncryption: AES256 в бакет, созданный тестом, проходит, объект читается.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TEST_IMAGES } from '../../../src/testing/images.js';
 import { startTestStack } from '../../../src/testing/start-test-stack.js';
 import { runningImages } from '../../support/docker.js';
+import { s3Request } from '../../support/s3.js';
 
 const SERVICE = 'kit-mail-s3';
 
@@ -50,6 +52,25 @@ describe('UC-14: mailpit и minio тестового контура', () => {
         expect(provided('kitS3AccessKey')).not.toBe('');
         expect(provided('kitS3SecretKey')).not.toBe('');
         expect(project.provided.has('kitPostgresUrl')).toBe(false);
+    });
+
+    it('AC-1.12: PutObject с ServerSideEncryption: AES256 в бакет, созданный тестом, проходит; объект читается', async () => {
+        const access = {
+            endpoint: provided('kitS3Endpoint'),
+            accessKey: provided('kitS3AccessKey'),
+            secretKey: provided('kitS3SecretKey'),
+        };
+        expect((await s3Request(access, 'PUT', '/ac112')).status).toBe(200);
+
+        const put = await s3Request(access, 'PUT', '/ac112/note.txt', Buffer.from('шифр'), {
+            'x-amz-server-side-encryption': 'AES256',
+        });
+        expect(put.status, await put.clone().text()).toBe(200);
+        expect(put.headers.get('x-amz-server-side-encryption')).toBe('AES256');
+
+        const get = await s3Request(access, 'GET', '/ac112/note.txt');
+        expect(get.status).toBe(200);
+        expect(await get.text()).toBe('шифр');
     });
 
     it('AC-1.12: без флагов mailpit/minio не стартуют', async () => {

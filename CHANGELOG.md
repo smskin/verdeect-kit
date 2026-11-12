@@ -8,14 +8,17 @@
 
 - `/http`: `DomainError(code, details?, {message?, headers?, status?, cause?})` — текст случая, заголовки ответа (имена — к нижнему регистру; `set-cookie`, заголовки безопасности и `retry-after` у `RATE_LIMITED` — `TypeError`), статус из объявленных; тип `KitDomainErrorOptions`.
 - `/redis`: `KitRedisModule.forRoot({critical})` — проба `redis` критичная: Redis недоступен → `/health` 503.
+- `/testing`: флаги `startTestStack` — `true` или адреса уже поднятых сервисов (`postgres: {adminUrl}`, `rabbitmq: {amqpUrl, managementUrl}`, `redis: {adminUrl}`, `minio: {endpoint, accessKey, secretKey}`, `mailpit: {smtpUrl, httpUrl}`) для одноразовых service-контейнеров CI; `testcontainers` загружается только при `true`; на внешнем Redis — `ACL SETUSER`/`DELUSER`, на брокере — очистка только своего прогона; типы `TestStackOptions`, `KitExternalPostgres`, `KitExternalRabbitmq`, `KitExternalRedis`, `KitExternalMinio`, `KitExternalMailpit`.
 
 ### Changed
 
 - `/http`: запись словаря `defineErrors` — `{status: number | number[], message}`: код с несколькими статусами; в OpenAPI и `expectMatchesApi` — все объявленные статусы кода. Код с одним статусом работает как прежде.
+- `/testing`: база-шаблон `<svc>_template` создаётся, если её нет, и удаляется в teardown.
 
 ### Fixed
 
 - `/observability`: сериализатор `res` журнала доступа — только `statusCode`: заголовки ответа (`Location` с `state`, `Set-Cookie`) в лог не попадают.
+- `/testing`: MinIO стека — с KMS (`MINIO_KMS_SECRET_KEY`): `PutObject` с `ServerSideEncryption: AES256` проходит.
 
 ## [1.0.0-rc.3] - 2026-11-12
 

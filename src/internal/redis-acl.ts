@@ -26,6 +26,14 @@ export function redisPasswordHash(password: string): string {
 }
 
 /**
+ * Правила пользователя сервиса: `on #<hash> ~<svc>:* &<svc>:* +@all -@dangerous` — строка aclfile и аргументы
+ * `ACL SETUSER` внешнего Redis (§3.7, §3.8).
+ */
+export function redisUserRules(service: string, passwordHash: string): string[] {
+    return ['on', `#${passwordHash}`, `~${service}:*`, `&${service}:*`, '+@all', '-@dangerous'];
+}
+
+/**
  * aclfile: первая строка `user default off`, далее по строке на сервис
  * `user <svc> on #<hash> ~<svc>:* &<svc>:* +@all -@dangerous`, затем `extra` (администратор теста); `\n` в конце.
  */
@@ -39,9 +47,7 @@ export function buildRedisAclFile(options: {
         if (!REDIS_PASSWORD_HASH.test(passwordHash)) {
             throw new TypeError(`buildRedisAclFile: хеш пароля «${service}» — не 64 hex`);
         }
-        lines.push(
-            `user ${service} on #${passwordHash} ~${service}:* &${service}:* +@all -@dangerous`,
-        );
+        lines.push(`user ${service} ${redisUserRules(service, passwordHash).join(' ')}`);
     }
 
     return `${[...lines, ...(options.extra ?? [])].join('\n')}\n`;
