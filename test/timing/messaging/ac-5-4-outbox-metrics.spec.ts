@@ -41,16 +41,12 @@ describe('UC-5: метрики outbox при запросе /metrics', () => {
         await app.init();
         registry = app.get<Registry>(KIT_METRICS);
         for (const noteId of ['m1', 'm2']) {
-            await app
-                .get(Db)
-                .transaction(ctx('acme'), (tx) =>
-                    app
-                        .get(OutboxStore)
-                        .add(tx, TestNoteCreated, {
-                            subjectId: noteId,
-                            data: { noteId, title: 'm' },
-                        }),
-                );
+            await app.get(Db).transaction(ctx('acme'), (tx) =>
+                app.get(OutboxStore).add(tx, TestNoteCreated, {
+                    subjectId: noteId,
+                    data: { noteId, title: 'm' },
+                }),
+            );
         }
     });
 

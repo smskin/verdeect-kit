@@ -89,16 +89,12 @@ describe('UC-13: контекст CLI сервиса', () => {
     });
 
     async function add(noteId: string): Promise<string> {
-        return cli
-            .get(Db)
-            .transaction(ctx('acme'), (tx) =>
-                cli
-                    .get(OutboxStore)
-                    .add(tx, TestNoteCreated, {
-                        subjectId: noteId,
-                        data: { noteId, title: 'cli' },
-                    }),
-            );
+        return cli.get(Db).transaction(ctx('acme'), (tx) =>
+            cli.get(OutboxStore).add(tx, TestNoteCreated, {
+                subjectId: noteId,
+                data: { noteId, title: 'cli' },
+            }),
+        );
     }
 
     it('AC-2.15: listen: false — соединений с брокером нет, OutboxStore.add пишет строку, subscriber.on принят', async () => {

@@ -9,7 +9,9 @@ describe('UC-4: типы createTestApp', () => {
     it('AC-3.14: http — KitHttpOptions; bodyLimit верхнего уровня — ошибка типа', () => {
         expectTypeOf<NonNullable<KitTestAppOptions['http']>>().toEqualTypeOf<KitHttpOptions>();
         // v1.25: те же типы logger и redaction, что у bootstrapService.
-        expectTypeOf<NonNullable<KitTestAppOptions['logger']>>().toEqualTypeOf<KitCoreLoggerOptions>();
+        expectTypeOf<
+            NonNullable<KitTestAppOptions['logger']>
+        >().toEqualTypeOf<KitCoreLoggerOptions>();
         expectTypeOf<NonNullable<KitTestAppOptions['redaction']>>().toEqualTypeOf<KitRedaction>();
         expectTypeOf<KitTestAppOptions>().not.toHaveProperty('bodyLimit');
 

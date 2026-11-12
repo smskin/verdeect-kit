@@ -65,7 +65,11 @@ describe('UC-13: CLI потребителя', () => {
 
     it('AC-2.15: listen: false — соединений с брокером нет, OutboxStore.add пишет строку, awaitPublished по сроку без исключения', async () => {
         const id = await ctx.get(Db).transaction(
-            { tenant: workerScope().tenant, traceId: 'trace-cli', actor: { channel: 'system' } },
+            {
+                tenant: workerScope().tenant,
+                traceId: 'trace-cli',
+                actor: { channel: 'system' },
+            },
             (tx) =>
                 ctx.get(OutboxStore).add(tx, CompanyCreated, {
                     subjectId: 'cmp_cli',
