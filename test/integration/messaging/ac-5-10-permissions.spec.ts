@@ -1,14 +1,12 @@
 // AC-5.10 (UC-12): с правами definitions.json (buildDefinitions — тот же путь, что CLI) relay публикует, подписчик
 // получает, повтор и DLQ через exchange по умолчанию; объявление и чтение чужих очередей — ACCESS_REFUSED; exchange
 // только пассивно; публикация с ключом вне префикса publishes — ACCESS_REFUSED (prd.md §3.4 M3, v1.20; П13). Обобщение O or-119-rabbit-permissions.int-spec на vhost воркера.
-import amqp from 'amqplib';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db } from '../../../src/database/db.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
-import { workerScope } from '../../../src/testing/worker-scope.js';
 import * as fixtureSchema from '../../fixtures/database/schema.js';
-import { BrokerClient } from '../../support/broker.js';
+import { asWorker, BrokerClient } from '../../support/broker.js';
 import { adminQuery, ctx, truncateFixtures } from '../../support/database.js';
 import {
     TestConsumer,
@@ -19,31 +17,6 @@ import {
     resetQueues,
     waitUntil,
 } from '../../support/messaging.js';
-
-/** Операция пользователем воркера на одноразовом канале с подтверждениями; ошибка брокера — текст. */
-async function asWorker(work: (channel: amqp.ConfirmChannel) => Promise<unknown>): Promise<string> {
-    const connection = await amqp.connect(workerScope().rabbitmq.url);
-    connection.on('error', () => undefined);
-    try {
-        const channel = await connection.createConfirmChannel();
-        // Причина закрытия канала (ACCESS_REFUSED) приходит событием; отказ подтверждения — только «channel closed».
-        let closed: Error | undefined;
-        channel.on('error', (error: Error) => {
-            closed = error;
-        });
-        try {
-            await work(channel);
-        } catch (error) {
-            throw closed ?? error;
-        }
-
-        return 'ok';
-    } catch (error) {
-        return String((error as Error).message);
-    } finally {
-        await connection.close().catch(() => undefined);
-    }
-}
 
 describe('UC-12: права definitions.json', () => {
     let app: NestFastifyApplication;
