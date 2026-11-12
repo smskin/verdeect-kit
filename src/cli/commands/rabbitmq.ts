@@ -1,5 +1,5 @@
 // Команда verdeect-kit rabbitmq definitions (prd.md §3.4 M3, UC-12, AC-5.10): definitions.json для брокера — vhost,
-// пользователи сервисов с хешами паролей из RABBITMQ_PASSWORD_HASH_<SVC> (П3), права, exchange verdeect.events. Образец —
+// пользователи сервисов с хешами паролей из RABBITMQ_PASSWORD_HASH_<SVC> (П3), права, topic-права по --publishes, exchange verdeect.events. Образец —
 // commands/db.ts. Без amqplib, pg и messaging: только internal/rabbitmq-definitions динамическим import().
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -57,12 +57,20 @@ async function createLogger(env: RabbitmqCommandContext['env']): Promise<Logger>
     );
 }
 
-function parseOptions(args: readonly string[]): { services?: string; out?: string } {
+function parseOptions(args: readonly string[]): {
+    services?: string;
+    out?: string;
+    publishes?: string[];
+} {
     try {
         return parseArgs({
             args: [...args],
             strict: true,
-            options: { services: { type: 'string' }, out: { type: 'string' } },
+            options: {
+                services: { type: 'string' },
+                out: { type: 'string' },
+                publishes: { type: 'string', multiple: true },
+            },
         }).values;
     } catch (error) {
         throw new CommandError('USAGE', error instanceof Error ? error.message : String(error));
@@ -92,6 +100,39 @@ async function servicesOf(raw: string | undefined): Promise<string[]> {
     return services;
 }
 
+/** `--publishes <svc>=<префикс>[,<префикс>…]` (повторяемая) → префиксы по сервисам из `--services`. */
+async function publishesOf(
+    raw: readonly string[],
+    services: readonly string[],
+): Promise<Map<string, string[]>> {
+    const { PUBLISH_PREFIX_PATTERN } = await import('../../internal/rabbitmq-definitions.js');
+    const result = new Map<string, string[]>();
+    for (const item of raw) {
+        const at = item.indexOf('=');
+        const service = item.slice(0, at).trim();
+        if (at < 0 || !services.includes(service)) {
+            throw new CommandError(
+                'USAGE',
+                `--publishes: «${item}» — нужен <svc>=<префикс>[,<префикс>…] для сервиса из --services`,
+            );
+        }
+        const prefixes = item
+            .slice(at + 1)
+            .split(',')
+            .map((prefix) => prefix.trim());
+        const bad = prefixes.find((prefix) => !PUBLISH_PREFIX_PATTERN.test(prefix));
+        if (bad !== undefined) {
+            throw new CommandError(
+                'USAGE',
+                `--publishes: префикс «${bad}» вне формата ${PUBLISH_PREFIX_PATTERN.source}`,
+            );
+        }
+        result.set(service, [...new Set([...(result.get(service) ?? []), ...prefixes])]);
+    }
+
+    return result;
+}
+
 async function definitions(
     args: readonly string[],
     context: RabbitmqCommandContext,
@@ -99,6 +140,7 @@ async function definitions(
 ): Promise<void> {
     const values = parseOptions(args);
     const services = await servicesOf(values.services);
+    const publishes = await publishesOf(values.publishes ?? [], services);
     const { buildDefinitions, passwordHashKey } =
         await import('../../internal/rabbitmq-definitions.js');
     // Только имена ключей в ошибке: значения хешей не выводятся.
@@ -110,7 +152,7 @@ async function definitions(
             keys.push(key);
         }
 
-        return { service, passwordHash: hash };
+        return { service, passwordHash: hash, publishes: publishes.get(service) ?? [] };
     });
     if (keys.length > 0) {
         throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });

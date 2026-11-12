@@ -134,6 +134,8 @@ export class ManagedChannel {
     private readonly deliveries = new WeakMap<Message, number>();
     private generation = 0;
     private closed = false;
+    /** Ошибка брокера, закрывшего текущий канал amqplib (код и текст ответа); сброс при открытии нового. */
+    private brokerError: Error | null = null;
 
     constructor(
         readonly name: string,
@@ -145,6 +147,12 @@ export class ManagedChannel {
     /** Открыт новый канал amqplib (в начале setup, до переподписки потребителей). */
     markOpened(): void {
         this.generation += 1;
+        this.brokerError = null;
+    }
+
+    /** Брокер закрыл канал с ошибкой: событие 'error' amqplib приходит до отказа неподтверждённых публикаций. */
+    markBrokerError(error: Error): void {
+        this.brokerError = error;
     }
 
     /** Доставка пришла через текущий канал amqplib (или не отслеживается). */
@@ -154,14 +162,23 @@ export class ManagedChannel {
         return generation === undefined || generation === this.generation;
     }
 
-    /** Публикация (на confirm-канале — Promise подтверждения). */
+    /**
+     * Публикация (на confirm-канале — Promise подтверждения). Отказ из-за закрытия канала брокером несёт его причину
+     * (`ACCESS_REFUSED - …`), а не «channel closed».
+     */
     publish(
         exchange: string,
         routingKey: string,
         content: Buffer,
         options?: Options.Publish,
     ): Promise<boolean> {
-        return this.current.publish(exchange, routingKey, content, options);
+        return this.current
+            .publish(exchange, routingKey, content, options)
+            .catch((error: unknown) => {
+                // Только отказ закрытием канала amqplib; таймаут и прочие отказы — как есть.
+                const closed = error instanceof Error && error.message === 'channel closed';
+                throw closed && this.brokerError !== null ? this.brokerError : error;
+            });
     }
 
     /** Публикация в очередь. */
@@ -470,6 +487,7 @@ export class RabbitConnection {
                     const state = this.channels.get(name);
                     if (state !== undefined) {
                         state.lastBrokerError = err;
+                        state.channel.markBrokerError(err);
                     }
                     this.logger.debug(
                         { channel: name, error: err.message },

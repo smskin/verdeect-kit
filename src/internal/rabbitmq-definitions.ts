@@ -20,14 +20,38 @@ export interface RabbitPermissions {
     readonly read: string;
 }
 
-/** Права M3: свои очереди `<svc>`, `<svc>.retry`, `<svc>.dlq`, `<svc>.replica.<id>`; публикация в `verdeect.events`. */
-export function permissionsOf(service: string): RabbitPermissions {
+/** Префикс ключей публикации сервиса: оканчивается точкой (`identity.`, `audit.agent.`). */
+export const PUBLISH_PREFIX_PATTERN = /^[a-z][a-z0-9.]*\.$/;
+
+/**
+ * Права M3: свои очереди `<svc>`, `<svc>.retry`, `<svc>.dlq`, `<svc>.replica.<id>`; `write` на `verdeect.events` —
+ * только при непустом `publishes` (ключи ограничивает {@link topicPermissionsOf}).
+ */
+export function permissionsOf(
+    service: string,
+    publishes: readonly string[] = [],
+): RabbitPermissions {
     const own = `${service.replaceAll('-', '\\-')}(\\..*)?`;
+    const events = publishes.length > 0 ? 'verdeect\\.events|' : '';
 
     return {
         configure: `^${own}$`,
-        write: `^(verdeect\\.events|amq\\.default|${own})$`,
+        write: `^(${events}amq\\.default|${own})$`,
         read: `^(verdeect\\.events|${own})$`,
+    };
+}
+
+/** Topic-права на `verdeect.events`: `write` — ключи своих префиксов (без них — `^$`), `read` — `.*`. */
+export function topicPermissionsOf(publishes: readonly string[] = []): {
+    readonly write: string;
+    readonly read: string;
+} {
+    return {
+        write:
+            publishes.length === 0
+                ? '^$'
+                : `^(${publishes.map((prefix) => prefix.replaceAll('.', '\\.')).join('|')})`,
+        read: '.*',
     };
 }
 
@@ -53,6 +77,8 @@ export interface KitBrokerUser {
     readonly user?: string;
     /** Хеш `rabbit_password_hashing_sha256`. */
     readonly passwordHash: string;
+    /** Префиксы ключей публикации в `verdeect.events`; нет — сервис не публикует. */
+    readonly publishes?: readonly string[];
 }
 
 /** definitions.json формата импорта management plugin RabbitMQ 4.x. */
@@ -79,6 +105,19 @@ export interface RabbitDefinitions {
         /** vhost. */
         readonly vhost: string;
     } & RabbitPermissions)[];
+    /** Topic-права на `verdeect.events`. */
+    readonly topic_permissions: readonly {
+        /** Имя пользователя. */
+        readonly user: string;
+        /** vhost. */
+        readonly vhost: string;
+        /** Exchange. */
+        readonly exchange: string;
+        /** Регулярка ключей публикации. */
+        readonly write: string;
+        /** Регулярка ключей чтения. */
+        readonly read: string;
+    }[];
     /** Exchange. */
     readonly exchanges: readonly {
         /** Имя. */
@@ -103,9 +142,9 @@ export interface RabbitDefinitions {
 }
 
 /**
- * definitions.json: vhost, пользователи с хешами, права M3, exchange `verdeect.events` (topic, durable). Очередей нет:
+ * definitions.json: vhost, пользователи с хешами, права M3, topic-права на `verdeect.events`, exchange `verdeect.events` (topic, durable). Очередей нет:
  * топологию объявляет подписчик (TTL `.retry` не фиксируется в файле развёртывания).
- * @throws {TypeError} имя сервиса вне формата или дубликат.
+ * @throws {TypeError} имя сервиса вне формата, дубликат или префикс публикации вне формата.
  */
 export function buildDefinitions(input: {
     /** vhost. */
@@ -122,6 +161,14 @@ export function buildDefinitions(input: {
         }
         seen.add(service);
     }
+    for (const { service, publishes = [] } of input.users) {
+        const bad = publishes.find((prefix) => !PUBLISH_PREFIX_PATTERN.test(prefix));
+        if (bad !== undefined) {
+            throw new TypeError(
+                `rabbitmq definitions: префикс «${bad}» сервиса ${service} вне формата ${PUBLISH_PREFIX_PATTERN.source}`,
+            );
+        }
+    }
 
     return {
         rabbit_version: '4.3.6',
@@ -132,10 +179,16 @@ export function buildDefinitions(input: {
             hashing_algorithm: HASHING,
             tags: [],
         })),
-        permissions: input.users.map(({ service, user }) => ({
+        permissions: input.users.map(({ service, user, publishes }) => ({
             user: user ?? service,
             vhost,
-            ...permissionsOf(service),
+            ...permissionsOf(service, publishes),
+        })),
+        topic_permissions: input.users.map(({ service, user, publishes }) => ({
+            user: user ?? service,
+            vhost,
+            exchange: EVENTS_EXCHANGE,
+            ...topicPermissionsOf(publishes),
         })),
         exchanges: [
             {

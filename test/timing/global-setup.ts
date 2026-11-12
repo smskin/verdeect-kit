@@ -8,6 +8,7 @@ const stack = startTestStack({
     service: 'kit',
     postgres: true,
     rabbitmq: true,
+    publishes: ['kit.'],
     redis: true,
     migrations: 'test/fixtures/database/migrations',
 });

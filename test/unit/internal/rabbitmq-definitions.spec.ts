@@ -6,15 +6,46 @@ import {
     hashRabbitPassword,
     passwordHashKey,
     permissionsOf,
+    topicPermissionsOf,
 } from '../../../src/internal/rabbitmq-definitions.js';
 
 describe('UC-12: definitions.json', () => {
-    it('AC-5.10: permissionsOf(orchestrator) — configure ^orchestrator(\\..*)?$, write и read с verdeect.events (+ amq.default у write)', () => {
-        expect(permissionsOf('orchestrator')).toEqual({
+    it('AC-5.10: permissionsOf(orchestrator, [agent.]) — configure ^orchestrator(\\..*)?$, write и read с verdeect.events (+ amq.default у write)', () => {
+        expect(permissionsOf('orchestrator', ['agent.'])).toEqual({
             configure: '^orchestrator(\\..*)?$',
             write: '^(verdeect\\.events|amq\\.default|orchestrator(\\..*)?)$',
             read: '^(verdeect\\.events|orchestrator(\\..*)?)$',
         });
+    });
+
+    it('AC-5.10: permissionsOf без publishes — write без verdeect.events, read с ним', () => {
+        const { write, read } = permissionsOf('bff-app');
+
+        expect(write).toBe('^(amq\\.default|bff\\-app(\\..*)?)$');
+        expect(new RegExp(write).test('verdeect.events')).toBe(false);
+        expect(new RegExp(read).test('verdeect.events')).toBe(true);
+    });
+
+    it('AC-5.10: topicPermissionsOf — write по префиксам с экранированными точками, без префиксов ^$; read .*', () => {
+        const { write, read } = topicPermissionsOf(['agent.', 'audit.agent.']);
+
+        expect(write).toBe('^(agent\\.|audit\\.agent\\.)');
+        expect(read).toBe('.*');
+        const regexp = new RegExp(write);
+        expect(['agent.run.started', 'audit.agent.x'].every((key) => regexp.test(key))).toBe(true);
+        expect(
+            ['agentx.run', 'identity.user.created', 'audit.other'].some((key) => regexp.test(key)),
+        ).toBe(false);
+        expect(topicPermissionsOf()).toEqual({ write: '^$', read: '.*' });
+        expect(new RegExp(topicPermissionsOf().write).test('identity.user.created')).toBe(false);
+    });
+
+    it('AC-5.10: buildDefinitions — префикс publishes вне формата → TypeError', () => {
+        expect(() =>
+            buildDefinitions({
+                users: [{ service: 'kit', passwordHash: 'h', publishes: ['kit'] }],
+            }),
+        ).toThrow(/префикс «kit» сервиса kit вне формата/);
     });
 
     it('AC-5.10: регулярки permissionsOf принимают свои очереди и отклоняют чужие', () => {
@@ -58,6 +89,9 @@ describe('UC-12: definitions.json', () => {
         ]);
         expect(definitions.permissions).toEqual([
             { user: 'bff-app', vhost: '/', ...permissionsOf('bff-app') },
+        ]);
+        expect(definitions.topic_permissions).toEqual([
+            { user: 'bff-app', vhost: '/', exchange: 'verdeect.events', write: '^$', read: '.*' },
         ]);
         expect(definitions.exchanges).toEqual([
             {

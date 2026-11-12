@@ -104,4 +104,98 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
         };
         expect(file.users[0]?.password_hash).toBe(HASH_A);
     });
+
+    it.each([
+        ['неверный префикс (без точки)', ['--publishes', 'svc-a=svc-a']],
+        ['неверный префикс (заглавные)', ['--publishes', 'svc-a=Svc.']],
+        ['пустой префикс', ['--publishes', 'svc-a=']],
+        ['сервис вне --services', ['--publishes', 'other=other.']],
+        ['без <svc>=', ['--publishes', 'svc-a.']],
+    ])(
+        'AC-5.10: --publishes, %s → USAGE, выход 1, без значений окружения',
+        async (_name, extra) => {
+            const { code, json, text } = await run(
+                ['definitions', '--services', 'svc-a', ...extra],
+                {
+                    RABBITMQ_PASSWORD_HASH_SVC_A: HASH_A,
+                },
+            );
+
+            expect(code).toBe(1);
+            expect(json).toMatchObject({ error: { code: 'USAGE' } });
+            expect(text).not.toContain(HASH_A);
+        },
+    );
+
+    it('AC-5.10: снимок definitions — identity=identity., orchestrator=agent.,audit.agent., bff-app без --publishes', async () => {
+        const { code, json } = await run(
+            [
+                'definitions',
+                '--services',
+                'identity,orchestrator,bff-app',
+                '--publishes',
+                'identity=identity.',
+                '--publishes',
+                'orchestrator=agent.,audit.agent.',
+            ],
+            {
+                RABBITMQ_PASSWORD_HASH_IDENTITY: HASH_A,
+                RABBITMQ_PASSWORD_HASH_ORCHESTRATOR: HASH_A,
+                RABBITMQ_PASSWORD_HASH_BFF_APP: HASH_A,
+            },
+        );
+
+        expect(code).toBe(0);
+        expect({
+            permissions: json['permissions'],
+            topic_permissions: json['topic_permissions'],
+        }).toEqual({
+            permissions: [
+                {
+                    user: 'identity',
+                    vhost: '/',
+                    configure: '^identity(\\..*)?$',
+                    write: '^(verdeect\\.events|amq\\.default|identity(\\..*)?)$',
+                    read: '^(verdeect\\.events|identity(\\..*)?)$',
+                },
+                {
+                    user: 'orchestrator',
+                    vhost: '/',
+                    configure: '^orchestrator(\\..*)?$',
+                    write: '^(verdeect\\.events|amq\\.default|orchestrator(\\..*)?)$',
+                    read: '^(verdeect\\.events|orchestrator(\\..*)?)$',
+                },
+                {
+                    user: 'bff-app',
+                    vhost: '/',
+                    configure: '^bff\\-app(\\..*)?$',
+                    write: '^(amq\\.default|bff\\-app(\\..*)?)$',
+                    read: '^(verdeect\\.events|bff\\-app(\\..*)?)$',
+                },
+            ],
+            topic_permissions: [
+                {
+                    user: 'identity',
+                    vhost: '/',
+                    exchange: 'verdeect.events',
+                    write: '^(identity\\.)',
+                    read: '.*',
+                },
+                {
+                    user: 'orchestrator',
+                    vhost: '/',
+                    exchange: 'verdeect.events',
+                    write: '^(agent\\.|audit\\.agent\\.)',
+                    read: '.*',
+                },
+                {
+                    user: 'bff-app',
+                    vhost: '/',
+                    exchange: 'verdeect.events',
+                    write: '^$',
+                    read: '.*',
+                },
+            ],
+        });
+    });
 });

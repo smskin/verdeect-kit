@@ -14,6 +14,7 @@ export default startTestStack({
     service: 'consumer',
     postgres: true,
     rabbitmq: true,
+    publishes: ['consumer.'],
     redis: true,
     migrations: 'drizzle',
     outboxEvents: PUBLISHED_EVENTS,

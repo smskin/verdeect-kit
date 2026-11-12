@@ -18,7 +18,7 @@
 
 ## Структура проекта
 
-Состояние после E8 (в `[Unreleased]`): все подпути — `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` — и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`. Следующий шаг — выпуск `1.0.0-rc.1` вручную (`docs/releasing.md`).
+Состояние: выпущены `1.0.0-rc.1` и `1.0.0-rc.2` — все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.3` — права публикации RabbitMQ по префиксам (`docs/releasing.md`).
 
 ```
 verdeect-kit/

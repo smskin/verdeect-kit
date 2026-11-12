@@ -9,7 +9,7 @@ import amqp, {
     type Options,
 } from 'amqplib';
 import { inject } from 'vitest';
-import { EVENTS_EXCHANGE } from '../../src/internal/rabbitmq-definitions.js';
+import { EVENTS_EXCHANGE, topicPermissionsOf } from '../../src/internal/rabbitmq-definitions.js';
 import type { KitRabbitWorker } from '../../src/testing/rabbitmq-admin.js';
 import { rabbitAdminFromProvided, type RabbitAdmin } from '../../src/testing/rabbitmq-admin.js';
 
@@ -26,6 +26,9 @@ export function workerBroker(): KitRabbitWorker {
 
     return worker;
 }
+
+/** Префиксы публикации пользователя воркера — `publishes` globalSetup уровней I и T. */
+const KIT_PUBLISHES = ['kit.'];
 
 /** Management API основного стека (администратор). */
 export function brokerAdmin(): RabbitAdmin {
@@ -151,11 +154,20 @@ export class BrokerClient {
         await this.withProbe((probe) => probe.deleteExchange(name));
     }
 
-    /** Объявление verdeect.events (как definitions.json). */
+    /**
+     * Объявление verdeect.events (как definitions.json) и topic-права пользователя воркера на него: брокер удаляет их
+     * вместе с exchange, без восстановления следующие файлы воркера публиковали бы с любым ключом.
+     */
     async declareEventsExchange(): Promise<void> {
         await this.withProbe((probe) =>
             probe.assertExchange(EVENTS_EXCHANGE, 'topic', { durable: true }),
         );
+        // Пользователь воркера назван как его vhost (prepareWorkerVhosts).
+        const { vhost } = workerBroker();
+        await brokerAdmin().setTopicPermissions(vhost, vhost, {
+            exchange: EVENTS_EXCHANGE,
+            ...topicPermissionsOf(KIT_PUBLISHES),
+        });
     }
 
     /** Закрытие соединения. */

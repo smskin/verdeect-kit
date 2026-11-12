@@ -107,6 +107,19 @@ export class RabbitAdmin {
         );
     }
 
+    /** Topic-права пользователя на exchange vhost (удаляются брокером вместе с exchange). */
+    async setTopicPermissions(
+        vhost: string,
+        user: string,
+        permissions: { readonly exchange: string; readonly write: string; readonly read: string },
+    ): Promise<void> {
+        await this.request(
+            'PUT',
+            `api/topic-permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(user)}`,
+            permissions,
+        );
+    }
+
     /** Имена vhost. */
     async listVhosts(): Promise<string[]> {
         const response = await this.request('GET', 'api/vhosts');
@@ -211,6 +224,8 @@ export async function prepareWorkerVhosts(
     options: {
         /** Имя сервиса — права на его очереди. */
         readonly service: string;
+        /** Префиксы ключей публикации в `verdeect.events`; нет — воркер не публикует. */
+        readonly publishes?: readonly string[];
         readonly workers: number;
         readonly runId: string;
         readonly amqpAdminUrl: string;
@@ -233,6 +248,9 @@ export async function prepareWorkerVhosts(
                         service: options.service,
                         user: vhost,
                         passwordHash: hashRabbitPassword(password),
+                        ...(options.publishes === undefined
+                            ? {}
+                            : { publishes: options.publishes }),
                     },
                 ],
             }),

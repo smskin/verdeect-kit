@@ -6,7 +6,6 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import { KIT_REDIS_LOG, KIT_REDIS_PREFIX, KIT_REDIS_SUBSCRIBER } from '../internal/tokens.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
-import { captureError } from '../observability/sentry.js';
 import { KIT_REDIS, type RedisLog } from './client.js';
 
 /** Обработчик сообщения канала: строка сообщения (JSON — забота сервиса). */
@@ -132,7 +131,12 @@ export class KitRedisChannels {
                         { channel, err: sanitizeError(error) },
                         'redis: ошибка обработчика сообщения канала',
                     );
-                    captureError(error);
+                    // Лёгкий импорт /redis: @sentry/nestjs грузится только при ошибке обработчика (как CLI, KT-31).
+                    void import('../observability/sentry.js')
+                        .then(({ captureError }) => {
+                            captureError(error);
+                        })
+                        .catch(() => undefined);
                 });
         }
     }
