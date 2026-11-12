@@ -6,6 +6,8 @@
 
 ### Added
 
+- `/http`: `errorBody(code, details?)` — тело ошибки `{error: {code, message, details}}` с текстом из словаря.
+- `/testing`: `createTestApp({logger, redaction, extraProviders, env})` — те же `logger`/`redaction`, что у `bootstrapService`; `extraProviders` видны модулям сервиса; `env` объектом — `process.env` не читается и не меняется; `overrides` — ещё `{provide, useClass}` и `{provide, useFactory, inject?}` (тип `KitTestOverride`).
 - `/testing`: `waitForBrokerReady(app, {timeoutMs?})` — ожидание пробы `rabbitmq: up` после рестарта брокера.
 - `/http`: `cursorTimestamp(col)` — ключ keyset-курсора по `timestamptz` строкой ISO UTC с микросекундами из БД.
 - `/observability`: `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})` — ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер), `createHttpApp` подключает его сам; типы `KitCoreModuleOptions`, `KitCoreLoggerOptions`.

@@ -634,7 +634,7 @@ export default startTestStack({
 - `stop_grace_period` — после подстановки `${VAR:-default}`; переменная без умолчания — «значение не определено»; нет нигде — 10 с Docker. `SHUTDOWN_TIMEOUT_MS` — целое или `${NAME:-N}`; нет нигде — 10000; иное — «значение не определено или не целое число мс» (без значения в тексте). В `env_file` у значения без кавычек ` #…` — комментарий, как в Compose.
 - `image:` в compose разбирается как значение: подстановка `${VAR:-default}`, без префикса `docker.io/library/` или `docker.io/`, дайджест `@sha256:…` отдельно, без тега — `latest`. Неразрешённая переменная в теге образа из `TEST_IMAGES` — нарушение «тег не определён»; образы вне `TEST_IMAGES` и с неопределяемым репозиторием не проверяются. В тексте CI префикс `docker.io/library/` и `docker.io/` снимается так же, тег учитывается, только если в нём есть точка или буква (`postgres:5432` — адрес, а не образ).
 
-HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. `http` — тот же объект опций, что `bootstrapService({http})` в `main.ts` (вынесите его в модуль сервиса): фильтр `exceptionFilter`, `securityHeaders` и `configureFastify` в тесте работают как в приложении. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
+HTTP-тесты: `createTestApp({module, service, overrides?, extraProviders?, env?, http?, logger?, redaction?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. `http`, `logger` и `redaction` — те же объекты, что `bootstrapService({http, logger, redaction})` в `main.ts` (вынесите их в модуль сервиса): фильтр `exceptionFilter`, `securityHeaders`, `configureFastify` и `trustTraceparent` в тесте работают как в приложении; тесты с другими опциями логгера — в отдельном файле (один журнал доступа на процесс). `overrides` — `{provide, useValue}`, `{provide, useClass}` или `{provide, useFactory, inject?}`; `extraProviders` — провайдеры теста, видны модулям сервиса (их можно внедрить в подделку `useFactory`). `env` — окружение объектом: разбирается схемой `KitConfigModule` модуля, `process.env` не читается и не меняется — приложения с разным `env` работают параллельно. Тело ошибки для подделок соседних сервисов — `errorBody(code, details?)` из `/http`. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
 
 Ещё в `/testing`: `tcpProxy(target)` — обрывы (`break`, `restore`, `blackhole`, `freeze`, `blackholeOn`) и задержки (`delayOn`) TCP; `timingGuard` — `globalSetup` замеров времени (нагрузка, ядра, отказ при запущенном e2e-контуре `verdeect-*-e2e`); `TEST_TIMEOUT_SCALE` — множитель тайм-аутов конфигов Vitest.
 
@@ -762,6 +762,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `defineErrors` — `defineErrors({...kitErrors, …})`: словарь сервиса на процесс; `status` — число или список объявленных статусов.
 - `KitErrorDictionary` — тип словаря `код → {status, message}`.
 - `KitErrorEntry` — тип записи словаря.
+- `errorBody` — `errorBody(code, details?)`: тело ошибки целиком `{error: {code, message, details}}`, текст из словаря; для подделок соседних сервисов и проверок ответа; код вне словаря — `TypeError`.
 - `DomainError` — `new DomainError(code, details?, {message?, headers?, status?, cause?})`: ошибка домена со статусом из словаря, `headers`, `toBody()`.
 - `KitDomainErrorOptions` — тип третьего аргумента `DomainError`.
 - `KitExceptionFilter` — фильтр ошибок (регистрирует `createHttpApp`; фильтр сервиса — `exceptionFilter` с делегированием в `kit.catch(exception, host)`).
@@ -871,9 +872,9 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 
 ### @verdeect/kit/testing
 
-- `createTestApp` — `createTestApp({module, service, overrides?, http?})`: приложение сервиса для тестов; `http` — тот же объект `KitHttpOptions`, что `bootstrapService({http})` в `main.ts` (`bodyLimit`, `securityHeaders`, `exceptionFilter`, `configureFastify`).
+- `createTestApp` — `createTestApp({module, service, overrides?, extraProviders?, env?, http?, logger?, redaction?})`: приложение сервиса для тестов; `http`, `logger`, `redaction` — те же объекты, что у `bootstrapService` в `main.ts`; `env` — окружение объектом без `process.env`.
 - `KitTestAppOptions` — тип опций `createTestApp`.
-- `KitTestOverride` — подмена провайдера `{provide, useValue}`.
+- `KitTestOverride` — подмена провайдера `{provide, useValue}`, `{provide, useClass}` или `{provide, useFactory, inject?}`.
 - `expectProblem` — `expectProblem(res, {status, code, issues?})`: утверждение об ответе-ошибке.
 - `KitExpectedProblem` — тип ожидаемой ошибки.
 - `KitTestResponse` — тип ответа `{statusCode, json()}`.

@@ -8,7 +8,7 @@ export type {
     KitReferrerPolicy,
     KitSecurityHeaders,
 } from './create-http-app.js';
-export { defineErrors, DomainError, kitErrors } from './errors.js';
+export { defineErrors, DomainError, errorBody, kitErrors } from './errors.js';
 export type { KitDomainErrorOptions, KitErrorDictionary, KitErrorEntry } from './errors.js';
 export { KitExceptionFilter } from './kit-exception.filter.js';
 export {

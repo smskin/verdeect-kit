@@ -16,3 +16,9 @@ export function takePreparsedEnv(schema: object): Record<string, unknown> | unde
 
     return env;
 }
+
+/** Токен провайдера разобранного окружения `KitConfigModule` (подмена в `createTestApp({env})`). */
+export const KIT_PARSED_ENV = Symbol('KIT_PARSED_ENV');
+
+/** Токен схемы окружения `KitConfigModule` — ею `createTestApp` разбирает объект `env`. */
+export const KIT_ENV_SCHEMA = Symbol('KIT_ENV_SCHEMA');
