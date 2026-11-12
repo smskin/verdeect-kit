@@ -143,7 +143,8 @@ export interface RabbitDefinitions {
 
 /**
  * definitions.json: vhost, пользователи с хешами, права M3, topic-права на `verdeect.events`, exchange `verdeect.events` (topic, durable). Очередей нет:
- * топологию объявляет подписчик (TTL `.retry` не фиксируется в файле развёртывания).
+ * топологию объявляет подписчик (TTL `.retry` не фиксируется в файле развёртывания). `admin` — только для dev и e2e:
+ * пользователь с тегом `administrator`, правами `.*` на vhost и topic-правами без ограничения (§3.4 v1.24).
  * @throws {TypeError} имя сервиса вне формата, дубликат или префикс публикации вне формата.
  */
 export function buildDefinitions(input: {
@@ -151,6 +152,8 @@ export function buildDefinitions(input: {
     readonly vhost?: string;
     /** Пользователи. */
     readonly users: readonly KitBrokerUser[];
+    /** Администратор dev и e2e (UI управления); в production не задаётся. */
+    readonly admin?: { readonly user: string; readonly passwordHash: string };
 }): RabbitDefinitions {
     const vhost = input.vhost ?? '/';
     const seen = new Set<string>();
@@ -161,6 +164,15 @@ export function buildDefinitions(input: {
         }
         seen.add(service);
     }
+    if (input.admin !== undefined) {
+        assertServiceName(input.admin.user, 'rabbitmq definitions');
+        if (input.users.some(({ service, user }) => (user ?? service) === input.admin?.user)) {
+            throw new TypeError(
+                `rabbitmq definitions: администратор ${input.admin.user} совпадает с пользователем сервиса`,
+            );
+        }
+    }
+    const admin = input.admin;
     for (const { service, publishes = [] } of input.users) {
         const bad = publishes.find((prefix) => !PUBLISH_PREFIX_PATTERN.test(prefix));
         if (bad !== undefined) {
@@ -173,23 +185,56 @@ export function buildDefinitions(input: {
     return {
         rabbit_version: '4.3.6',
         vhosts: [{ name: vhost }],
-        users: input.users.map(({ service, user, passwordHash }) => ({
-            name: user ?? service,
-            password_hash: passwordHash,
-            hashing_algorithm: HASHING,
-            tags: [],
-        })),
-        permissions: input.users.map(({ service, user, publishes }) => ({
-            user: user ?? service,
-            vhost,
-            ...permissionsOf(service, publishes),
-        })),
-        topic_permissions: input.users.map(({ service, user, publishes }) => ({
-            user: user ?? service,
-            vhost,
-            exchange: EVENTS_EXCHANGE,
-            ...topicPermissionsOf(publishes),
-        })),
+        users: input.users
+            .map(({ service, user, passwordHash }) => ({
+                name: user ?? service,
+                password_hash: passwordHash,
+                hashing_algorithm: HASHING,
+                tags: [] as string[],
+            }))
+            .concat(
+                admin === undefined
+                    ? []
+                    : [
+                          {
+                              name: admin.user,
+                              password_hash: admin.passwordHash,
+                              hashing_algorithm: HASHING,
+                              tags: ['administrator'],
+                          },
+                      ],
+            ),
+        permissions: input.users
+            .map(({ service, user, publishes }) => ({
+                user: user ?? service,
+                vhost,
+                ...permissionsOf(service, publishes),
+            }))
+            .concat(
+                admin === undefined
+                    ? []
+                    : [{ user: admin.user, vhost, configure: '.*', write: '.*', read: '.*' }],
+            ),
+        topic_permissions: input.users
+            .map(({ service, user, publishes }) => ({
+                user: user ?? service,
+                vhost,
+                exchange: EVENTS_EXCHANGE,
+                ...topicPermissionsOf(publishes),
+            }))
+            .concat(
+                admin === undefined
+                    ? []
+                    : [
+                          {
+                              user: admin.user,
+                              vhost,
+                              exchange: EVENTS_EXCHANGE,
+                              write: '.*',
+                              read: '.*',
+                          },
+                      ],
+            ),
         exchanges: [
             {
                 name: EVENTS_EXCHANGE,
