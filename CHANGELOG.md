@@ -12,6 +12,10 @@
 
 - `/http`: запись словаря `defineErrors` — `{status: number | number[], message}`: код с несколькими статусами; в OpenAPI и `expectMatchesApi` — все объявленные статусы кода. Код с одним статусом работает как прежде.
 
+### Fixed
+
+- `/observability`: сериализатор `res` журнала доступа — только `statusCode`: заголовки ответа (`Location` с `state`, `Set-Cookie`) в лог не попадают.
+
 ## [1.0.0-rc.3] - 2026-11-12
 
 Права публикации RabbitMQ по префиксам (PRD v1.20, находки BFF-55); HTTP-опции по роли и реестр метрик `KIT_METRICS` (PRD v1.21, находки BFF-58).

@@ -131,6 +131,8 @@ export function createLoggerOptions(options: KitLoggerOptions): KitLoggerParams 
                         method: req.method,
                         url: maskPath(pathOf(req.url)),
                     }),
+                    // Только статус: заголовки ответа (Location с state, id_token_hint; Set-Cookie) — не в журнал (BFF-60).
+                    res: (res: { statusCode?: unknown }) => ({ statusCode: res.statusCode }),
                 },
                 genReqId: traceIdGenerator(options.trustTraceparent !== false),
                 customProps: (req: IncomingMessage & { id?: unknown }) => ({ traceId: req.id }),

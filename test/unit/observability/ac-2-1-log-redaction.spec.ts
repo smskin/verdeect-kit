@@ -116,6 +116,18 @@ describe('UC-4: лог HTTP-запроса без секретов и ПДн', (
         expect(output.text()).not.toContain('MARK_QUERY_EMAIL');
     });
 
+    it('AC-2.1: редирект с Location: /cb?state=s3cr3t&id_token_hint=… — в журнале доступа res.statusCode: 302, без Location, state= и s3cr3t', async () => {
+        const response = await get('/redirect');
+
+        expect(response.statusCode).toBe(302);
+        const [line] = accessLines(output.records());
+        expect(line?.['res']).toEqual({ statusCode: 302 });
+        const text = output.text();
+        for (const fragment of ['Location', 'location', 'state=', 's3cr3t', 'MARK_HINT']) {
+            expect(text).not.toContain(fragment);
+        }
+    });
+
     it('AC-2.1: /ok вне журнала доступа', async () => {
         const response = await get('/ok');
 

@@ -678,7 +678,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 
 - `SENSITIVE_KEYS` — базовый список чувствительных имён (§3.2); каждое скрывается на уровнях 0–2, `err.code` виден.
 - `KitRedaction` — `{sensitiveKeys?, maskPath?}`: имена добавляются к `SENSITIVE_KEYS`, `maskPath` — маска пути в логе доступа и GlitchTip.
-- `createLoggerOptions` — `createLoggerOptions({service, entry, env, trustTraceparent?, quietRoutes?, extraBase?, redaction?})`: опции `nestjs-pino` (HTTP — stdout, CLI — stderr).
+- `createLoggerOptions` — `createLoggerOptions({service, entry, env, trustTraceparent?, quietRoutes?, extraBase?, redaction?})`: опции `nestjs-pino`, `res` в журнале доступа — только `statusCode` (HTTP — stdout, CLI — stderr).
 - `KitLoggerOptions` — тип опций `createLoggerOptions`.
 - `KitLoggerParams` — тип результата: `Params` с кортежем `pinoHttp: [options, stream]`.
 - `sanitizeError` — ошибка без SQL, параметров и значений: ветки pg/Drizzle, ioredis и зарегистрированные; цепочка `cause` до 10.
