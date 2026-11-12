@@ -6,6 +6,7 @@
 
 ### Added
 
+- `/testing`: `waitForBrokerReady(app, {timeoutMs?})` — ожидание пробы `rabbitmq: up` после рестарта брокера.
 - `/http`: `cursorTimestamp(col)` — ключ keyset-курсора по `timestamptz` строкой ISO UTC с микросекундами из БД.
 - `/observability`: `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})` — ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер), `createHttpApp` подключает его сам; типы `KitCoreModuleOptions`, `KitCoreLoggerOptions`.
 

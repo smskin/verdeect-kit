@@ -907,6 +907,7 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 - `assertOutboxCoverage` — `assertOutboxCoverage(events)`: события без успешного `expectOutbox` (teardown `startTestStack` при `KIT_OUTBOX_COVERAGE=1`).
 - `publishTestEvent` — `publishTestEvent(Event, data, opts?)`: конверт `01` §7.1 в `verdeect.events` vhost воркера.
 - `waitForInbox` — `waitForInbox(id, {timeoutMs})`: ожидание строки `<svc>.inbox` без `sleep`.
+- `waitForBrokerReady` — `waitForBrokerReady(app, {timeoutMs?})`: ожидание пробы `rabbitmq: up` (соединение и канал) после рестарта брокера, срок по умолч. 10 с × `TEST_TIMEOUT_SCALE`; короткое переподключение — `RABBITMQ_RECONNECT_SECONDS`.
 
 ## Документация
 
