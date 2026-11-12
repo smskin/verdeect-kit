@@ -15,6 +15,10 @@ import { describe, expect, inject, it } from 'vitest';
 import { consumer } from './service/schema.js';
 
 const DRIZZLE = fileURLToPath(new URL('../drizzle', import.meta.url));
+/** Миграций потребителя — из журнала drizzle-kit. */
+const MIGRATIONS = (
+    JSON.parse(readFileSync(`${DRIZZLE}/meta/_journal.json`, 'utf8')) as { entries: unknown[] }
+).entries.length;
 
 function provided(key: 'kitDatabaseUrl' | 'kitDatabaseAdminUrl'): string {
     const value = inject(key);
@@ -47,7 +51,7 @@ describe('UC-1: БД потребителя', () => {
             "select rolname from pg_roles where rolname like 'consumer\\_%' order by rolname",
         );
 
-        expect(journal[0]?.count).toBe(5);
+        expect(journal[0]?.count).toBe(MIGRATIONS);
         expect(roles.map((row) => row.rolname)).toEqual([
             'consumer_app',
             'consumer_directory',
