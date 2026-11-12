@@ -171,11 +171,16 @@ describe('UC-11: RateLimiter', () => {
             'лимитер: Redis недоступен, запрос пропущен',
         );
 
-        vi.advanceTimersByTime(60_000);
+        // Граница окна: на 59 999 мс warn подавлен, на 60 000 мс — второй.
+        vi.advanceTimersByTime(59_999);
+        await limiter.hit('login:secret-ip', OPTIONS);
+        expect(log.warn).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(1);
         await limiter.hit('login:secret-ip', OPTIONS);
 
         expect(log.warn).toHaveBeenCalledTimes(2);
-        expect(await unavailableCount(metrics)).toBe(4);
+        expect(await unavailableCount(metrics)).toBe(5);
         const logged = JSON.stringify(log.warn.mock.calls);
         expect(logged).not.toContain('secret-ip');
         expect(logged).not.toContain('rl:');
