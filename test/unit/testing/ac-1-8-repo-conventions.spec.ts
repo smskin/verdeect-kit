@@ -1,5 +1,6 @@
 // AC-1.8 (UC-1, UC-2): assertRepoConventions — эталонная фикстура проходит, каждая с нарушением падает с названием правила
 // (prd.md §3.8 v1.7, G14, NFR-4). Фикстура — test/fixtures/repo-conventions/valid (реальные формы O).
+import { execFileSync } from 'node:child_process';
 import {
     cpSync,
     mkdirSync,
@@ -270,6 +271,63 @@ describe('UC-1: правила репозитория сервиса', () => {
         const dir = withFixture((d) => append(d, 'app.env', 'BFF_PORT=3000\n'));
 
         expectViolation(dir, 'env-keys', 'app.env');
+    });
+
+    it('AC-1.8 v1.25: env_file — неотслеживаемый git .env со старым ключом не нарушение, тот же ключ в отслеживаемом — нарушение', () => {
+        const dir = withFixture((d) => {
+            edit(
+                d,
+                'compose.yml',
+                '    env_file: ./app.env\n',
+                '    env_file: [./app.env, ./.env]\n',
+            );
+            writeFileSync(join(d, '.env'), 'BFF_PORT=3000\n');
+            execFileSync('git', ['init', '-q'], { cwd: d });
+            execFileSync(
+                'git',
+                [
+                    'add',
+                    'compose.yml',
+                    'compose.e2e.yml',
+                    'app.env',
+                    'Dockerfile',
+                    'package.json',
+                    '.gitlab-ci.yml',
+                    'src',
+                ],
+                { cwd: d },
+            );
+        });
+
+        expect(() => assertRepoConventions({ root: dir })).not.toThrow();
+
+        execFileSync('git', ['add', '.env'], { cwd: dir });
+        expectViolation(dir, 'env-keys', '.env');
+    });
+
+    it('AC-1.8 v1.25: compose.e2e.yml со своим name: x-e2e — отдельный проект, его app не сливается с app из compose.yml', () => {
+        const override = '  app:\n    environment:\n      LOG_LEVEL: debug\n';
+        const merged = withFixture((d) => append(d, 'compose.e2e.yml', override));
+        const named = withFixture((d) => {
+            append(d, 'compose.e2e.yml', override);
+            writeFileSync(
+                join(d, 'compose.e2e.yml'),
+                `name: x-e2e\n${readFileSync(join(d, 'compose.e2e.yml'), 'utf8')}`,
+            );
+        });
+        const variable = withFixture((d) => {
+            append(d, 'compose.e2e.yml', override);
+            writeFileSync(
+                join(d, 'compose.e2e.yml'),
+                `name: \${COMPOSE_PROJECT_NAME:-x}\n${readFileSync(join(d, 'compose.e2e.yml'), 'utf8')}`,
+            );
+        });
+
+        // Без name: и с именем из переменной (задаётся при выкатке) — накладывается на compose.yml: команда и
+        // stop_grace_period унаследованы.
+        expect(() => assertRepoConventions({ root: merged })).not.toThrow();
+        expect(() => assertRepoConventions({ root: variable })).not.toThrow();
+        expectViolation(named, 'stop-grace-period', 'compose.e2e.yml');
     });
 
     it('AC-1.8: ключ SESSION_ENC_KEYS', () => {
@@ -895,6 +953,7 @@ describe('AC-1.8: базовый файл Compose', () => {
     const files = (...names: string[]): Parameters<typeof baseComposeFile>[0] => ({
         compose: names.map((file) => ({
             file,
+            project: null,
             name: 'app',
             image: null,
             env: new Map(),

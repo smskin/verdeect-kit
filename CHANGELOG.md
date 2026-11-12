@@ -18,6 +18,7 @@
 
 ### Changed
 
+- `assertRepoConventions`: файлы `env_file:` — только отслеживаемые git (`git ls-files`; вне git — все); compose-файл со своим буквальным `name:`, отличным от имени базового, — отдельный проект, с `compose.yml` не сливается.
 - **`idempotencyPurgeSql` — новая миграция сервиса:** текст начинается с `DROP FUNCTION IF EXISTS <svc>.idempotency_purge(integer)` (замена функции сервиса с тем же именем и другим именем параметра — без 42P13), права `<svc>_directory` сужены до `DELETE` и `SELECT (ctid, created_at)` (`REVOKE SELECT` на таблицу) — ответы и ключи запросов роль не видит. Как перейти: `drizzle-kit generate --custom`, в файл — `idempotencyPurgeSql(schema)`.
 - **Модули пакета требуют ядро:** `KitDatabaseModule`, `KitMessagingModule`, `KitRedisModule`, `KitIdempotencyModule` и `RateLimiter` без `KitCoreModule`/`createHttpApp` — ошибка при сборке контекста «подключите `KitCoreModule.forRoot` или запускайте через `bootstrapService`/`createHttpApp`» (раньше пробы `/health` и метрики молча отключались).
 
