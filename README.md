@@ -161,13 +161,13 @@ export const redaction: KitRedaction = {
 
 **Остановка `KitLifecycle`.** Участники регистрируются на шаг: `lifecycle.register(participant, {step})`.
 
-| Шаг | Что                                                                       |
-| --- | ------------------------------------------------------------------------- |
-| 1   | `/health` → 503, пауза `SHUTDOWN_DRAIN_MS` (выполняет сам `KitLifecycle`) |
-| 2   | HTTP не принимает новые соединения, начатые дорабатывают; потоки SSE      |
-| 3   | хуки модулей Nest, подписчики, relay, очистка                             |
-| 4   | пулы БД, RabbitMQ, Redis                                                  |
-| 5   | сервер метрик                                                             |
+| Шаг | Что                                                                                                                                                                        |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `/health` → 503, пауза `SHUTDOWN_DRAIN_MS` (выполняет сам `KitLifecycle`)                                                                                                  |
+| 2   | HTTP не принимает новые соединения, начатые дорабатывают; SSE, WebSocket и другие долгие соединения закрывает участник шага 2 сервиса (иначе HTTP-сервер ждёт их до срока) |
+| 3   | хуки модулей Nest, подписчики, relay, очистка                                                                                                                              |
+| 4   | пулы БД, RabbitMQ, Redis                                                                                                                                                   |
+| 5   | сервер метрик                                                                                                                                                              |
 
 Участники шага работают параллельно, следующий шаг начинается после предыдущего. Два режима:
 
@@ -384,6 +384,8 @@ CLI `verdeect-kit db` (результат — одна строка JSON в stdo
 
 Коды ошибок: `USAGE` (нет подкоманды или опции, имя вне формата, нет журнала `drizzle-kit` в папке), `INVALID_ENVIRONMENT` (`keys` — имена), `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED` (`sqlState`).
 
+**Повтор после `DATABASE_UNAVAILABLE`.** Миграции пачки и журнал — одна транзакция: после обрыва либо применено и отмечено всё, либо ничего. При обрыве на `COMMIT` миграции могли примениться (COMMIT дошёл до сервера), хотя CLI вернул `DATABASE_UNAVAILABLE`; повторите `db migrate` — он идемпотентен (`applied: 0`, если всё уже применено).
+
 ## Идемпотентность
 
 `KitIdempotencyModule.forRoot({table})` (нужен `KitDatabaseModule`) и `@Idempotent({required?, tenantFromBody?})` на маршруте — повтор с тем же `Idempotency-Key` и телом возвращает сохранённые статус, тело и `Location` с `Idempotent-Replayed: true`.
@@ -447,7 +449,7 @@ KitMessagingModule.forRoot({
 KitMessagingModule.forRoot({ service: 'bff-app', subscriber: { dedupe: 'none' } });
 ```
 
-`outbox.events` — все события, которые сервис публикует. `tenantNullable` берётся из таблицы: событие `'none'` при NOT NULL `tenant` — отказ запуска `MESSAGING_TENANT_NOT_NULLABLE`. `subscriber` не задан — подписчика нет; `dedupe` по умолчанию `'inbox'` (требует `inbox`). Окружение — `envBase` и `envMessaging`; outbox и inbox — вместе с `KitDatabaseModule`.
+`outbox.events` — все события, которые сервис публикует. `tenantNullable` берётся из таблицы: событие `'none'` при NOT NULL `tenant` — отказ запуска `MESSAGING_TENANT_NOT_NULLABLE`. `subscriber` не задан — подписчика нет; `dedupe` по умолчанию `'inbox'` (требует `inbox`). Окружение — `envBase` и `envMessaging`; outbox и inbox — вместе с `KitDatabaseModule`. Переподключение к брокеру и повтор настройки канала — раз в `RABBITMQ_RECONNECT_SECONDS` (умолч. 5), `RABBITMQ_RETRY_SECONDS` — только TTL `<svc>.retry`. `listen: false` — режим CLI (см. «CLI сервиса»).
 
 **Запись** — `OutboxStore.add(tx, Event, {subjectId, data})` в `Db.transaction`: `tenant`, `actor`, `traceId` — из `DbContext`, id — `evt_` + ULID. `data` не по схеме, нарушение признака `tenant`, событие вне `outbox.events` или транзакция `Db.read` — исключение до записи, транзакция откатывается. Публикация мимо outbox невозможна, SQL-триггеров нет.
 
@@ -464,9 +466,15 @@ export class CompanyEvents implements OnModuleInit {
         this.subscriber.on(CompanyCreated, async (event, tx) => {
             // tx — транзакция Db с DbContext события; inbox уже занят в ней
         });
+        // Обработчик с внешними вызовами — без inbox и транзакции пакета: tx = null, идемпотентность — у обработчика.
+        this.subscriber.on(CompanyArchived, async (event) => this.notifyExternal(event), {
+            dedupe: 'none',
+        });
     }
 }
 ```
+
+`on(E, h, {dedupe})` переопределяет `dedupe` модуля: `'none'` — без inbox и без транзакции пакета, обработчик получает `(event, null)` и сам открывает короткие транзакции через `Db` (не держите соединение пула во время HTTP-вызова); повтор того же `id` вызывает его снова. `{dedupe: 'inbox'}` без таблицы `inbox` у модуля — отказ запуска; при `dedupe: 'none'` модуля таблицу `inbox` можно задать — для обработчиков с `{dedupe: 'inbox'}`.
 
 Топологию объявляет подписчик: `<svc>` (DLX → `<svc>.retry`), `<svc>.retry` (TTL `RABBITMQ_RETRY_SECONDS` → `<svc>`), `<svc>.dlq`; привязки — по типам `on`. `prefetch` 10. inbox занимается в транзакции обработчика: повтор `id` → `duplicate` без вызова. `ExpectedMessageError` — `warn` и повтор через `.retry`, до 5 раз по `x-death`, затем DLQ без события GlitchTip; прочие ошибки — `warn` и повтор, после 5 — DLQ и ровно одно событие GlitchTip; `InvalidMessageError` — сразу DLQ без события GlitchTip; ошибки разбора (`not-json`, `envelope`, `unsubscribed`, `tenant`, `data`) — `captureThrottled`. Порядок по `occurredAt` — `ifNewer` из `/database`. `dedupe: 'none'` — без БД, `tx = null`. `onReplica(Event, handler)` — очередь реплики `<svc>.replica.<REPLICA_ID>` (exclusive, auto-delete) без inbox, повторов и DLQ: неразобранное сообщение или ошибка обработчика — `error`-лог, событие `captureThrottled`, `verdeect_events_consumed_total{result="dlq"}`; у очередей реплики (`<svc>.replica.*`) сообщение не сохраняется — смотрите лог и GlitchTip. Метрика — `verdeect_events_consumed_total{type, result}` (`handled`, `duplicate`, `retry`, `dlq`).
 
@@ -638,6 +646,35 @@ export default startTestStack({
 HTTP-тесты: `createTestApp({module, service, overrides?, extraProviders?, env?, http?, logger?, redaction?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. `http`, `logger` и `redaction` — те же объекты, что `bootstrapService({http, logger, redaction})` в `main.ts` (вынесите их в модуль сервиса): фильтр `exceptionFilter`, `securityHeaders`, `configureFastify` и `trustTraceparent` в тесте работают как в приложении; тесты с другими опциями логгера — в отдельном файле (один журнал доступа на процесс). `overrides` — `{provide, useValue}`, `{provide, useClass}` или `{provide, useFactory, inject?}`; `extraProviders` — провайдеры теста, видны модулям сервиса (их можно внедрить в подделку `useFactory`). `env` — окружение объектом: разбирается схемой `KitConfigModule` модуля, `process.env` не читается и не меняется — приложения с разным `env` работают параллельно. Тело ошибки для подделок соседних сервисов — `errorBody(code, details?)` из `/http`. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
 
 Ещё в `/testing`: `tcpProxy(target)` — обрывы (`break`, `restore`, `blackhole`, `freeze`, `blackholeOn`) и задержки (`delayOn`) TCP; `timingGuard` — `globalSetup` замеров времени (нагрузка, ядра, отказ при запущенном e2e-контуре `verdeect-*-e2e`); `TEST_TIMEOUT_SCALE` — множитель тайм-аутов конфигов Vitest.
+
+## CLI сервиса
+
+Команды сервиса (импорт, пересчёт, разовые задания) — контекст Nest без HTTP: ядро `KitCoreModule({entry: 'cli'})` (логгер в stderr, без сервера метрик и `/health`) и общий модуль сервиса с `KitMessagingModule({listen: false})` — без соединения с брокером, подписчика, relay и очистки. `OutboxStore.add` пишет строки, публикует их relay реплики API (порядок по `seq`); `subscriber.on` в общем модуле принимается и не выполняется. Модули пакета без ядра — ошибка при сборке контекста.
+
+```ts
+@Module({
+    imports: [
+        KitConfigModule.forRoot({ schema: env }),
+        KitCoreModule.forRoot({ service: 'platform', entry: 'cli' }),
+        KitDatabaseModule.forRoot({ schema }),
+        await KitMessagingModule.forRoot({ ...messagingOptions, listen: false }),
+    ],
+    providers: [ImportCommand],
+})
+class CliModule {}
+
+const ctx = await NestFactory.createApplicationContext(CliModule, { bufferLogs: true });
+try {
+    const ids = await ctx.get(ImportCommand).run();
+    // Дождаться публикации репликой API (необязательно): по сроку исключения нет — pending > 0.
+    const { pending } = await ctx.get(OutboxStore).awaitPublished(ids, { timeoutMs: 30_000 });
+    process.exitCode = pending === 0 ? 0 : 2;
+} finally {
+    await ctx.close();
+}
+```
+
+`awaitPublished(ids | {traceId}, {timeoutMs})` опрашивает `published_at` и возвращает `{published, pending}`; работает при любом `listen`.
 
 ## Развёртывание
 
@@ -837,10 +874,10 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitOutboxTable` — тип таблицы outbox.
 - `KitInboxTable` — тип таблицы inbox.
 - `KitOutboxTableOptions` — `{tenantNullable?}`.
-- `KitMessagingModule` — `KitMessagingModule.forRoot({service, outbox?, subscriber?})`: соединение, relay, подписчик, очистка.
+- `KitMessagingModule` — `KitMessagingModule.forRoot({service, listen?, outbox?, subscriber?})`: соединение, relay, подписчик, очистка; `listen: false` — режим CLI без брокера.
 - `KitMessagingModuleOptions` — тип опций модуля.
-- `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции.
-- `KitSubscriber` — `on(Event, handler)`, `onReplica(Event, handler)`.
+- `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции; `awaitPublished(ids | {traceId}, {timeoutMs})` → `{published, pending}`.
+- `KitSubscriber` — `on(Event, handler, {dedupe?})` (опция переопределяет `dedupe` модуля), `onReplica(Event, handler)`.
 - `KitEventHandler` — `(event, tx) => Promise<void>`; `tx = null` при `dedupe: 'none'`.
 - `KitReplicaHandler` — `(event) => Promise<void>`.
 - `ExpectedMessageError` — ожидаемый отказ: повтор, затем DLQ с кодом, без GlitchTip.
