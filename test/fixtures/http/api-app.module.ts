@@ -2,7 +2,8 @@
 // создание (тело, errors VERSION_CONFLICT), карточка по :id; класс под @UseGuards(VerdeectAuthGuard) +
 // @RequireScope('items:read'); незащищённый маршрут; маршрут без @Api; @RequireTenant() (409 TENANT_REQUIRED, KT-17);
 // наследование @Api от абстрактного базового контроллера и переопределение метода (KT-17); v1.24 — маршрут с
-// errors: ['RATE_LIMITED'] (стандартные ошибки по факту). Приложение не создаётся.
+// errors: ['RATE_LIMITED'] (стандартные ошибки по факту), @Body()/@Query() без zod-pipe (нет 400/422). Приложение не
+// создаётся.
 import 'reflect-metadata';
 import { Body, Controller, Get, Module, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { RequireScope, RequireTenant, VerdeectAuthGuard } from '@verdeect/auth/nest';
@@ -68,6 +69,20 @@ export class PublicController {
         errors: ['RATE_LIMITED'],
     })
     limited(): { ok: true } {
+        return { ok: true };
+    }
+
+    /** Тело без zod-pipe: 400/422 в документе нет (стандартные ошибки по факту, AC-3.7 v1.24). */
+    @Post('notes')
+    @Api({ summary: 'Заметка без zod-pipe', response: z.object({ ok: z.boolean() }) })
+    note(@Body() _body: unknown): { ok: true } {
+        return { ok: true };
+    }
+
+    /** Query без zod-pipe: 400/422 в документе нет. */
+    @Get('search')
+    @Api({ summary: 'Поиск без zod-pipe', response: z.object({ ok: z.boolean() }) })
+    search(@Query() _query: unknown): { ok: true } {
         return { ok: true };
     }
 

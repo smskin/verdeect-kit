@@ -7,13 +7,14 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openapiCommand } from '../../../src/cli/commands/openapi.js';
-import { buildOpenApiDocument } from '../../../src/http/api/openapi-document.js';
-import { ApiAppModule } from '../../fixtures/http/api-app.module.js';
+// Фикстура загружается при импорте файла (как до KT-62): иначе холодная загрузка .ts — в первом тесте и под нагрузкой
+// превышает testTimeout. CLI получает её из кэша модулей.
+import '../../fixtures/http/api-app.module.js';
 
-const FIXTURE = resolve(
-    fileURLToPath(new URL('.', import.meta.url)),
-    '../../fixtures/http/api-app.module.ts',
-);
+const FIXTURES = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../fixtures/http');
+const FIXTURE = join(FIXTURES, 'api-app.module.ts');
+/** Эталон документа фикстуры: правится вручную вместе с фикстурой, не генерируется тестом. */
+const GOLDEN = join(FIXTURES, 'api-app.openapi.json');
 
 let cwd: string;
 let lines: string[];
@@ -41,7 +42,7 @@ afterEach(async () => {
 });
 
 describe('UC-14: CLI openapi', () => {
-    it('AC-3.7: CLI openapi --out <tmp> --module <fixture>#ApiAppModule пишет тот же документ, stdout {written, operations}', async () => {
+    it('AC-3.7: CLI openapi --out <tmp> --module <fixture>#ApiAppModule пишет документ, равный эталону, stdout {written, operations}', async () => {
         const { code, output } = await run([
             '--out',
             'contracts/openapi.json',
@@ -49,14 +50,10 @@ describe('UC-14: CLI openapi', () => {
             `${FIXTURE}#ApiAppModule`,
         ]);
         const written = await readFile(join(cwd, 'contracts/openapi.json'), 'utf8');
-        const expected = await buildOpenApiDocument(ApiAppModule, {
-            title: 'api-app',
-            version: '1.2.3',
-        });
 
         expect(code).toBe(0);
-        expect(output).toEqual({ written: 'contracts/openapi.json', operations: 8 });
-        expect(written).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+        expect(output).toEqual({ written: 'contracts/openapi.json', operations: 10 });
+        expect(written).toBe(await readFile(GOLDEN, 'utf8'));
     });
 
     it('AC-3.7: contracts/openapi.extra.json сливается с документом', async () => {
@@ -83,6 +80,8 @@ describe('UC-14: CLI openapi', () => {
             '/items/{id}',
             '/public/info',
             '/public/limited',
+            '/public/notes',
+            '/public/search',
             '/tenant/settings',
             '/events',
         ]);
