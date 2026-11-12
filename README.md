@@ -822,7 +822,7 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitIdempotentOptions` — тип опций `@Idempotent`.
 - `createIdempotencyTable` — `createIdempotencyTable(schema)`: таблица `idempotency_key` схемы сервиса.
 - `KitIdempotencyTable` — тип таблицы идемпотентности.
-- `idempotencyPurgeSql` — `idempotencyPurgeSql(schema)`: текст SQL функции очистки для миграции сервиса.
+- `idempotencyPurgeSql` — `idempotencyPurgeSql(schema)`: текст SQL функции очистки для миграции сервиса; начинается с `DROP FUNCTION IF EXISTS <svc>.idempotency_purge(integer)` (замена своей функции сервиса с другим именем параметра — без 42P13), права `<svc>_directory` — `DELETE` и `SELECT (ctid, created_at)`. Обновление пакета — новая миграция `drizzle-kit generate --custom` с тем же текстом поверх старой: повтор идемпотентен.
 
 ### @verdeect/kit/messaging
 

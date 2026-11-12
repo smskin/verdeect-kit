@@ -77,8 +77,11 @@ export function createIdempotencyTable(schema: PgSchema): KitIdempotencyTable {
 
 /**
  * Текст SQL функции очистки `<схема>.idempotency_purge(batch integer)` для SQL-миграции сервиса (`drizzle-kit generate
- * --custom`): `SECURITY DEFINER`, владелец `<схема>_directory`, `search_path`, `REVOKE ALL … FROM PUBLIC`,
- * `GRANT EXECUTE … TO <схема>_app`; удаляет записи старше 24 ч пачкой. Без функции `KitIdempotencyModule` отказывает
+ * --custom`): начинается с `DROP FUNCTION IF EXISTS …(integer)` (замена функции сервиса с другим именем параметра —
+ * без 42P13), `SECURITY DEFINER`, владелец `<схема>_directory`, `search_path`, `REVOKE ALL … FROM PUBLIC`,
+ * `GRANT EXECUTE … TO <схема>_app`; удаляет записи старше 24 ч пачкой. Права `<схема>_directory` на таблицу —
+ * `DELETE` и `SELECT (ctid, created_at)`: ответы и ключи запросов роль не видит (§3.3а v1.25). Повторное применение
+ * (новая миграция поверх старой) идемпотентно. Без функции `KitIdempotencyModule` отказывает
  * при старте. Операторы разделены `--> statement-breakpoint`.
  * @throws {TypeError} имя схемы вне формата имени сервиса `^[a-z][a-z0-9-]{1,31}$`.
  */
@@ -92,7 +95,9 @@ export function idempotencyPurgeSql(schema: PgSchema): string {
     const app = quoteIdentifier(`${name}_app`);
 
     return [
-        `CREATE OR REPLACE FUNCTION ${fn}(batch integer) RETURNS integer
+        // Функция сервиса с тем же именем и другим именем параметра (p_limit) — CREATE OR REPLACE дал бы 42P13.
+        `DROP FUNCTION IF EXISTS ${fn}(integer);`,
+        `CREATE FUNCTION ${fn}(batch integer) RETURNS integer
     LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = ${s}, pg_temp AS $$
 DECLARE deleted integer;
 BEGIN
@@ -102,7 +107,9 @@ BEGIN
     GET DIAGNOSTICS deleted = ROW_COUNT;
     RETURN deleted;
 END $$;`,
-        `GRANT SELECT, DELETE ON ${table} TO ${directory};`,
+        // Роль видит только столбцы функции: ctid (ключ строки пачки) и created_at; ответы и ключи запросов — нет.
+        `REVOKE SELECT ON ${table} FROM ${directory};`,
+        `GRANT SELECT (ctid, created_at), DELETE ON ${table} TO ${directory};`,
         `GRANT CREATE ON SCHEMA ${s} TO ${directory};`,
         `ALTER FUNCTION ${fn}(integer) OWNER TO ${directory};`,
         `REVOKE CREATE ON SCHEMA ${s} FROM ${directory};`,
