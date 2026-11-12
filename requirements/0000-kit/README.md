@@ -2,13 +2,13 @@
 
 Общий инфраструктурный npm-пакет сервисов Вердикт 2.0: конфигурация, наблюдаемость и запуск, HTTP-каркас, БД с RLS, идемпотентность, outbox/inbox и RabbitMQ, шифр секретов, Redis, тестовый контур. Код переносится из копий в Identity, BFF, Platform, Orchestrator (эталон — `files/inventory.md`).
 
-> Режим: INIT · Ревизия: r14 · 2026-11-12 · PRD v1.19 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
+> Режим: INIT · Ревизия: r15 · 2026-11-12 · PRD v1.20 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
 
 ## Файлы
 
 | Файл | Что внутри |
 |---|---|
-| `prd.md` | PRD v1.19 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
+| `prd.md` | PRD v1.20 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
 | `files/inventory.md` | Инвентаризация копий в сервисах: модуль × сервис, столбец «Эталон», тесты эквивалентности, точные версии зависимостей и образов. §4 — расхождения на момент инвентаризации; решения по ним — в `prd.md` (при расхождении действует `prd.md`) |
 
 UI нет, макетов нет. Пакет `@verdeect/events` — отдельный PRD и отдельный репозиторий (`verdeect2/verdeect-events`), не входит сюда.
@@ -64,3 +64,4 @@ UI нет, макетов нет. Пакет `@verdeect/events` — отдель
 - r12 — 2026-11-11: уточнения /crypto по итогам E7 — экспорт DecryptError и типов KitCipher, KitCipherOptions, DecryptErrorReason, без Nest-модуля; строгий формат значения (канонический base64url, v<N> N ≥ 1, IV 12, тег 16), порядок проверок decrypt, пустой aad — TypeError, needsReencrypt (§3.6, AC-7.2); version в ENCRYPTION_KEYS — целое ≥ 1, одна схема для envCrypto и createCipher, generateSecret(< 32) — RangeError (§3.1, §3.6, AC-7.5); PRD v1.17.
 - r13 — 2026-11-12: решения E8 — экспорт /redis (KitRedisModule, KIT_REDIS, KitRedisChannels, RateLimiter, throwRateLimited и типы), общая подписка KitRedisChannels и поведение при отказе SUBSCRIBE, enableReadyCheck: false, connectionName, Redis ≥ 7.0 (§3.7, AC-8.1, AC-8.6); лимитер — ключ <svc>:rl:<key>, окно от первого попадания (PEXPIRE … NX), fail-open без GlitchTip, Retry-After по details.retryAfterSec (§3.5, §3.7, AC-8.3, AC-8.4); CLI redis acl — REDIS_PASSWORD_HASH_<SVC>, #<хеш>, user default off, --out (§3.7, AC-8.1); Redis в /testing — ключи provide, redisWorkerOverride(), без опции keyPrefix (§3.8, AC-8.5); PRD v1.18.
 - r14 — 2026-11-12: ревизия §10 по шагу 0 выпуска rc.1 (assertRepoConventions на HEAD сервисов) — в критерии перехода assertRepoConventions без исключений; всем сервисам — команда запуска с --import ./dist/instrument.js во всех стадиях Dockerfile и command: compose, включая apps/node-agent и копии в compose.e2e.yml; Orchestrator — stop_grace_period: 15s и REPLICA_ID не задаётся; Identity — подстановка DATABASE_MIGRATION_URL и stop_grace_period: 15s; пункт prom-client → @prometheus-io/client убран (сделано во всех сервисах); код пакета не меняется; PRD v1.19.
+- r15 — 2026-11-12: по находкам BFF-55 — права публикации RabbitMQ по префиксам: CLI rabbitmq definitions --publishes <svc>=<префикс>[,…], topic_permissions на verdeect.events (write — ^(префиксы), без --publishes — ^$; read — .*), write на verdeect.events только у сервиса с --publishes (§3.4); startTestStack({publishes}) (§3.8); AC-5.10 — ACCESS_REFUSED вне префикса и без --publishes, USAGE для неверного префикса и сервиса вне --services; префикс метрик домена — имя сервиса без экземпляра, экземпляр — меткой service (§3.2); §10 BFF — Redis bff-app:/bff-admin:, topic-read .*; PRD v1.20.
