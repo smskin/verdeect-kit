@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.5] - 2026-11-12
+
+Находки BFF-64 (PRD v1.24): стандартные ошибки OpenAPI по факту, администратор в dev-definitions.
+
 ### Changed
 
 - **Снимки OpenAPI сервисов изменятся:** стандартные ошибки — по факту. 400 `BAD_REQUEST` и 422 `VALIDATION_FAILED` — только у маршрута с `ZodValidationPipe` тела или query (pipe параметра пути — только 422); 429 `RATE_LIMITED` — только если перечислен в `@Api({errors})`; у маршрута без тела, query и аутентификации стандартных ошибок нет. `expectMatchesApi` — по тому же документу: ответ 429 маршрута без `errors: ['RATE_LIMITED']` теперь не описан. Перегенерируйте `contracts/openapi.json` (`verdeect-kit openapi`).
