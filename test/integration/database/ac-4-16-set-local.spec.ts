@@ -53,11 +53,11 @@ describe('UC-5: Db.setLocal', () => {
         ).rejects.toThrow(TypeError);
     });
 
-    it("AC-4.16: setLocal(tx, 'app.tenant', …) — ошибка, тенант транзакции не меняется", async () => {
+    it("AC-4.16: setLocal(tx, 'app.tenant', …) → TypeError (тенант — только DbContext), тенант транзакции не меняется", async () => {
         const tenant = await test.db.transaction(ctx('acme'), async (tx) => {
-            await expect(test.db.setLocal(tx, 'app.tenant', 'globex')).rejects.toThrow(
-                /app\.tenant.*DbContext/,
-            );
+            const attempt = test.db.setLocal(tx, 'app.tenant', 'globex');
+            await expect(attempt).rejects.toThrow(TypeError);
+            await expect(attempt).rejects.toThrow(/app\.tenant.*DbContext/);
             const { rows } = await tx.execute<{ tenant: string }>(
                 sql`select current_setting('app.tenant', true) as tenant`,
             );

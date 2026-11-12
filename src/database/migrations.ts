@@ -70,6 +70,11 @@ async function openPool(url: string): Promise<Pool> {
     });
     // Обрыв простаивающего клиента: pg-pool генерирует 'error' на пуле — без слушателя процесс упал бы.
     pool.on('error', () => undefined);
+    // Обрыв выданного клиента (pool.connect снимает слушатель пула): pg генерирует 'error' на клиенте и отклоняет
+    // запрос — без слушателя процесс падал бы до ответа DATABASE_UNAVAILABLE (AC-4.17, К9).
+    pool.on('connect', (client) => {
+        client.on('error', () => undefined);
+    });
 
     return pool;
 }

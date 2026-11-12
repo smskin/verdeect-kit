@@ -19,6 +19,7 @@
 
 - `/observability`: сериализатор `res` журнала доступа — только `statusCode`: заголовки ответа (`Location` с `state`, `Set-Cookie`) в лог не попадают.
 - `/testing`: MinIO стека — с KMS (`MINIO_KMS_SECRET_KEY`): `PutObject` с `ServerSideEncryption: AES256` проходит.
+- CLI `db migrate`, `db move-journal`: обрыв соединения с БД — `{error: {code: 'DATABASE_UNAVAILABLE'}}` и выход 1 вместо необработанного исключения.
 
 ## [1.0.0-rc.3] - 2026-11-12
 
