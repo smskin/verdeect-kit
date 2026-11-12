@@ -28,6 +28,11 @@ export interface KitMetrics {
      * число удалённых строк — в `info`-логе прохода.
      */
     readonly cleanupRuns: Counter<'table' | 'result'>;
+    /**
+     * @internal Источник `verdeect_outbox_*` при запросе `/metrics` (`collect()`, §3.4 v1.25): регистрирует relay, `null` —
+     * снять. Источник сам ставит значения и не отклоняется; запрос в полёте общий для обеих метрик.
+     */
+    setOutboxSource(source: (() => Promise<void>) | null): void;
 }
 
 /** Создаёт реестр экземпляра с меткой `service`, метриками процесса Node и метриками пакета (§3.2, AC-2.8). */
@@ -37,6 +42,19 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
     registry.setDefaultLabels({ service: options.service });
     collectDefaultMetrics({ register: registry });
     const registers = [registry];
+    let outboxSource: (() => Promise<void>) | null = null;
+    let outboxInFlight: Promise<void> | null = null;
+    // registry.metrics() вызывает get() метрик параллельно: обе метрики outbox ждут один запрос.
+    const collectOutbox = (): Promise<void> | undefined => {
+        if (outboxSource === null) {
+            return undefined;
+        }
+        outboxInFlight ??= outboxSource().finally(() => {
+            outboxInFlight = null;
+        });
+
+        return outboxInFlight;
+    };
 
     return {
         registry,
@@ -44,11 +62,13 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
             name: 'verdeect_outbox_pending',
             help: 'Неотправленные строки outbox',
             registers,
+            collect: collectOutbox,
         }),
         outboxLagSeconds: new Gauge({
             name: 'verdeect_outbox_lag_seconds',
             help: 'Возраст самой старой неотправленной строки outbox, с',
             registers,
+            collect: collectOutbox,
         }),
         eventsConsumed: new Counter({
             name: 'verdeect_events_consumed_total',
@@ -73,6 +93,9 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
             labelNames: ['table', 'result'] as const,
             registers,
         }),
+        setOutboxSource: (source) => {
+            outboxSource = source;
+        },
     };
 }
 
