@@ -72,11 +72,27 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
         expect(json).toEqual({
             error: {
                 code: 'INVALID_ENVIRONMENT',
-                message: 'Неверное окружение',
+                message:
+                    'RABBITMQ_PASSWORD_HASH_SVC_B: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
                 keys: ['RABBITMQ_PASSWORD_HASH_SVC_B'],
             },
         });
         expect(text).not.toContain(HASH_A);
+    });
+
+    it('AC-5.10: неверный хеш RABBITMQ_PASSWORD_HASH_<SVC> → выход 1, в stderr имя ключа и hash_password, значения нет', async () => {
+        const stderr = vi.mocked(process.stderr.write);
+        const { code } = await run(['definitions', '--services', 'svc-a'], {
+            RABBITMQ_PASSWORD_HASH_SVC_A: 'plain-password',
+        });
+        const errors = stderr.mock.calls.map(([chunk]) => String(chunk)).join('');
+
+        expect(code).toBe(1);
+        expect(errors).toContain('RABBITMQ_PASSWORD_HASH_SVC_A');
+        expect(errors).toContain(
+            'ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
+        );
+        expect(errors).not.toContain('plain-password');
     });
 
     it('UC-12: хеш неверного формата → INVALID_ENVIRONMENT с этим ключом, без значения', async () => {
@@ -270,7 +286,8 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
         expect(json).toEqual({
             error: {
                 code: 'INVALID_ENVIRONMENT',
-                message: 'Неверное окружение',
+                message:
+                    'RABBITMQ_PASSWORD_HASH_DEV: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
                 keys: ['RABBITMQ_PASSWORD_HASH_DEV'],
             },
         });
