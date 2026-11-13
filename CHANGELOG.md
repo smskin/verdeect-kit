@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.8] - 2026-11-13
+
+Итоги rc.7 (PRD v1.28, r23): PL-69, review; вопросы плана rc.8 (KT-87).
+
+### Changed
+
+- **Повтор идемпотентности — с `Content-Type` и сериализацией первого ответа (ломающее для rc: нужна миграция `content_type`):** строка повторяется строкой с `text/plain` (раньше `'42'` становилась числом `42` с `application/json`), свой `Content-Type` маршрута сохраняется, пустой ответ — пустое тело без `Content-Type` (раньше — `null`). JSON-тело — то же содержимое, ключи в порядке `jsonb`, как раньше. Записи без `content_type` повторяются как в rc.7.
+
+### Added
+
+- `/messaging`: `subscriber.on(E, h, {unknownVersion: 'skip' | 'dlq'})` (умолчание `'skip'`) — `'dlq'` отправляет неподписанную версию подписанного `type` в `<svc>.dlq` с `x-dlq-reason: version`, `error`-лог, `verdeect_events_consumed_total{result="dlq"}`, `captureThrottled`; значение одно на `type`, иначе `TypeError`; у `onReplica` опции нет.
+- **Колонка `content_type` (ломающее для rc: нужна миграция `content_type`):** `/idempotency`: колонка `content_type text` (nullable) в `createIdempotencyTable` — `Content-Type` первого ответа; `''` — пустой ответ; `NULL` — запись до колонки.
+- `/testing`: `createTestDb({url, service, max?})` — `max` соединений в каждом пуле (целое ≥ 1, умолчание 10, иначе `TypeError`); `KitTestDb.pools` (`{main, read}`) — те же пулы, что в `db`, для `countQueries` и `totalCount`.
+
+### Как перейти
+
+- **Колонка `content_type`.** После обновления пакета — `drizzle-kit generate` в схеме сервиса (`ALTER TABLE "<svc>"."idempotency_key" ADD COLUMN "content_type" text`) и миграция до выкладки: без неё запросы с `Idempotency-Key` падают на несуществующей колонке. Права `<svc>_app` — табличный `GRANT`, новая колонка покрыта.
+- **`unknownVersion`.** По умолчанию поведение rc.7 (пропуск с `verdeect_events_skipped_total`). `'dlq'` — по желанию для событий, которые нельзя потерять; укажите одно значение у всех `on` одного `type`.
+- **`createTestDb`.** Новое поле `pools` и опция `max`; прежний код работает без изменений.
+
 ## [1.0.0-rc.7] - 2026-11-13
 
 Находки переходов rc.6 (PRD v1.26–v1.27): ID-52, PL-51, PL-67, OR-146, KT-70; вопросы плана rc.7 (KT-75–KT-77).
