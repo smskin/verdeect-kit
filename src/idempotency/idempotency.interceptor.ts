@@ -2,7 +2,8 @@
 // idempotency.store.ts (KEY_FORMAT, canonicalJson, отпечаток, begin с FOR UPDATE, брошенная in_progress через 5 мин,
 // mismatch до in_progress, release при ошибке, один повтор complete). По PRD: область user/agent → (tenant, sub),
 // service → client_id или (client_id, поле tenantFromBody); Location в ответе; без принципала — 500; коды — DomainError
-// словаря /http; сравнение области — IS NOT DISTINCT FROM (tenant nullable); redact — копия тела в хранилище (v1.26).
+// словаря /http; сравнение области — IS NOT DISTINCT FROM (tenant nullable); redact — копия тела в хранилище (v1.26);
+// повтор — в той же сериализации и с тем же Content-Type, что первый ответ (колонка content_type, v1.28).
 import { createHash, randomUUID } from 'node:crypto';
 import {
     Inject,
@@ -42,6 +43,10 @@ const EXPIRES_AFTER_HOURS = 24;
 /** Заголовок ответа повтора. */
 const REPLAYED_HEADER = 'Idempotent-Replayed';
 
+/** Типы, которые Fastify выбирает по умолчанию для строки и для прочего тела. */
+const TEXT_CONTENT_TYPE = 'text/plain; charset=utf-8';
+const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
+
 /** Область ключа: тенант (или `null`) и субъект. */
 export interface IdempotencyScope {
     /** Тенант записи или `null` (служба без `tenantFromBody`). */
@@ -56,7 +61,11 @@ type BeginResult =
           readonly state: 'replay';
           readonly status: number;
           readonly body: unknown;
+          /** Сырой текст `response_body` (без повторного `JSON.parse` drizzle). */
+          readonly bodyText: string | null;
           readonly location: string | null;
+          /** `Content-Type` первого ответа; `''` — пустой ответ; `null` — запись до колонки. */
+          readonly contentType: string | null;
       }
     | { readonly state: 'mismatch' }
     | { readonly state: 'in_progress' };
@@ -140,7 +149,8 @@ function readKey(request: FastifyRequest): string | null {
 
 /**
  * Интерсептор `@Idempotent` (§3.3а): регистрирует `KitIdempotencyModule` через `APP_INTERCEPTOR`. Повтор — сохранённый
- * ответ и `Idempotent-Replayed: true`; другое тело — 422 `IDEMPOTENCY_KEY_REUSED`; запрос ещё идёт — 409
+ * ответ (статус, тело в той же сериализации, `Content-Type` и `Location` первого ответа; запись без `content_type` — тело
+ * и статус без `Content-Type`) и `Idempotent-Replayed: true`; другое тело — 422 `IDEMPOTENCY_KEY_REUSED`; запрос ещё идёт — 409
  * `IDEMPOTENCY_IN_PROGRESS`. Сохраняются только успешные ответы.
  */
 @Injectable()
@@ -211,7 +221,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
             key,
             fingerprintOf(request.method, path, request.body),
         );
-        this.logger.debug({ ...fields, state: begin.state }, 'идемпотентность: begin');
+        this.logger.debug(
+            {
+                ...fields,
+                state: begin.state,
+                ...(begin.state === 'replay' ? { contentType: begin.contentType } : {}),
+            },
+            'идемпотентность: begin',
+        );
         if (begin.state === 'mismatch') {
             this.logger.warn(fields, 'идемпотентность: ключ с другим телом');
             throw new DomainError('IDEMPOTENCY_KEY_REUSED');
@@ -227,7 +244,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
                 void reply.header('Location', begin.location);
             }
 
-            return begin.body;
+            return replayBody(reply, begin);
         }
 
         let body: unknown;
@@ -247,7 +264,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
             scope,
             key,
             begin.attempt,
-            { status, body: this.redacted(body ?? null, options.redact, fields), location },
+            {
+                status,
+                body: this.redacted(body ?? null, options.redact, fields),
+                location,
+                contentType: contentTypeOf(reply, body),
+            },
             fields,
         );
 
@@ -317,7 +339,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
                     state: t.state,
                     status: t.responseStatus,
                     body: t.responseBody,
+                    bodyText: sql<string | null>`${t.responseBody}::text`,
                     location: t.responseLocation,
+                    contentType: t.contentType,
                     expired: sql<boolean>`${t.createdAt} < now() - make_interval(hours => ${EXPIRES_AFTER_HOURS})`,
                     abandoned: sql<boolean>`${t.state} = 'in_progress' AND ${t.createdAt} < now() - make_interval(mins => ${ABANDONED_AFTER_MINUTES})`,
                 })
@@ -343,6 +367,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
                         responseStatus: null,
                         responseBody: null,
                         responseLocation: null,
+                        contentType: null,
                         createdAt: sql`now()`,
                     })
                     .where(this.where(scope, key));
@@ -360,7 +385,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
                 state: 'replay',
                 status: row.status ?? 200,
                 body: row.body,
+                bodyText: row.bodyText,
                 location: row.location,
+                contentType: row.contentType,
             };
         });
     }
@@ -411,6 +438,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
             readonly status: number;
             readonly body: unknown;
             readonly location: string | null;
+            readonly contentType: string;
         },
         fields: Record<string, unknown>,
     ): Promise<void> {
@@ -423,6 +451,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
                         responseStatus: response.status,
                         responseBody: response.body,
                         responseLocation: response.location,
+                        contentType: response.contentType,
                     })
                     .where(and(this.where(scope, key), eq(this.table.attempt, attempt))),
             );
@@ -471,4 +500,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     const prototype: unknown = Object.getPrototypeOf(value);
 
     return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * `Content-Type` первого ответа для хранилища: заданный заголовок (`@Header`, `reply.type()`), иначе по телу — как
+ * выбирает Fastify: пусто → `''`, строка → `text/plain`, прочее → `application/json`.
+ */
+function contentTypeOf(reply: FastifyReply, body: unknown): string {
+    const header = reply.getHeader('content-type');
+    if (typeof header === 'string') {
+        return header;
+    }
+    if (body === undefined) {
+        return '';
+    }
+
+    return typeof body === 'string' ? TEXT_CONTENT_TYPE : JSON_CONTENT_TYPE;
+}
+
+/** Тело повтора: запись до колонки — как rc.7; пустой ответ — без тела; иначе сохранённый текст и `Content-Type`. */
+function replayBody(
+    reply: FastifyReply,
+    replay: {
+        readonly body: unknown;
+        readonly bodyText: string | null;
+        readonly contentType: string | null;
+    },
+): unknown {
+    if (replay.contentType === null) {
+        return replay.body;
+    }
+    if (replay.contentType === '') {
+        return undefined;
+    }
+    void reply.header('Content-Type', replay.contentType);
+
+    return replay.bodyText === null ? null : (JSON.parse(replay.bodyText) as unknown);
 }
