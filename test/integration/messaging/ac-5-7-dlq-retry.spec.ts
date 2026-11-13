@@ -12,6 +12,7 @@ import {
     TestConsumer,
     consumed,
     createSubscriberApp,
+    dlqReason,
     initReady,
     memoryLogger,
     publishEnvelope,
@@ -28,16 +29,6 @@ describe('UC-6: DLQ и повторы', () => {
     const sentry = initFakeSentry();
     let app: NestFastifyApplication;
     let broker: BrokerClient;
-
-    async function dlqReason(): Promise<string | undefined> {
-        await waitUntil(
-            async () => ((await broker.queueInfo('kit.dlq'))?.messageCount ?? 0) > 0,
-            'копия в kit.dlq',
-        );
-        const message = await broker.take('kit.dlq');
-
-        return message?.properties.headers?.['x-dlq-reason'] as string | undefined;
-    }
 
     beforeAll(async () => {
         await truncateFixtures();
@@ -62,7 +53,7 @@ describe('UC-6: DLQ и повторы', () => {
     it('AC-5.7: не JSON → kit.dlq, x-dlq-reason not-json', async () => {
         broker.publishRaw('kit.note.created', Buffer.from('{not json'));
 
-        expect(await dlqReason()).toBe('not-json');
+        expect(await dlqReason(broker)).toBe('not-json');
     });
 
     it('AC-5.7: неверный конверт (без id) → envelope', async () => {
@@ -70,7 +61,7 @@ describe('UC-6: DLQ и повторы', () => {
         delete envelope['id'];
         broker.publishRaw('kit.note.created', Buffer.from(JSON.stringify(envelope)));
 
-        expect(await dlqReason()).toBe('envelope');
+        expect(await dlqReason(broker)).toBe('envelope');
     });
 
     it('AC-5.7: неподписанный тип → unsubscribed', async () => {
@@ -80,20 +71,20 @@ describe('UC-6: DLQ и повторы', () => {
             Buffer.from(JSON.stringify(testEnvelope({ type: 'kit.other.created' }))),
         );
 
-        expect(await dlqReason()).toBe('unsubscribed');
+        expect(await dlqReason(broker)).toBe('unsubscribed');
     });
 
     it('AC-5.7: InvalidMessageError → причина из reason, без события GlitchTip', async () => {
         publishEnvelope(broker, testEnvelope({ data: { noteId: 'n1', title: 'invalid' } }));
 
-        expect(await dlqReason()).toBe('test-invalid');
+        expect(await dlqReason(broker)).toBe('test-invalid');
         expect(sentry.delivered).toHaveLength(0);
     });
 
     it("AC-5.7: признак tenant нарушен ('required' с tenant: null) → tenant", async () => {
         publishEnvelope(broker, testEnvelope({ tenant: null }));
 
-        expect(await dlqReason()).toBe('tenant');
+        expect(await dlqReason(broker)).toBe('tenant');
     });
 
     it('AC-5.7: ExpectedMessageError → повтор через .retry (RABBITMQ_RETRY_SECONDS=1), warn, без GlitchTip', async () => {
@@ -117,7 +108,7 @@ describe('UC-6: DLQ и повторы', () => {
         const envelope = testEnvelope({ data: { noteId: 'n1', title: 'expected' } });
         broker.sendToQueue('kit', Buffer.from(JSON.stringify(envelope)), { headers: EXHAUSTED });
 
-        expect(await dlqReason()).toBe('TEST_DEPENDENCY_DOWN');
+        expect(await dlqReason(broker)).toBe('TEST_DEPENDENCY_DOWN');
         expect(sentry.delivered).toHaveLength(0);
     });
 
@@ -145,7 +136,7 @@ describe('UC-6: DLQ и повторы', () => {
             { headers: EXHAUSTED },
         );
 
-        expect(await dlqReason()).toBe('retries-exhausted');
+        expect(await dlqReason(broker)).toBe('retries-exhausted');
         await waitUntil(() => sentry.delivered.length >= 1, 'событие GlitchTip');
         expect(sentry.delivered).toHaveLength(1);
     });
@@ -153,7 +144,7 @@ describe('UC-6: DLQ и повторы', () => {
     it('AC-5.7: data не по схеме → DLQ data, путь поля в логе, значения нет', async () => {
         publishEnvelope(broker, testEnvelope({ data: { noteId: 'секрет-777', title: 42 } }));
 
-        expect(await dlqReason()).toBe('data');
+        expect(await dlqReason(broker)).toBe('data');
         const line = lines.find((item) => item['msg'] === 'messaging: сообщение в DLQ');
         expect(line?.['fields']).toEqual(['title']);
         expect(JSON.stringify(lines)).not.toContain('секрет-777');

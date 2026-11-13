@@ -18,6 +18,8 @@ const ISOLATED: string[] = [
     // initFakeSentry — процесс-глобальный Sentry.
     'test/integration/messaging/ac-5-7-dlq-retry.spec.ts',
     // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/messaging/ac-5-22-unknown-version-dlq.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry.
     'test/integration/messaging/ac-5-9-replica-errors.spec.ts',
     // initFakeSentry — процесс-глобальный Sentry.
     'test/integration/messaging/ac-5-19-broker-down.spec.ts',
