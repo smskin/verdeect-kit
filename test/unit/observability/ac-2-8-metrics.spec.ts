@@ -13,6 +13,7 @@ const KIT_PACKAGE_METRICS = [
     'verdeect_db_pool_wait_timeouts_total',
     'verdeect_rate_limit_unavailable_total',
     'verdeect_cleanup_runs_total',
+    'verdeect_events_skipped_total',
 ];
 
 describe('UC-13: метрики пакета', () => {

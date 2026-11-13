@@ -7,7 +7,7 @@ import type { z } from 'zod';
 import type { Db, DbTx } from '../database/db.js';
 import { newId, ulid } from '../internal/ids.js';
 import { txContextOf } from '../internal/tx-context.js';
-import type { KitEvent } from './define-event.js';
+import { eventKey, type KitEvent } from './define-event.js';
 import { nestLog, type MessagingLog } from './rabbit-connection.js';
 import type { KitOutboxTable } from './tables.js';
 
@@ -47,7 +47,7 @@ export interface OutboxStoreDeps {
     readonly db: Db;
     /** Таблица outbox. */
     readonly table: KitOutboxTable;
-    /** События `outbox.events` модуля по type. */
+    /** События `outbox.events` модуля по паре (`eventKey`). */
     readonly events: ReadonlyMap<string, KitEvent>;
     /** Пробуждение relay после COMMIT. */
     readonly wake: () => void;
@@ -82,9 +82,9 @@ export class OutboxStore {
         input: { readonly subjectId: string; readonly data: z.input<E['data']> },
     ): Promise<string> {
         const { type } = event;
-        if (this.deps.events.get(type) !== event) {
+        if (this.deps.events.get(eventKey(event)) !== event) {
             throw new TypeError(
-                `OutboxStore.add: событие ${type} не объявлено в KitMessagingModule.forRoot({outbox: {events}})`,
+                `OutboxStore.add: событие ${type} v${event.version} не объявлено в KitMessagingModule.forRoot({outbox: {events}})`,
             );
         }
         const ctx = txContextOf(tx);

@@ -1,6 +1,6 @@
 // KitLifecycle — участники остановки и сторож срока (prd.md §3.2 шаги 1–5, AC-2.10, AC-2.13, UC-8, NFR-8; KT-10, KT-11).
 // Эталоны: общий срок от первого вызова — P/O RabbitConnection.shutdownDeadline(); флаг остановки первым действием —
-// O instance-shutdown.ts begin(). Механизм шагов и сторож с exit(1) написаны по PRD: эталона нет.
+// O instance-shutdown.ts begin(). Остаток срока от начала остановки — shutdownRemainingMs (AC-5.11). Механизм шагов и сторож с exit(1) написаны по PRD: эталона нет.
 // Два режима (KT-11): сигнал ОС (listen) — сторож SHUTDOWN_TIMEOUT_MS от сигнала, по окончании шагов сторож unref и
 // выход 0 сам; программный close() — те же шаги без сторожа и exit, ошибки участников — отказ close().
 import * as Sentry from '@sentry/nestjs';
@@ -24,6 +24,20 @@ export interface KitShutdownParticipant {
 const STEPS: readonly KitShutdownStep[] = [2, 3, 4, 5];
 const DEFAULT_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
 const SENTRY_FLUSH_MS = 2000;
+
+/** Момент `performance.now`, к которому истекает SHUTDOWN_TIMEOUT_MS от начала остановки (сигнал или close()). */
+const stopDeadlines = new WeakMap<KitLifecycle, number>();
+
+/**
+ * Остаток SHUTDOWN_TIMEOUT_MS от начала остановки (сигнал или `close()`), мс; `undefined` — остановка не начата.
+ * Для срока обработчиков /messaging (§3.4, AC-5.11).
+ * @internal
+ */
+export function shutdownRemainingMs(lifecycle: KitLifecycle): number | undefined {
+    const deadline = stopDeadlines.get(lifecycle);
+
+    return deadline === undefined ? undefined : deadline - performance.now();
+}
 
 /** Остановка экземпляра приложения по шагам 1–5 (§3.2). Остановка одна на экземпляр. */
 export class KitLifecycle {
@@ -96,6 +110,10 @@ export class KitLifecycle {
     }
 
     private start(context: { readonly signal: NodeJS.Signals } | { readonly mode: 'close' }) {
+        // Начало остановки — один раз: первый сигнал или первый close(), кто раньше (AC-5.11).
+        if (!stopDeadlines.has(this)) {
+            stopDeadlines.set(this, performance.now() + this.timeoutMs);
+        }
         this.steps ??= this.run(context);
 
         return this.steps;

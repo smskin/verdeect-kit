@@ -109,6 +109,14 @@ export const TestNoteCreated = defineEvent({
     data: z.object({ noteId: z.string(), title: z.string().min(1) }),
 });
 
+/** Версия 2 события фикстуры: тот же type, в data новое обязательное поле `priority` (AC-5.22). */
+export const TestNoteCreatedV2 = defineEvent({
+    type: 'kit.note.created',
+    version: 2,
+    subject: 'note',
+    data: z.object({ noteId: z.string(), title: z.string().min(1), priority: z.number().int() }),
+});
+
 /** Событие фикстуры без компании. */
 export const TestAccountTouched = defineEvent({
     type: 'kit.account.touched',
@@ -271,6 +279,22 @@ export class TestConsumer implements OnModuleInit {
     }
 }
 
+/** Обработчик версии 2 события фикстуры (`on(TestNoteCreatedV2)`): конверты по порядку (AC-5.22). */
+@Injectable()
+export class TestConsumerV2 implements OnModuleInit {
+    /** Конверты по порядку. */
+    readonly received: Envelope[] = [];
+
+    constructor(private readonly subscriber: KitSubscriber) {}
+
+    onModuleInit(): void {
+        this.subscriber.on(TestNoteCreatedV2, async (event) => {
+            this.received.push(event);
+            await Promise.resolve();
+        });
+    }
+}
+
 /** Обработчик фикстуры на реплике (`onReplica`): режим `data.title` — `ok`, `fail`; счётчик вызовов. */
 @Injectable()
 export class ReplicaConsumer implements OnModuleInit {
@@ -336,6 +360,23 @@ export async function consumed(
             const labels = item.labels as Record<string, unknown>;
 
             return labels['result'] === result && labels['type'] === type;
+        })
+        .reduce((sum, item) => sum + item.value, 0);
+}
+
+/** Значение `verdeect_events_skipped_total{type, version}`. */
+export async function skipped(
+    app: NestFastifyApplication,
+    version: number,
+    type: string = TestNoteCreated.type,
+): Promise<number> {
+    const metric = await app.get<KitMetrics>(KIT_PACKAGE_METRICS).eventsSkipped.get();
+
+    return metric.values
+        .filter((item) => {
+            const labels = item.labels as Record<string, unknown>;
+
+            return labels['type'] === type && labels['version'] === String(version);
         })
         .reduce((sum, item) => sum + item.value, 0);
 }

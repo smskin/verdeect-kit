@@ -2,14 +2,14 @@
 // rabbit-subscriber.ts (setupQueues, toDlq, остановка), inbox-guard; из P — очередь реплики (policy-changed.consumer),
 // метрика *_events_consumed_total; из B — retryCount(headers, queue). По PRD: x-dlq-reason (П7), inbox в транзакции
 // подписчика (П6), проверка data и признака tenant, dedupe 'none' без БД, отказ запуска при другом TTL .retry (П8).
-// Тип — по envelope.type, не по routing key (после повтора ключ — имя очереди). Тело сообщения не логируется.
-import { setTimeout as sleep } from 'node:timers/promises';
+// Тип — по envelope.type, не по routing key (после повтора ключ — имя очереди). Тело сообщения не логируется. Обработчик —
+// по паре (type, version), неподписанная версия подписанного type — ack и verdeect_events_skipped_total (AC-5.22).
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 import type { Db, DbTx } from '../database/db.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError, captureThrottled } from '../observability/sentry.js';
-import type { KitEvent } from './define-event.js';
+import { eventKey, type KitEvent } from './define-event.js';
 import { parseEnvelope, tenantViolation, type Envelope } from './envelope.js';
 import { ExpectedMessageError, InvalidMessageError, MessagingStartupError } from './errors.js';
 import { claimInbox } from './inbox.js';
@@ -47,6 +47,12 @@ export type KitReplicaHandler<E extends KitEvent> = (event: Envelope<E>) => Prom
 
 /** Итог доставки — значение метки `result` метрики `verdeect_events_consumed_total`. */
 type DeliveryResult = 'handled' | 'duplicate' | 'retry' | 'dlq';
+
+/** Обработчик по паре конверта: найден, `type` подписан без этой версии или `type` не подписан. */
+type Lookup =
+    | { readonly kind: 'found'; readonly registered: Registered }
+    | { readonly kind: 'version' }
+    | { readonly kind: 'unsubscribed' };
 
 const MAIN_CHANNEL = 'subscriber';
 const REPLICA_CHANNEL = 'subscriber-replica';
@@ -126,7 +132,7 @@ export class KitSubscriber {
      * Обработчик события из очереди `<svc>`. `dedupe` переопределяет `dedupe` модуля (§3.4 v1.25): `'none'` — без inbox
      * и без транзакции пакета, обработчик получает `(event, null)` и сам открывает короткие транзакции через `Db`;
      * `'inbox'` — inbox и транзакция `Db` с `DbContext` из конверта.
-     * @throws {TypeError} тип уже зарегистрирован, приложение уже запущено, `dedupe` вне `'inbox' | 'none'` или
+     * @throws {TypeError} пара (`type`, `version`) уже зарегистрирована, приложение уже запущено, `dedupe` вне `'inbox' | 'none'` или
      * `'inbox'` без таблицы inbox у модуля (отказ запуска).
      */
     on<E extends KitEvent>(
@@ -150,7 +156,7 @@ export class KitSubscriber {
      * Обработчик события на каждой реплике: очередь `<svc>.replica.<REPLICA_ID>` (exclusive, auto-delete), без inbox,
      * повторов и DLQ. Неразобранное сообщение или ошибка обработчика — без повтора, сообщение не сохраняется: `error`-лог,
      * событие `captureThrottled`, метрика `result: 'dlq'` (П24).
-     * @throws {TypeError} тип уже зарегистрирован или приложение уже запущено.
+     * @throws {TypeError} пара (`type`, `version`) уже зарегистрирована или приложение уже запущено.
      */
     onReplica<E extends KitEvent>(event: E, handler: KitReplicaHandler<E>): void {
         this.register(
@@ -184,7 +190,7 @@ export class KitSubscriber {
 
             return;
         }
-        const types = [...this.handlers.keys()];
+        const types = typesOf(this.handlers);
         this.main = connection.createChannel({
             name: MAIN_CHANNEL,
             confirm: true,
@@ -257,12 +263,13 @@ export class KitSubscriber {
                 `KitSubscriber.${method}: регистрация — до запуска приложения (onModuleInit)`,
             );
         }
-        if (registry.has(event.type)) {
+        const key = eventKey(event);
+        if (registry.has(key)) {
             throw new TypeError(
-                `KitSubscriber.${method}: обработчик ${event.type} уже зарегистрирован`,
+                `KitSubscriber.${method}: обработчик ${event.type} v${event.version} уже зарегистрирован`,
             );
         }
-        registry.set(event.type, { event, handler, dedupe });
+        registry.set(key, { event, handler, dedupe });
     }
 
     /**
@@ -272,14 +279,30 @@ export class KitSubscriber {
     private async awaitStartupOutcome(): Promise<void> {
         const { reconnectSeconds } = this.deps;
         const connection = this.connectionOf();
-        const limit = (): Promise<'timeout'> =>
-            sleep(reconnectSeconds * 1000, 'timeout' as const, { ref: false });
-        const attempt = await Promise.race([connection.firstAttempt(), limit()]);
-        if (attempt !== 'connected') {
+        // Один срок на подключение и исход настройки канала (§3.4 v1.26): не два срока подряд.
+        let timer: NodeJS.Timeout | undefined;
+        const limit = new Promise<'timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), reconnectSeconds * 1000);
+            timer.unref();
+        });
+        const outcome = await Promise.race([
+            connection
+                .firstAttempt()
+                .then((attempt) =>
+                    attempt === 'connected' ? connection.channelOutcome(MAIN_CHANNEL) : null,
+                ),
+            limit,
+        ]);
+        clearTimeout(timer);
+        if (outcome === 'timeout') {
+            this.log.debug(
+                { reconnectSeconds },
+                'messaging: первое подключение — срок вышел, запуск продолжается',
+            );
+
             return;
         }
-        const outcome = await Promise.race([connection.channelOutcome(MAIN_CHANNEL), limit()]);
-        if (outcome !== 'timeout' && outcome.kind === 'fatal') {
+        if (outcome !== null && outcome.kind === 'fatal') {
             throw outcome.error;
         }
     }
@@ -319,7 +342,7 @@ export class KitSubscriber {
 
     private openReplica(): void {
         const queue = replicaQueueOf(this.deps.service, this.deps.replica);
-        const types = [...this.replicaHandlers.keys()];
+        const types = typesOf(this.replicaHandlers);
         this.replica = this.connectionOf().createChannel({
             name: REPLICA_CHANNEL,
             confirm: false,
@@ -378,14 +401,24 @@ export class KitSubscriber {
             return;
         }
         const { envelope } = parsed;
-        const registered = this.handlers.get(envelope.type);
-        if (registered === undefined) {
+        const lookup = lookupHandler(this.handlers, envelope);
+        if (lookup.kind === 'unsubscribed') {
             await this.finish(UNKNOWN_TYPE, envelope.id, delivery, () =>
                 this.toDlq(msg, 'unsubscribed', envelope.id, envelope.type, delivery),
             );
 
             return;
         }
+        if (lookup.kind === 'version') {
+            // UC-6 А8: версия не подписана — ack без inbox, проверки data и обработчика.
+            if (this.isCurrent(msg)) {
+                this.main?.ack(msg);
+                this.skip(envelope);
+            }
+
+            return;
+        }
+        const { registered } = lookup;
         const typed = this.typedEnvelope(registered.event, envelope);
         if (!typed.ok) {
             await this.finish(envelope.type, envelope.id, delivery, () =>
@@ -615,12 +648,18 @@ export class KitSubscriber {
 
             return;
         }
-        const registered = this.replicaHandlers.get(parsed.envelope.type);
-        if (registered === undefined) {
+        const lookup = lookupHandler(this.replicaHandlers, parsed.envelope);
+        if (lookup.kind === 'unsubscribed') {
             this.dropReplica(UNKNOWN_TYPE, 'unsubscribed');
 
             return;
         }
+        if (lookup.kind === 'version') {
+            this.skip(parsed.envelope);
+
+            return;
+        }
+        const { registered } = lookup;
         const { type } = registered.event;
         const typed = this.typedEnvelope(registered.event, parsed.envelope);
         if (!typed.ok) {
@@ -634,6 +673,18 @@ export class KitSubscriber {
         } catch (error) {
             this.dropReplica(type, 'handler', typed.envelope.id, error);
         }
+    }
+
+    /** Неподписанная версия подписанного `type`: метрика `skipped` и debug-строка (AC-5.22). */
+    private skip(envelope: Envelope): void {
+        this.deps.metrics?.eventsSkipped.inc({
+            type: envelope.type,
+            version: String(envelope.version),
+        });
+        this.log.debug(
+            { id: envelope.id, type: envelope.type, version: envelope.version },
+            'messaging: версия события не подписана — подтверждено без обработки',
+        );
     }
 
     /**
@@ -656,4 +707,22 @@ export class KitSubscriber {
         );
         this.deps.metrics?.eventsConsumed.inc({ type, result: 'dlq' });
     }
+}
+
+/** Уникальные `type` реестра — привязки очереди. */
+function typesOf(registry: ReadonlyMap<string, Registered>): string[] {
+    return [...new Set([...registry.values()].map(({ event }) => event.type))];
+}
+
+function lookupHandler(
+    registry: ReadonlyMap<string, Registered>,
+    envelope: Pick<Envelope, 'type' | 'version'>,
+): Lookup {
+    const registered = registry.get(eventKey(envelope));
+    if (registered !== undefined) {
+        return { kind: 'found', registered };
+    }
+    const subscribed = [...registry.values()].some(({ event }) => event.type === envelope.type);
+
+    return subscribed ? { kind: 'version' } : { kind: 'unsubscribed' };
 }

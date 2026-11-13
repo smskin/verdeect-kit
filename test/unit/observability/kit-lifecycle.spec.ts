@@ -10,6 +10,7 @@ import {
     KitLifecycle,
     type KitShutdownParticipant,
 } from '../../../src/observability/index.js';
+import { shutdownRemainingMs } from '../../../src/observability/lifecycle.js';
 import { collector } from './support.js';
 
 vi.mock('@sentry/nestjs', () => ({ captureException: vi.fn(), flush: vi.fn(async () => true) }));
@@ -203,6 +204,32 @@ describe('UC-8: программное закрытие close()', () => {
             expect(line).toMatchObject({ service: 'kit-test', replica: 'replica-test' });
         }
         expect(lines[0]).toMatchObject({ level: 30, mode: 'close' });
+    });
+});
+
+describe('UC-8: остаток срока остановки', () => {
+    it('AC-5.11: до начала остановки остаток неизвестен', () => {
+        const { lifecycle } = setup();
+
+        expect(shutdownRemainingMs(lifecycle)).toBeUndefined();
+    });
+
+    it('AC-5.11: остаток считается от close()', async () => {
+        const { lifecycle } = setup();
+        const closing = lifecycle.close();
+        await vi.advanceTimersByTimeAsync(DRAIN_MS + 200);
+
+        expect(shutdownRemainingMs(lifecycle)).toBe(TIMEOUT_MS - DRAIN_MS - 200);
+        await closing;
+    });
+
+    it('AC-5.11: остаток считается от SIGTERM', async () => {
+        const { lifecycle } = setup();
+        lifecycle.listen(['SIGTERM']);
+        process.emit('SIGTERM');
+        await vi.advanceTimersByTimeAsync(DRAIN_MS + 200);
+
+        expect(shutdownRemainingMs(lifecycle)).toBe(TIMEOUT_MS - DRAIN_MS - 200);
     });
 });
 

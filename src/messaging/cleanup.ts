@@ -8,6 +8,7 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import type * as Database from '../database/index.js';
 import type { PoolClient } from '../database/pg.js';
 import { resultOf } from '../internal/cleanup-result.js';
+import { messagingCleanupLockKey } from '../internal/outbox-policy.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
@@ -73,7 +74,8 @@ export class MessagingCleanup {
     private readonly tables: readonly (readonly [CleanupTable, (batch: number) => SQL])[];
     private stopped = false;
     private interval: NodeJS.Timeout | undefined;
-    private current: Promise<void> | undefined;
+    private current: Promise<unknown> | undefined;
+    private pending: Promise<{ readonly ran: boolean }> | undefined;
     private running = false;
 
     constructor(private readonly deps: MessagingCleanupDeps) {
@@ -100,23 +102,27 @@ export class MessagingCleanup {
 
     /** Текущий проход (включая ещё не начатый первый); нет — разрешённый промис. */
     idle(): Promise<void> {
-        return this.current ?? Promise.resolve();
+        return (this.current ?? Promise.resolve()).then(() => undefined);
     }
 
-    /** Проход очистки; идущий проход не накладывается. Ошибка не пробрасывается. */
+    /**
+     * Проход очистки; идущий проход не накладывается (параллельный вызов получает его промис). Ошибка не пробрасывается.
+     * Итог — `{ran}` `runExclusive`: `false` — блокировку держит другая реплика или идёт остановка.
+     */
     run(
         limits: CleanupLimits = { batchSize: CLEANUP_BATCH_SIZE, maxBatches: CLEANUP_MAX_BATCHES },
-    ): Promise<void> {
+    ): Promise<{ readonly ran: boolean }> {
         if (this.stopped) {
-            return Promise.resolve();
+            return Promise.resolve({ ran: false });
         }
-        if (this.running && this.current !== undefined) {
-            return this.current;
+        if (this.running && this.pending !== undefined) {
+            return this.pending;
         }
         this.running = true;
         const pass = this.pass(limits).finally(() => {
             this.running = false;
         });
+        this.pending = pass;
         this.current = pass;
 
         return pass;
@@ -129,13 +135,13 @@ export class MessagingCleanup {
         await this.current;
     }
 
-    private async pass(limits: CleanupLimits): Promise<void> {
+    private async pass(limits: CleanupLimits): Promise<{ readonly ran: boolean }> {
         const { db, database, schema } = this.deps;
         const tables = this.tables.map(([name]) => name);
         try {
             const outcome = await database.runExclusive(
                 db,
-                `verdeect-kit:messaging-cleanup:${schema}`,
+                messagingCleanupLockKey(schema),
                 async (connection) => {
                     for (const [name, sqlOf] of this.tables) {
                         if (this.stopped) {
@@ -148,6 +154,8 @@ export class MessagingCleanup {
             if (!outcome.ran) {
                 this.log.debug({ tables }, 'очистка сообщений: другая реплика');
             }
+
+            return { ran: outcome.ran };
         } catch (error) {
             // Блокировку взять не удалось (БД недоступна): ошибка обеих таблиц.
             for (const table of tables) {
@@ -155,6 +163,8 @@ export class MessagingCleanup {
             }
             this.log.error({ tables, err: sanitizeError(error) }, 'очистка сообщений: ошибка');
             captureError(error);
+
+            return { ran: false };
         }
     }
 

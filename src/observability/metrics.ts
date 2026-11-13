@@ -29,6 +29,11 @@ export interface KitMetrics {
      */
     readonly cleanupRuns: Counter<'table' | 'result'>;
     /**
+     * `verdeect_events_skipped_total{type, version}` — события подписанного `type` с неподписанной версией,
+     * подтверждённые без обработки (§3.4 v1.26, AC-5.22). Ожидаемы на время перехода версии; правила алерта нет.
+     */
+    readonly eventsSkipped: Counter<'type' | 'version'>;
+    /**
      * @internal Источник `verdeect_outbox_*` при запросе `/metrics` (`collect()`, §3.4 v1.25): регистрирует relay, `null` —
      * снять. Источник сам ставит значения и не отклоняется; запрос в полёте общий для обеих метрик.
      */
@@ -91,6 +96,12 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
             name: 'verdeect_cleanup_runs_total',
             help: 'Проходы фоновой очистки по таблице и итогу (ok, partial, interrupted, error)',
             labelNames: ['table', 'result'] as const,
+            registers,
+        }),
+        eventsSkipped: new Counter({
+            name: 'verdeect_events_skipped_total',
+            help: 'События с неподписанной версией подписанного типа, подтверждённые без обработки',
+            labelNames: ['type', 'version'] as const,
             registers,
         }),
         setOutboxSource: (source) => {

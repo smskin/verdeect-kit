@@ -1,13 +1,14 @@
 // AC-5.11 (UC-8): остановка — подписчик снимает потребителей и дожидается начатой доставки; обработчик дольше срока —
 // подписчик идёт дальше после shutdownDeadline; relay при неподтверждённой публикации фиксирует транзакцию пачки без
-// attempts + 1 — всё в общем сроке (prd.md §3.4; П9). Эквивалентность — O subscriber (остановка), P outbox-relay (STOPPED).
+// attempts + 1 — всё в общем сроке; срок обработчиков — от начала остановки (prd.md §3.4 v1.26; П9). Эквивалентность — O subscriber (остановка), P outbox-relay (STOPPED).
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
 import { KIT_LOGGER } from '../../../src/internal/tokens.js';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
+import { KitLifecycle } from '../../../src/observability/lifecycle.js';
 import { countQueries } from '../../../src/testing/count-queries.js';
 import { tcpProxy, type TcpProxy } from '../../../src/testing/tcp-proxy.js';
 import { TEST_TIMEOUT_SCALE } from '../../../src/testing/timeout-scale.js';
@@ -43,6 +44,7 @@ describe('UC-8: остановка сообщений', () => {
         await proxy?.close();
         proxy = undefined;
         await truncateFixtures();
+        vi.restoreAllMocks();
     });
 
     it('AC-5.11: остановка — подписчик снимает потребителей и дожидается начатой доставки, relay дорабатывает пачку, очистка не начинает новую — в общем сроке', async () => {
@@ -106,6 +108,59 @@ describe('UC-8: остановка сообщений', () => {
                 ),
             ).toBe(true);
             // Без ack: брокер возвращает доставку при закрытии соединения на шаге 4 (эталон O), повтор закроет inbox.
+            const client = broker;
+            await waitUntil(
+                async () => (await client.queueInfo('kit'))?.messageCount === 1,
+                'сообщение возвращено в kit',
+            );
+            expect(lines.some((line) => line['code'] === 'SHUTDOWN_TIMEOUT')).toBe(false);
+        } finally {
+            consumer.gate.release();
+        }
+    });
+
+    it('AC-5.11: шаг 2 длится 5 с при SHUTDOWN_TIMEOUT_MS=10000 — обработчик дольше 2 с возвращает сообщение, остановка ≤ 10 с, сторож не срабатывает', async () => {
+        await resetQueues();
+        broker = await BrokerClient.connect();
+        const { logger, lines } = memoryLogger();
+        const app = await createMessagingApp({
+            options: { subscriber: { dedupe: 'none' } },
+            providers: [TestConsumer],
+            env: { SHUTDOWN_TIMEOUT_MS: '10000', SHUTDOWN_DRAIN_MS: '0' },
+            overrides: [{ provide: KIT_LOGGER, useValue: logger }],
+        });
+        await initReady(app);
+        // Шаг 2 «длится» 5 с: участник сдвигает часы KitLifecycle (performance.now) без реального ожидания.
+        const realNow = performance.now.bind(performance);
+        let shift = 0;
+        vi.spyOn(performance, 'now').mockImplementation(() => realNow() + shift);
+        app.get(KitLifecycle).register(
+            {
+                name: 'slow-step-2',
+                stop: () => {
+                    shift += 5_000;
+                },
+            },
+            { step: 2 },
+        );
+        const consumer = app.get(TestConsumer);
+        try {
+            const entered = consumer.nextEntry();
+            publishEnvelope(broker, testEnvelope({ data: { noteId: 'n1', title: 'block' } }));
+            await entered;
+            const t0 = realNow();
+            await app.close();
+            const closeMs = realNow() - t0;
+
+            // Срок обработчиков 2000 (остаток 5000 − 3000), а не 7000.
+            expect(closeMs).toBeLessThan(4_000 * TEST_TIMEOUT_SCALE);
+            expect(closeMs).toBeLessThanOrEqual(10_000 * TEST_TIMEOUT_SCALE);
+            expect(
+                lines.some(
+                    (line) =>
+                        line['msg'] === 'messaging: срок остановки подписчика вышел, идём дальше',
+                ),
+            ).toBe(true);
             const client = broker;
             await waitUntil(
                 async () => (await client.queueInfo('kit'))?.messageCount === 1,

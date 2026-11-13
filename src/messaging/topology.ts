@@ -61,18 +61,23 @@ export function replicaQueueOf(service: string, replica: string): string {
 }
 
 /**
- * Общий срок обработчиков остановки (relay, подписчик), мс: остаток SHUTDOWN_TIMEOUT_MS после паузы SHUTDOWN_DRAIN_MS и
- * закрытия канала и соединения, не меньше 1 с (П9).
+ * Общий срок обработчиков остановки (relay, подписчик), мс (§3.4 v1.26, AC-5.11):
+ * `shutdownDeadline = min(max(1000, T − D − 3000), остаток − 3000)`, где T — SHUTDOWN_TIMEOUT_MS, D —
+ * SHUTDOWN_DRAIN_MS, 3000 — закрытие канала и соединения, остаток — SHUTDOWN_TIMEOUT_MS минус время от сигнала или
+ * `close()`; остаток < 3000 → 0. Остаток неизвестен (остановка не через KitLifecycle) — `max(1000, T − D − 3000)`.
  */
-export function handlersDeadlineMs(env: {
-    readonly SHUTDOWN_TIMEOUT_MS: number;
-    readonly SHUTDOWN_DRAIN_MS: number;
-}): number {
-    return Math.max(
-        1_000,
-        env.SHUTDOWN_TIMEOUT_MS -
-            env.SHUTDOWN_DRAIN_MS -
-            CHANNEL_CLOSE_TIMEOUT_MS -
-            CONNECTION_CLOSE_TIMEOUT_MS,
-    );
+export function handlersDeadlineMs(
+    env: { readonly SHUTDOWN_TIMEOUT_MS: number; readonly SHUTDOWN_DRAIN_MS: number },
+    remainingMs?: number,
+): number {
+    const closeMs = CHANNEL_CLOSE_TIMEOUT_MS + CONNECTION_CLOSE_TIMEOUT_MS;
+    const planned = Math.max(1_000, env.SHUTDOWN_TIMEOUT_MS - env.SHUTDOWN_DRAIN_MS - closeMs);
+    if (remainingMs === undefined) {
+        return planned;
+    }
+    if (remainingMs < closeMs) {
+        return 0;
+    }
+
+    return Math.min(planned, Math.round(remainingMs - closeMs));
 }

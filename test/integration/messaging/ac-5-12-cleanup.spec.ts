@@ -4,11 +4,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
 import { runExclusive } from '../../../src/database/run-exclusive.js';
+import { messagingCleanupLockKey } from '../../../src/internal/outbox-policy.js';
 import { countQueries } from '../../../src/testing/count-queries.js';
 import { adminQuery, createTestDb, truncateFixtures } from '../../support/database.js';
 import { barrier, createCleanupStand, messagingCleanupRuns } from '../../support/messaging.js';
 
-const LOCK_KEY = 'verdeect-kit:messaging-cleanup:kit';
+const LOCK_KEY = messagingCleanupLockKey('kit');
 
 async function seedOutbox(
     id: string,
