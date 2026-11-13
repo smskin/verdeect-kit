@@ -83,7 +83,12 @@ describe('UC-1: справка verdeect-kit', () => {
         const { code, stdout, stderr } = await run(['nope']);
 
         expect(code).toBe(1);
-        expect(JSON.parse(stdout)).toMatchObject({ error: { code: 'UNKNOWN_COMMAND' } });
+        const lines = stdout.trimEnd().split('\n');
+        expect(lines).toHaveLength(1);
+        expect(JSON.parse(lines[0] ?? '')).toEqual({
+            error: { code: 'UNKNOWN_COMMAND', message: expect.any(String) as unknown },
+        });
+        expect(stderr).not.toContain('UNKNOWN_COMMAND');
         for (const form of Object.values(FORMS).flat()) {
             expect(stderr).toContain(form);
         }

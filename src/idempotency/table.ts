@@ -1,6 +1,7 @@
 // createIdempotencyTable, idempotencyPurgeSql (prd.md §3.3а v1.14, §6, AC-4.8, AC-4.14). Эталон — O idempotency.schema.ts,
 // 0002_functions.sql idempotency_purge. По PRD: tenant nullable, subject вместо actor, ответ с Location, политика
-// IS NOT DISTINCT FROM nullif(…). Файл без pg: его грузит drizzle-kit со схемой сервиса.
+// IS NOT DISTINCT FROM nullif(…); v1.28 — content_type первого ответа (повтор с тем же Content-Type). Файл без pg: его
+// грузит drizzle-kit со схемой сервиса.
 import { sql } from 'drizzle-orm';
 import {
     check,
@@ -43,6 +44,8 @@ function defineTable(schema: PgSchema) {
             responseStatus: smallint('response_status'),
             responseBody: jsonb('response_body'),
             responseLocation: text('response_location'),
+            // Content-Type первого ответа; '' — пустой ответ; NULL — запись до колонки (§3.3а v1.28).
+            contentType: text('content_type'),
             createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
         },
         (t) => [
@@ -67,7 +70,8 @@ export type KitIdempotencyTable = ReturnType<typeof defineTable>;
 /**
  * Таблица `idempotency_key` в схеме сервиса (§6): область (`tenant?`, `subject`), ключ, отпечаток запроса, метка
  * попытки `attempt` (ответ пишет только захватившая строку попытка), состояние,
- * сохранённый ответ (статус, тело, `Location`), время создания; RLS
+ * сохранённый ответ (статус, тело, `Location`, `content_type` — `Content-Type` первого ответа; `''` — пустой ответ;
+ * `NULL` — запись до колонки), время создания; RLS
  * `tenant IS NOT DISTINCT FROM nullif(current_setting('app.tenant', true), '')`. SQL генерирует `drizzle-kit` сервиса;
  * `FORCE ROW LEVEL SECURITY`, права `<svc>_app` и функцию очистки (`idempotencyPurgeSql`) — SQL-миграция сервиса.
  */

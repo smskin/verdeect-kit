@@ -295,6 +295,49 @@ export class TestConsumerV2 implements OnModuleInit {
     }
 }
 
+/**
+ * Обработчик v1 события фикстуры с `unknownVersion: 'dlq'` (AC-5.22): неподписанная версия — в `<svc>.dlq`. Конверты
+ * по порядку.
+ */
+@Injectable()
+export class TestConsumerDlq implements OnModuleInit {
+    /** Конверты по порядку. */
+    readonly received: Envelope[] = [];
+
+    constructor(private readonly subscriber: KitSubscriber) {}
+
+    onModuleInit(): void {
+        this.subscriber.on(
+            TestNoteCreated,
+            async (event) => {
+                this.received.push(event);
+                await Promise.resolve();
+            },
+            { unknownVersion: 'dlq' },
+        );
+    }
+}
+
+/** Обработчик v2 события фикстуры с `unknownVersion: 'dlq'` — пара к `TestConsumerDlq` (AC-5.22). */
+@Injectable()
+export class TestConsumerDlqV2 implements OnModuleInit {
+    /** Конверты по порядку. */
+    readonly received: Envelope[] = [];
+
+    constructor(private readonly subscriber: KitSubscriber) {}
+
+    onModuleInit(): void {
+        this.subscriber.on(
+            TestNoteCreatedV2,
+            async (event) => {
+                this.received.push(event);
+                await Promise.resolve();
+            },
+            { unknownVersion: 'dlq' },
+        );
+    }
+}
+
 /** Обработчик фикстуры на реплике (`onReplica`): режим `data.title` — `ok`, `fail`; счётчик вызовов. */
 @Injectable()
 export class ReplicaConsumer implements OnModuleInit {
@@ -458,4 +501,15 @@ export async function createCleanupStand(
     await cleanup.idle();
 
     return { app, cleanup };
+}
+
+/** Ждёт копию в `kit.dlq`, забирает её и возвращает `x-dlq-reason`. */
+export async function dlqReason(broker: BrokerClient): Promise<string | undefined> {
+    await waitUntil(
+        async () => ((await broker.queueInfo('kit.dlq'))?.messageCount ?? 0) > 0,
+        'копия в kit.dlq',
+    );
+    const message = await broker.take('kit.dlq');
+
+    return message?.properties.headers?.['x-dlq-reason'] as string | undefined;
 }

@@ -1,10 +1,12 @@
 // Стенд уровня I для /idempotency (prd.md §3.3а v1.14, AC-4.14, AC-9.5): приложение kit с KitConfigModule,
 // VerdeectAuthModule (издатель createTestSigner), KitDatabaseModule и KitIdempotencyModule на фикстуре БД; маршруты
 // /echo (пользователь), /strict (required), /service и /service-plain (служба), /open (без guard'а), /secret и
-// /secret-list, /secret-stamp (redact, AC-4.14 v1.26).
+// /secret-list, /secret-stamp (redact, AC-4.14 v1.26); /text, /abc, /number, /stamp, /csv, /empty — Content-Type повтора
+// (§3.3а v1.28).
 import {
     Body,
     Controller,
+    Header,
     HttpCode,
     Module,
     Post,
@@ -161,6 +163,55 @@ class EchoController {
         handlers.calls += 1;
 
         return [{ secret: `sk_${randomBytes(16).toString('hex')}` }];
+    }
+
+    @Post('text')
+    @Idempotent()
+    text(): string {
+        handlers.calls += 1;
+
+        return '42';
+    }
+
+    @Post('abc')
+    @Idempotent()
+    abc(): string {
+        handlers.calls += 1;
+
+        return 'abc';
+    }
+
+    @Post('number')
+    @Idempotent()
+    number(): number {
+        handlers.calls += 1;
+
+        return 42;
+    }
+
+    @Post('stamp')
+    @Idempotent()
+    stamp(): Stamp {
+        handlers.calls += 1;
+
+        return new Stamp(handlers.calls);
+    }
+
+    @Post('csv')
+    @Header('Content-Type', 'text/csv')
+    @Idempotent()
+    csv(): string {
+        handlers.calls += 1;
+
+        return 'a,b';
+    }
+
+    @Post('empty')
+    @Idempotent()
+    empty(): undefined {
+        handlers.calls += 1;
+
+        return undefined;
     }
 
     @Post('service-plain')

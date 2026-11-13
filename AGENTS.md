@@ -18,7 +18,7 @@
 
 ## Структура проекта
 
-Состояние: выпущены `1.0.0-rc.1` и `1.0.0-rc.2` — все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.3` — права публикации RabbitMQ по префиксам (`docs/releasing.md`).
+Состояние: последний опубликованный выпуск — `1.0.0-rc.7`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.8` (`docs/releasing.md`).
 
 ```
 verdeect-kit/
@@ -67,7 +67,7 @@ verdeect-kit/
 ├── Makefile                      # единая точка входа: make help
 ├── scripts/publish.mjs           # публикация из CI: тег = version, версии нет в npm (AC-1.10)
 ├── docs/                         # releasing.md, testing.md
-├── requirements/0000-kit/        # prd.md (v1.11 — источник истины), README.md (этапы), files/inventory.md (эталоны)
+├── requirements/0000-kit/        # prd.md (v1.29, ревизия r24 — источник истины), README.md (этапы), files/inventory.md (эталоны)
 ├── .ai-factory/                  # контекст AI Factory (DESCRIPTION, ARCHITECTURE, rules, skill-context, plans)
 ├── package.json, pnpm-workspace.yaml, tsconfig.json, tsconfig.build.json, eslint.config.js, .prettierrc.json
 ├── vitest.config.ts, vitest.integration.config.ts, vitest.timing.config.ts, vitest.package.config.ts

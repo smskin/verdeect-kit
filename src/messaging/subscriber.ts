@@ -3,7 +3,8 @@
 // метрика *_events_consumed_total; из B — retryCount(headers, queue). По PRD: x-dlq-reason (П7), inbox в транзакции
 // подписчика (П6), проверка data и признака tenant, dedupe 'none' без БД, отказ запуска при другом TTL .retry (П8).
 // Тип — по envelope.type, не по routing key (после повтора ключ — имя очереди). Тело сообщения не логируется. Обработчик —
-// по паре (type, version), неподписанная версия подписанного type — ack и verdeect_events_skipped_total (AC-5.22).
+// по паре (type, version), неподписанная версия подписанного type — ack и verdeect_events_skipped_total (AC-5.22);
+// v1.28 — опция unknownVersion у on: 'dlq' отправляет неподписанную версию в <svc>.dlq с x-dlq-reason: version.
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 import type { Db, DbTx } from '../database/db.js';
 import type { KitMetrics } from '../observability/metrics.js';
@@ -48,10 +49,13 @@ export type KitReplicaHandler<E extends KitEvent> = (event: Envelope<E>) => Prom
 /** Итог доставки — значение метки `result` метрики `verdeect_events_consumed_total`. */
 type DeliveryResult = 'handled' | 'duplicate' | 'retry' | 'dlq';
 
+/** Поведение при неподписанной версии подписанного `type` (§3.4 v1.28). */
+type UnknownVersion = 'skip' | 'dlq';
+
 /** Обработчик по паре конверта: найден, `type` подписан без этой версии или `type` не подписан. */
 type Lookup =
     | { readonly kind: 'found'; readonly registered: Registered }
-    | { readonly kind: 'version' }
+    | { readonly kind: 'version'; readonly unknownVersion: UnknownVersion }
     | { readonly kind: 'unsubscribed' };
 
 const MAIN_CHANNEL = 'subscriber';
@@ -59,13 +63,22 @@ const REPLICA_CHANNEL = 'subscriber-replica';
 const UNKNOWN_TYPE = 'unknown';
 
 /** Причины разбора — событие GlitchTip с ограничением частоты (П7). */
-const PARSE_REASONS = new Set(['not-json', 'envelope', 'unsubscribed', 'tenant', 'data']);
+const PARSE_REASONS = new Set([
+    'not-json',
+    'envelope',
+    'unsubscribed',
+    'tenant',
+    'data',
+    'version',
+]);
 
 interface Registered {
     readonly event: KitEvent;
     readonly handler: (event: Envelope, tx: DbTx | null) => Promise<void>;
     /** Защита от повторов обработчика: опция `on` или `dedupe` модуля. */
     readonly dedupe: 'inbox' | 'none';
+    /** Неподписанная версия `type`: опция `on` (одна на `type`); у `onReplica` — всегда `'skip'`. */
+    readonly unknownVersion: UnknownVersion;
 }
 
 /** Зависимости подписчика (внутренние). */
@@ -98,6 +111,8 @@ interface DlqOptions {
     readonly invalid?: boolean;
     readonly fields?: readonly string[];
     readonly error?: unknown;
+    /** Версия конверта — в `error`-лог причины `version` (AC-5.22). */
+    readonly version?: number;
 }
 
 function is406TtlMismatch(error: unknown): boolean {
@@ -132,24 +147,45 @@ export class KitSubscriber {
      * Обработчик события из очереди `<svc>`. `dedupe` переопределяет `dedupe` модуля (§3.4 v1.25): `'none'` — без inbox
      * и без транзакции пакета, обработчик получает `(event, null)` и сам открывает короткие транзакции через `Db`;
      * `'inbox'` — inbox и транзакция `Db` с `DbContext` из конверта.
-     * @throws {TypeError} пара (`type`, `version`) уже зарегистрирована, приложение уже запущено, `dedupe` вне `'inbox' | 'none'` или
-     * `'inbox'` без таблицы inbox у модуля (отказ запуска).
+     *
+     * `unknownVersion` (§3.4 v1.28, умолч. `'skip'`) — что делать с конвертом подписанного `type`, версия которого не
+     * подписана: `'skip'` — ack без обработки, `verdeect_events_skipped_total`; `'dlq'` — сразу в `<svc>.dlq` с
+     * `x-dlq-reason: version`, `error`-лог, `verdeect_events_consumed_total{result: 'dlq'}`, `captureThrottled`.
+     * Значение относится к `type`: у всех `on` одного `type` оно одно. `'dlq'` — для учётных событий, которые нельзя
+     * потерять: сообщения переигрываются из DLQ после того, как сервис научится новой версии. У `onReplica` опции нет.
+     * @throws {TypeError} пара (`type`, `version`) уже зарегистрирована, приложение уже запущено, `dedupe` вне `'inbox' | 'none'`,
+     * `unknownVersion` вне `'skip' | 'dlq'` или другое, чем у прежних `on` того же `type`, или `'inbox'` без таблицы
+     * inbox у модуля (отказ запуска).
      */
     on<E extends KitEvent>(
         event: E,
         handler: KitEventHandler<E>,
-        options: { readonly dedupe?: 'inbox' | 'none' } = {},
+        options: {
+            readonly dedupe?: 'inbox' | 'none';
+            readonly unknownVersion?: UnknownVersion;
+        } = {},
     ): void {
         const dedupe = options.dedupe ?? this.deps.dedupe;
         if (dedupe !== 'inbox' && dedupe !== 'none') {
             throw new TypeError(`KitSubscriber.on: dedupe ${String(dedupe)} — 'inbox' или 'none'`);
+        }
+        const unknownVersion = options.unknownVersion ?? 'skip';
+        if (unknownVersion !== 'skip' && unknownVersion !== 'dlq') {
+            throw new TypeError(
+                `KitSubscriber.on: unknownVersion ${String(unknownVersion)} — 'skip' или 'dlq'`,
+            );
         }
         if (dedupe === 'inbox' && this.deps.inbox === undefined) {
             throw new TypeError(
                 `KitSubscriber.on: обработчик ${event.type} с dedupe: 'inbox' — у KitMessagingModule нет таблицы inbox (subscriber.inbox: createInboxTable(schema))`,
             );
         }
-        this.register(this.handlers, 'on', event, handler as Registered['handler'], dedupe);
+        this.register(this.handlers, 'on', event, {
+            event,
+            handler: handler as Registered['handler'],
+            dedupe,
+            unknownVersion,
+        });
     }
 
     /**
@@ -159,13 +195,12 @@ export class KitSubscriber {
      * @throws {TypeError} пара (`type`, `version`) уже зарегистрирована или приложение уже запущено.
      */
     onReplica<E extends KitEvent>(event: E, handler: KitReplicaHandler<E>): void {
-        this.register(
-            this.replicaHandlers,
-            'onReplica',
+        this.register(this.replicaHandlers, 'onReplica', event, {
             event,
-            (envelope) => (handler as KitReplicaHandler<KitEvent>)(envelope),
-            'none',
-        );
+            handler: (envelope) => (handler as KitReplicaHandler<KitEvent>)(envelope),
+            dedupe: 'none',
+            unknownVersion: 'skip',
+        });
     }
 
     /** Соединение режима прослушивания; в режиме CLI сюда не доходит (подписчик не запускается). */
@@ -255,8 +290,7 @@ export class KitSubscriber {
         registry: Map<string, Registered>,
         method: 'on' | 'onReplica',
         event: KitEvent,
-        handler: Registered['handler'],
-        dedupe: Registered['dedupe'],
+        registered: Registered,
     ): void {
         if (this.started) {
             throw new TypeError(
@@ -269,7 +303,13 @@ export class KitSubscriber {
                 `KitSubscriber.${method}: обработчик ${event.type} v${event.version} уже зарегистрирован`,
             );
         }
-        registry.set(key, { event, handler, dedupe });
+        const other = [...registry.values()].find((item) => item.event.type === event.type);
+        if (other !== undefined && other.unknownVersion !== registered.unknownVersion) {
+            throw new TypeError(
+                `KitSubscriber.${method}: у обработчиков ${event.type} разные unknownVersion — значение одно на type`,
+            );
+        }
+        registry.set(key, registered);
     }
 
     /**
@@ -405,6 +445,16 @@ export class KitSubscriber {
         if (lookup.kind === 'unsubscribed') {
             await this.finish(UNKNOWN_TYPE, envelope.id, delivery, () =>
                 this.toDlq(msg, 'unsubscribed', envelope.id, envelope.type, delivery),
+            );
+
+            return;
+        }
+        if (lookup.kind === 'version' && lookup.unknownVersion === 'dlq') {
+            // UC-6 А8, unknownVersion: 'dlq' (v1.28): сразу в DLQ без inbox, проверки data и обработчика.
+            await this.finish(envelope.type, envelope.id, delivery, () =>
+                this.toDlq(msg, 'version', envelope.id, envelope.type, delivery, {
+                    version: envelope.version,
+                }),
             );
 
             return;
@@ -614,7 +664,17 @@ export class KitSubscriber {
 
             return;
         }
-        this.log.error({ id, type, reason, fields, delivery }, 'messaging: сообщение в DLQ');
+        this.log.error(
+            {
+                id,
+                type,
+                reason,
+                fields,
+                delivery,
+                ...(options.version === undefined ? {} : { version: options.version }),
+            },
+            'messaging: сообщение в DLQ',
+        );
         if (reason === 'retries-exhausted') {
             captureError(options.error, {
                 tags: { code: 'MESSAGE_DEAD_LETTERED' },
@@ -722,7 +782,10 @@ function lookupHandler(
     if (registered !== undefined) {
         return { kind: 'found', registered };
     }
-    const subscribed = [...registry.values()].some(({ event }) => event.type === envelope.type);
+    // Значение unknownVersion одинаково у всех записей type (проверяет register).
+    const sameType = [...registry.values()].find(({ event }) => event.type === envelope.type);
 
-    return subscribed ? { kind: 'version' } : { kind: 'unsubscribed' };
+    return sameType === undefined
+        ? { kind: 'unsubscribed' }
+        : { kind: 'version', unknownVersion: sameType.unknownVersion };
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "consumer"."idempotency_key" ADD COLUMN "content_type" text;
