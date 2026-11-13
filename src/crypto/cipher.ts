@@ -1,4 +1,4 @@
-// Шифр секретов /crypto (prd.md §3.6, UC-10, AC-7.1–AC-7.5). Эталон — B identity-client session-cipher.ts (версия ключа
+// Шифр секретов и производные ключи HMAC /crypto (prd.md §3.6, UC-10, AC-7.1–AC-7.6). Эталон — B identity-client session-cipher.ts (версия ключа
 // v<N>, AAD, версия из значения без перебора) + HKDF-SHA256 и строгие длины IV/тега из O private-key-cipher.ts
 // (OR-102 п. 7). Старые форматы не читаются (P0, N9).
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
@@ -120,6 +120,33 @@ function assertAad(aad: string, where: string): void {
     }
 }
 
+type CheckedKeys = readonly { readonly version: number; readonly secret: string }[];
+
+/** Общие проверки `createCipher` и `deriveKeys`: `service`, `purpose`, `keys` (пути без значений). */
+function checkOptions(where: string, options: KitCipherOptions): CheckedKeys {
+    const { service, purpose } = options;
+    assertServiceName(service, where);
+    if (!PURPOSE_PATTERN.test(purpose)) {
+        throw new TypeError(`${where}: purpose «${purpose}» вне формата ^[a-z][a-z0-9-]{1,31}$`);
+    }
+    const checked = encryptionKeysSchema.safeParse(options.keys);
+    if (!checked.success) {
+        const paths = checked.error.issues.map((issue) =>
+            ['keys', ...issue.path.map(String)].join('.'),
+        );
+        throw new TypeError(`${where}: неверные keys: ${[...new Set(paths)].join(', ')}`);
+    }
+
+    return checked.data;
+}
+
+/** HKDF-SHA256: IKM — декодированные байты секрета, соль пустая, 32 байта. */
+function hkdfKey(secret: string, info: string): Buffer {
+    return Buffer.from(
+        hkdfSync('sha256', Buffer.from(secret, 'base64url'), Buffer.alloc(0), info, KEY_BYTES),
+    );
+}
+
 /**
  * Создаёт шифр AES-256-GCM для назначения `purpose` сервиса `service`. Ключ каждой версии — HKDF-SHA256 от
  * декодированных байт секрета, соль пустая, `info = verdeect-<service>:<purpose>`, 32 байта; выводится один раз.
@@ -131,36 +158,10 @@ function assertAad(aad: string, where: string): void {
  * @throws {TypeError} `service`, `purpose` вне формата или `keys` не по схеме `ENCRYPTION_KEYS` (пути без значений).
  */
 export function createCipher(options: KitCipherOptions): KitCipher {
-    const { service, purpose } = options;
-    assertServiceName(service, 'createCipher');
-    if (!PURPOSE_PATTERN.test(purpose)) {
-        throw new TypeError(
-            `createCipher: purpose «${purpose}» вне формата ^[a-z][a-z0-9-]{1,31}$`,
-        );
-    }
-    const checked = encryptionKeysSchema.safeParse(options.keys);
-    if (!checked.success) {
-        const paths = checked.error.issues.map((issue) =>
-            ['keys', ...issue.path.map(String)].join('.'),
-        );
-        throw new TypeError(`createCipher: неверные keys: ${[...new Set(paths)].join(', ')}`);
-    }
-    const info = `verdeect-${service}:${purpose}`;
-    const keys = new Map(
-        checked.data.map(({ version, secret }) => [
-            version,
-            Buffer.from(
-                hkdfSync(
-                    'sha256',
-                    Buffer.from(secret, 'base64url'),
-                    Buffer.alloc(0),
-                    info,
-                    KEY_BYTES,
-                ),
-            ),
-        ]),
-    );
-    const [current] = checked.data;
+    const checked = checkOptions('createCipher', options);
+    const info = `verdeect-${options.service}:${options.purpose}`;
+    const keys = new Map(checked.map(({ version, secret }) => [version, hkdfKey(secret, info)]));
+    const [current] = checked;
     const currentKey = current === undefined ? undefined : keys.get(current.version);
     if (current === undefined || currentKey === undefined) {
         // Недостижимо: схема требует min(1); проверка — для noUncheckedIndexedAccess.
@@ -202,6 +203,30 @@ export function createCipher(options: KitCipherOptions): KitCipher {
             return parse(value).version !== current.version;
         },
     };
+}
+
+/** Производный ключ HMAC одной версии `ENCRYPTION_KEYS` (§3.6, AC-7.6). */
+export interface KitDerivedKey {
+    /** Версия ключа из `ENCRYPTION_KEYS`. */
+    readonly version: number;
+    /** Ключ HMAC, 32 байта. */
+    readonly key: Buffer;
+}
+
+/**
+ * Ключи HMAC (подпись cookie, печати, коды подтверждения) — по ключу на версию `keys` в порядке списка. Ключ —
+ * HKDF-SHA256 от декодированных байт секрета, соль пустая, 32 байта, `info = verdeect-<service>:<purpose>:mac`:
+ * не совпадает с ключом шифра `createCipher` того же `purpose`. Без кеша и модуля Nest — вызывается при создании
+ * провайдера сервиса.
+ *
+ * Ротация: подпись — первым ключом (текущая версия), проверка — всеми ключами списка.
+ * @throws {TypeError} `service`, `purpose` вне формата или `keys` не по схеме `ENCRYPTION_KEYS` (пути без значений).
+ */
+export function deriveKeys(options: KitCipherOptions): readonly KitDerivedKey[] {
+    const checked = checkOptions('deriveKeys', options);
+    const info = `verdeect-${options.service}:${options.purpose}:mac`;
+
+    return checked.map(({ version, secret }) => ({ version, key: hkdfKey(secret, info) }));
 }
 
 /**
