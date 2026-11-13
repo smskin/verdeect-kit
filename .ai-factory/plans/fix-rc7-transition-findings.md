@@ -66,7 +66,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 1: `/crypto` (пункт а)
 
-- [ ] **Task 1a: тест AC-7.6 `deriveKeys`** — §3.6, AC-7.6
+- [x] **Task 1a: тест AC-7.6 `deriveKeys`** — §3.6, AC-7.6
   - **Skill:** nestjs-code test unit crypto ac-7-6-derive-keys (CREATE) → `test/unit/crypto/ac-7-6-derive-keys.spec.ts`
   - `describe('UC-10: deriveKeys')`, тесты `AC-7.6: …`:
     - две версии `ENCRYPTION_KEYS` (порядок 2, 1) → два элемента в том же порядке с их `version`, `key` — `Buffer` длиной 32;
@@ -76,7 +76,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - На старом коде падает: экспорта `deriveKeys` нет.
   - Логи: нет (чистая функция).
 
-- [ ] **Task 1b: `deriveKeys` и `KitDerivedKey`** — §3.6, AC-7.6 (depends on 1a)
+- [x] **Task 1b: `deriveKeys` и `KitDerivedKey`** — §3.6, AC-7.6 (depends on 1a)
   - **Skill:** nestjs-code generic src/crypto/cipher.ts (MODIFY); nestjs-code generic src/crypto/index.ts (MODIFY)
   - `cipher.ts`: проверки `service`, `purpose`, `keys` из тела `createCipher` вынести во внутреннюю функцию файла. Она принимает имя вызывающего (для префикса сообщения) и опции и возвращает проверенные ключи. `createCipher` и `deriveKeys` вызывают её; тексты ошибок `createCipher` не меняются.
   - `deriveKeys({service, keys, purpose})` возвращает readonly-массив `KitDerivedKey` (`{version: number, key: Buffer}`, readonly-поля) в порядке `keys`. Ключ — HKDF-SHA256: IKM — декодированные base64url-байты секрета, соль пустая, длина 32, `info = verdeect-<service>:<purpose>:mac`. Без кеша и Nest-модуля.
@@ -88,7 +88,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 2: `/idempotency` (пункт б)
 
-- [ ] **Task 2a: тест AC-4.14 `redact`** — §3.3а, AC-4.14
+- [x] **Task 2a: тест AC-4.14 `redact`** — §3.3а, AC-4.14
   - **Skill:** nestjs-code test integration idempotency ac-4-14-redact (CREATE) → `test/integration/idempotency/ac-4-14-redact.spec.ts`; nestjs-code test integration idempotency support (MODIFY) → `test/integration/idempotency/support.ts`
   - `support.ts`: в `EchoController` (под `VerdeectAuthGuard`) добавить два маршрута:
     - `POST /secret` с `@Idempotent({redact: ['secret']})`: ставит `Location: /secret/<n>`, отвечает 201 `{id, secret: 'sk_<случайная строка>'}`;
@@ -102,7 +102,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - На старом коде падает: в колонке есть секрет, повтор отдаёт секрет.
   - Логи: нет.
 
-- [ ] **Task 2b: `@Idempotent({redact})`** — §3.3а, AC-4.14 (depends on 2a)
+- [x] **Task 2b: `@Idempotent({redact})`** — §3.3а, AC-4.14 (depends on 2a)
   - **Skill:** nestjs-code generic src/internal/metadata.ts (MODIFY); nestjs-code generic src/idempotency/idempotent.decorator.ts (MODIFY); nestjs-code generic src/idempotency/idempotency.interceptor.ts (MODIFY)
   - `metadata.ts`: в `KitIdempotentOptions` поле `redact?: readonly string[]` с TSDoc: имена полей верхнего уровня, один уровень, без путей, для одноразовых секретов в ответе.
   - Декоратор: опция передаётся в метаданные. Имена `redact` проверяются при объявлении, как `tenantFromBody`: пустое имя или имя с `.` или `[` → `TypeError('@Idempotent: redact — только поля верхнего уровня')` (KT-76 п. 4).
@@ -115,7 +115,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 3: `/messaging` (пункты в, д, е, ж)
 
-- [ ] **Task 3a: тест типов AC-5.21** — §3.4, AC-5.21
+- [x] **Task 3a: тест типов AC-5.21** — §3.4, AC-5.21
   - **Skill:** nestjs-code test unit messaging ac-5-21-outbox-table (CREATE) → `test/unit/messaging/ac-5-21-outbox-table.test-d.ts`
   - `expectTypeOf`, сравнение с `string` и `string | null`:
     - `$inferSelect['tenant']` у `createOutboxTable(s)` и `createOutboxTable(s, {tenantNullable: false})` — `string`;
@@ -124,7 +124,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - На старом коде падает: у варианта по умолчанию `tenant` — `string | null`.
   - Проверка, что тест типов реально исполняется (KT-77): `vitest.config.ts` включает `typecheck` (`enabled: true`, `include: ['test/unit/**/*.test-d.ts']`), `tsconfig.json` включает `test` — файл проверяют и Vitest, и `pnpm typecheck` (`make analyse`, входит в `make ci`). При реализации временно заменить одно ожидание на заведомо неверный тип и убедиться, что `pnpm exec vitest run test/unit/messaging/ac-5-21-outbox-table.test-d.ts` и `pnpm typecheck` падают; затем вернуть. Результат — в отчёт.
 
-- [ ] **Task 3b: перегрузки `createOutboxTable`** — §3.4, AC-5.21 (depends on 3a)
+- [x] **Task 3b: перегрузки `createOutboxTable`** — §3.4, AC-5.21 (depends on 3a)
   - **Skill:** nestjs-code generic src/messaging/tables.ts (MODIFY); nestjs-code generic src/messaging/kit-messaging.module.ts (MODIFY); nestjs-code generic src/messaging/outbox-store.ts (MODIFY); nestjs-code generic src/messaging/cleanup.ts (MODIFY); nestjs-code generic src/messaging/config.ts (MODIFY)
   - `tables.ts`: две сигнатуры-перегрузки и одна реализация.
     - Без опций или с `tenantNullable: false` (литеральный тип `false` или `undefined`) — тип таблицы с колонкой `tenant` `notNull`.
@@ -136,7 +136,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Логи: нет.
   - Готово, когда: `pnpm typecheck`, 3a и `test/unit/messaging` зелёные. `pnpm db:fixtures` не меняет файлы `test/fixtures/database/migrations` и `test/consumer/minimal/drizzle`; проверка `git status` — в задаче 18.
 
-- [ ] **Task 4a: U-тесты срока остановки AC-5.11** — §3.4, AC-5.11
+- [x] **Task 4a: U-тесты срока остановки AC-5.11** — §3.4, AC-5.11
   - **Skill:** nestjs-code test unit messaging ac-5-11-shutdown-deadline (CREATE) → `test/unit/messaging/ac-5-11-shutdown-deadline.spec.ts`; nestjs-code test unit observability kit-lifecycle (MODIFY) → `test/unit/observability/kit-lifecycle.spec.ts`
   - `ac-5-11-shutdown-deadline.spec.ts`, чистая функция срока из `src/messaging/topology.ts`, `describe('UC-8: shutdownDeadline')`:
     - `AC-5.11: умолчания и быстрый шаг 2 — 7000` (T = 15000, D = 5000, остаток 10000);
@@ -151,7 +151,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     Часы — поддельный `performance.now`, который ставит существующий в файле `vi.useFakeTimers()`: Vitest 5.0.4 без `toFake` подменяет и `performance`. Время двигается только через `vi.advanceTimersByTimeAsync`, `vi.spyOn(performance, 'now')` в этом файле нет.
   - На старом коде падает: у функции срока нет параметра остатка, внутренней функции остатка нет.
 
-- [ ] **Task 4b: T-тест AC-5.11 «шаг 2 = 5 с»** — §3.4, AC-5.11 (T) (depends on 4a)
+- [x] **Task 4b: T-тест AC-5.11 «шаг 2 = 5 с»** — §3.4, AC-5.11 (T) (depends on 4a)
   - **Skill:** nestjs-code test timing messaging ac-5-11-shutdown (MODIFY) → `test/timing/messaging/ac-5-11-shutdown.spec.ts`
   - Новый `it('AC-5.11: шаг 2 длится 5 с при SHUTDOWN_TIMEOUT_MS=10000 — обработчик дольше 2 с возвращает сообщение, остановка ≤ 10 с, сторож не срабатывает')`:
     - приложение — как в соседнем тесте «обработчик дольше shutdownDeadline», окружение `SHUTDOWN_TIMEOUT_MS=10000`, `SHUTDOWN_DRAIN_MS=0`;
@@ -160,7 +160,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     - проверки: реальная длительность `close()` < 4000 × `TEST_TIMEOUT_SCALE` (срок 2000, а не 7000), реальная длительность ≤ 10000 × scale, в логе есть «срок остановки подписчика вышел», сообщение вернулось в очередь `kit`, строки `SHUTDOWN_TIMEOUT` нет.
   - На старом коде падает: срок 7000, `close()` дольше 4 с.
 
-- [ ] **Task 4c: срок обработчиков от начала остановки** — §3.4, AC-5.11 (depends on 4a, 4b)
+- [x] **Task 4c: срок обработчиков от начала остановки** — §3.4, AC-5.11 (depends on 4a, 4b)
   - **Skill:** nestjs-code generic src/observability/lifecycle.ts (MODIFY); nestjs-code generic src/messaging/topology.ts (MODIFY); nestjs-code generic src/messaging/rabbit-connection.ts (MODIFY); nestjs-code generic src/messaging/kit-messaging.module.ts (MODIFY)
   - `lifecycle.ts`: `KitLifecycle` запоминает момент начала остановки по `performance.now`, как `elapsed()`. Момент ставится один раз: при первом сигнале в `onSignal` или при первом `close()` в `start`, кто раньше. Экспортируемая из файла внутренняя функция остатка (не реэкспортируется из `src/observability/index.ts`, TSDoc `@internal`) возвращает `SHUTDOWN_TIMEOUT_MS − прошедшее` или `undefined`, если остановка не начата. Публичных методов класса не добавлять.
   - `topology.ts`: функция срока принимает окружение и необязательный остаток. Срок = `min(max(1000, T − D − 3000), остаток − 3000)`; остаток < 3000 → 0; остаток неизвестен → `max(1000, T − D − 3000)`. 3000 — существующие константы закрытия канала и соединения.
@@ -170,19 +170,19 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Логи: `debug` «messaging: срок обработчиков при остановке» `{deadlineMs, remainingMs}` при первом вычислении. Существующий `warn` «срок остановки подписчика вышел» не меняется.
   - Готово, когда: 4a, 4b, `test/timing/messaging/ac-5-11-shutdown.spec.ts` и `test/unit/observability` зелёные.
 
-- [ ] **Task 5a: тест общего срока первого подключения** — §3.4 (стр. 129), AC-5.4
+- [x] **Task 5a: тест общего срока первого подключения** — §3.4 (стр. 129), AC-5.4
   - **Skill:** nestjs-code test unit messaging ac-5-4-first-connect-deadline (CREATE) → `test/unit/messaging/ac-5-4-first-connect-deadline.spec.ts`
   - `vi.useFakeTimers()`. `KitSubscriber` собирается напрямую из `KitSubscriberDeps` (`src/messaging/subscriber.ts`, стр. 66–87): `service`, `replica`, `dedupe: 'none'`, `retrySeconds`, `reconnectSeconds: 5`, логгер в память и заглушка соединения, приведённая к `RabbitConnection`. Заглушка реализует методы, которые `onApplicationBootstrap` вызывает до `awaitStartupOutcome` (стр. 176–204: `createChannel` и `consume` канала), а также `firstAttempt` (разрешается `connected` через 4500 мс) и `channelOutcome` (не разрешается никогда). До запуска регистрируется один обработчик через `on`.
   - `AC-5.4: первое подключение и настройка канала укладываются в один RABBITMQ_RECONNECT_SECONDS`: `onApplicationBootstrap` завершается после сдвига таймеров на 5000 мс и не ждёт 9500. Уровень U, без брокера.
   - На старом коде падает: ожидание до 0,9 + 1 срока.
 
-- [ ] **Task 5b: один срок первого подключения** — §3.4 (стр. 129) (depends on 5a)
+- [x] **Task 5b: один срок первого подключения** — §3.4 (стр. 129) (depends on 5a)
   - **Skill:** nestjs-code generic src/messaging/subscriber.ts (MODIFY)
   - `awaitStartupOutcome`: один таймер срока на обе стадии (подключение, затем исход настройки канала) вместо двух подряд. Остальное без изменений: при `failed`/`timeout` запуск продолжается, `fatal` (`MESSAGING_RETRY_TTL_MISMATCH`) — отказ.
   - Логи: `debug` «messaging: первое подключение — срок вышел, запуск продолжается» `{reconnectSeconds}` при таймауте.
   - Готово, когда: 5a, `test/integration/messaging/ac-5-19-*.spec.ts` и `test/integration/messaging/connection.spec.ts` зелёные.
 
-- [ ] **Task 6a: тесты AC-5.22 и исключение AC-2.11** — §3.4, UC-6 А8, AC-5.22, AC-2.11
+- [x] **Task 6a: тесты AC-5.22 и исключение AC-2.11** — §3.4, UC-6 А8, AC-5.22, AC-2.11
   - **Skill:** nestjs-code test integration messaging ac-5-22-version-dispatch (CREATE) → `test/integration/messaging/ac-5-22-version-dispatch.spec.ts`; nestjs-code test integration messaging support (MODIFY) → `test/support/messaging.ts`; nestjs-code test unit observability ac-2-8-metrics (MODIFY) → `test/unit/observability/ac-2-8-metrics.spec.ts`; nestjs-code test package ac-2-11-alert-rules (MODIFY) → `test/package/ac-2-11-alert-rules.spec.ts`
   - `test/support/messaging.ts`:
     - фикстура `TestNoteCreatedV2` — тот же `type` `kit.note.created`, `version: 2`, схема `data` отличается от v1 одним новым обязательным полем;
@@ -202,7 +202,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     - отдельный `it('AC-2.11: verdeect_events_skipped_total без правила алерта')`.
   - На старом коде падает: повторный `on` другой версии — ошибка, v2 уходит обработчику v1, метрики нет.
 
-- [ ] **Task 6b: выбор обработчика по паре и `verdeect_events_skipped_total`** — §3.4, UC-6 А8, AC-5.22 (depends on 6a)
+- [x] **Task 6b: выбор обработчика по паре и `verdeect_events_skipped_total`** — §3.4, UC-6 А8, AC-5.22 (depends on 6a)
   - **Skill:** nestjs-code generic src/messaging/define-event.ts (MODIFY); nestjs-code generic src/messaging/subscriber.ts (MODIFY); nestjs-code generic src/observability/metrics.ts (MODIFY)
   - `define-event.ts`: внутренняя функция ключа пары (`type` + `version`). Экспортируется из файла с TSDoc `@internal`, не реэкспортируется из `index.ts`. Её используют подписчик (6b) и outbox (7b).
   - `metrics.ts`: поле `eventsSkipped` в `KitMetrics`, `Counter` `verdeect_events_skipped_total`, метки `type`, `version`, реестр приложения, TSDoc.
@@ -216,7 +216,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Существующие тесты (KT-77): тексты и поля меняются, только если поведение меняется по PRD v1.27. Каждая такая правка — в отчёт строкой «файл — было → стало — основание (раздел PRD, AC)». Тест, который падает без изменения поведения по PRD, — признак ошибки кода, а не повод править тест.
   - Готово, когда: 6a и весь `test/integration/messaging` зелёные.
 
-- [ ] **Task 7a: тест AC-5.23 outbox по паре** — §3.4 (стр. 128), AC-5.23
+- [x] **Task 7a: тест AC-5.23 outbox по паре** — §3.4 (стр. 128), AC-5.23
   - **Skill:** nestjs-code test integration messaging ac-5-23-outbox-versions (CREATE) → `test/integration/messaging/ac-5-23-outbox-versions.spec.ts`
   - `describe('UC-5: outbox — версии событий')`:
     - `AC-5.23: outbox.events с E v1 и v2 — обе пары записываются OutboxStore.add и публикуются со своей version; подписчик с обработчиками v1 и v2 получает каждую своим обработчиком`;
@@ -224,7 +224,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     - `AC-5.23: строка с version вне outbox.events публикуется с subject.kind = 'unknown', warn один раз на пару`. Строку вставить в outbox напрямую SQL, по образцу `ac-5-2-outbox-row.spec.ts`.
   - На старом коде падает: две версии одного type — `TypeError` «указано дважды».
 
-- [ ] **Task 7b: outbox и relay по паре** — §3.4 (стр. 128), AC-5.23 (depends on 6b, 7a)
+- [x] **Task 7b: outbox и relay по паре** — §3.4 (стр. 128), AC-5.23 (depends on 6b, 7a)
   - **Skill:** nestjs-code generic src/messaging/kit-messaging.module.ts (MODIFY); nestjs-code generic src/messaging/outbox-store.ts (MODIFY); nestjs-code generic src/messaging/outbox-relay.ts (MODIFY)
   - `eventsOf` — карта по ключу пары из 6b. Повтор пары — `TypeError` «KitMessagingModule: событие <type> v<version> указано дважды»; проверка `MESSAGING_TENANT_NOT_NULLABLE` — на каждое определение.
   - `OutboxStore.add` — поиск объявленного события по паре переданного определения (текст ошибки «не объявлено» дополнить версией). `version` строки — из определения, как сейчас.
@@ -234,7 +234,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 4: `/http` (пункт з)
 
-- [ ] **Task 8: тест AC-3.12 — парсер и 413 в `configureFastify`** — §3.5, AC-3.12 (I); кода не меняет
+- [x] **Task 8: тест AC-3.12 — парсер и 413 в `configureFastify`** — §3.5, AC-3.12 (I); кода не меняет
   - **Skill:** nestjs-code test integration http ac-3-12-configure-fastify (CREATE) → `test/integration/http/ac-3-12-configure-fastify.spec.ts`
   - Приложение через `createHttpApp` с `http`:
     - `configureFastify` регистрирует парсер `application/octet-stream` (тело как `Buffer`) и хук `onRoute`: `bodyLimit` 16 байт у маршрута `/upload`;
@@ -249,7 +249,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 5: `/testing` (пункты в, г, и)
 
-- [ ] **Task 9a: тесты AC-9.6 `./testing/timeout-scale`** — §3.8, AC-9.6 (R)
+- [x] **Task 9a: тесты AC-9.6 `./testing/timeout-scale`** — §3.8, AC-9.6 (R)
   - **Skill:** nestjs-code test package ac-9-6-timeout-scale (CREATE) → `test/package/ac-9-6-timeout-scale.spec.ts`; nestjs-code test unit package package-manifest (MODIFY) → `test/unit/package/package-manifest.spec.ts`; create-ts-file (MODIFY) → `test/consumer/minimal/vitest.config.ts`; create-ts-file (MODIFY) → `test/consumer/minimal/import-check.mjs`
   - `ac-9-6-timeout-scale.spec.ts`, на упакованном архиве, по образцу `ac-1-1-package.spec.ts`:
     - `AC-9.6: exports содержит ./testing/timeout-scale с условиями types и default`;
@@ -260,14 +260,14 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - `import-check.mjs`: подпуть `testing/timeout-scale` — `ok` без условий; `/testing` без `development` — по-прежнему `ERR_PACKAGE_PATH_NOT_EXPORTED`.
   - На старом коде падает: подпути нет.
 
-- [ ] **Task 9b: подпуть `./testing/timeout-scale`** — §3.8, AC-9.6 (depends on 9a)
+- [x] **Task 9b: подпуть `./testing/timeout-scale`** — §3.8, AC-9.6 (depends on 9a)
   - **Skill:** nestjs-code generic src/testing/timeout-scale.ts (MODIFY); правка `package.json` (конфиг, без skill)
   - `package.json` `exports`: ключ `./testing/timeout-scale` → `types` `./dist/testing/timeout-scale.d.ts`, `default` `./dist/testing/timeout-scale.js`. Ставится перед `./testing`. `./testing` — по-прежнему только `development`.
   - `timeout-scale.ts`: `readTimeoutScale(env?)` — по умолчанию `process.env`. Импортов, кроме `node:*`, нет (сейчас их нет совсем). Шапка — ссылка на AC-9.6 и правило «граф только node:*». `/testing` реэкспортирует `TEST_TIMEOUT_SCALE`, как раньше.
   - Логи: нет.
   - Готово, когда: 9a, `make pack-check` и publint/attw в нём зелёные.
 
-- [ ] **Task 10a: тесты AC-1.15 и AC-5.10 `declareEventsExchange`** — §3.8, AC-1.15, AC-5.10 (I)
+- [x] **Task 10a: тесты AC-1.15 и AC-5.10 `declareEventsExchange`** — §3.8, AC-1.15, AC-5.10 (I)
   - **Skill:** nestjs-code test integration testing ac-1-15-worker-admin-url (CREATE) → `test/integration/testing/ac-1-15-worker-admin-url.spec.ts`; nestjs-code test integration messaging ac-5-10-topic-permissions (MODIFY) → `test/integration/messaging/ac-5-10-topic-permissions.spec.ts`; nestjs-code test integration messaging connection (MODIFY) → `test/integration/messaging/connection.spec.ts`; nestjs-code test timing messaging channel-restore (MODIFY) → `test/timing/messaging/channel-restore.spec.ts`; nestjs-code test integration support broker (MODIFY) → `test/support/broker.ts`; nestjs-code test unit testing worker-scope (MODIFY) → `test/unit/testing/worker-scope.test-d.ts`; nestjs-code test unit testing worker-scope (MODIFY) → `test/unit/testing/worker-scope.spec.ts`
   - `ac-1-15-worker-admin-url.spec.ts`: `AC-1.15: workerScope().rabbitmq.adminUrl подключается и объявляет exchange в vhost воркера`. Подключение amqplib к `adminUrl`, `assertExchange` временного exchange; через management API (`brokerAdmin`) exchange найден в `workerScope().rabbitmq.vhost`. Exchange удаляется в `afterAll`.
   - `ac-5-10-topic-permissions.spec.ts`: вызовы `broker.declareEventsExchange()` (стр. 26, 47) заменить на экспорт `declareEventsExchange()` из `src/testing/index.js`. Оба существующих теста остаются (стр. 30, 45); тест на стр. 45 переименовать в `AC-5.10: после удаления exchange и declareEventsExchange() публикация воркера по своему префиксу проходит, по чужому — ACCESS_REFUSED`. Новых сценариев нет.
@@ -276,7 +276,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - `worker-scope.spec.ts`, тест `AC-5.18: rabbitmq — vhost и url записи воркера VITEST_POOL_ID` (около стр. 34): фикстура воркеров получает `publishes: []`, ожидаемый объект — `adminUrl` воркера, заголовок — `AC-5.18, AC-1.15: rabbitmq — vhost, url и adminUrl записи воркера VITEST_POOL_ID`.
   - На старом коде падает: экспорта и поля нет.
 
-- [ ] **Task 10b: `adminUrl` и `declareEventsExchange()`** — §3.8, AC-1.15, AC-5.10 (depends on 10a)
+- [x] **Task 10b: `adminUrl` и `declareEventsExchange()`** — §3.8, AC-1.15, AC-5.10 (depends on 10a)
   - **Skill:** nestjs-code generic src/testing/worker-scope.ts (MODIFY); nestjs-code generic src/testing/rabbitmq-admin.ts (MODIFY); nestjs-code generic src/testing/start-test-stack.ts (MODIFY); nestjs-code generic src/testing/test-events.ts (MODIFY); nestjs-code generic src/testing/index.ts (MODIFY)
   - `worker-scope.ts`: в `KitWorkerScope.rabbitmq` поле `adminUrl` (TSDoc: администратор vhost воркера, полные права, как в `kitRabbitmqWorkers`). Геттер отдаёт его из записи воркера.
   - `rabbitmq-admin.ts`: в `KitRabbitWorker` поле `publishes` (readonly-массив префиксов из `startTestStack`), заполняется в `prepareWorkerVhosts`.
@@ -290,7 +290,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Логи: нет (помощник тестов). Ошибки management API — исключением с кодом ответа, без пароля.
   - Готово, когда: 10a зелёные; `test/unit/package` и `ac-1-1` (нет статического amqplib в `dist/testing`) зелёные.
 
-- [ ] **Task 11a: тест AC-1.14 — метка БД** — §3.8, AC-1.14 (I)
+- [x] **Task 11a: тест AC-1.14 — метка БД** — §3.8, AC-1.14 (I)
   - **Skill:** nestjs-code test integration testing ac-1-14-database-label (CREATE) → `test/integration/testing/ac-1-14-database-label.spec.ts`
   - Внешний сервер — контейнер globalSetup через `startTestStack({service: 'kitlabel', postgres: {adminUrl: inject('kitPostgresUrl')}})(project)`, `project` — фейк как в `ac-1-13-postgres.spec.ts`. `afterAll` — `dropDatabase` обеих баз и `dropServiceRoles`.
   - Тесты `describe('UC-14: метка БД startTestStack')`:
@@ -301,7 +301,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     - `AC-1.14: teardown не удаляет базу без метки`: после запуска метка снимается `COMMENT ON DATABASE … IS NULL`, после `teardown` база существует.
   - На старом коде падает: метки нет; повторный запуск падает на `copy`.
 
-- [ ] **Task 11b: метка, пересоздание и удаление баз `startTestStack`** — §3.8, AC-1.14 (depends on 11a)
+- [x] **Task 11b: метка, пересоздание и удаление баз `startTestStack`** — §3.8, AC-1.14 (depends on 11a)
   - **Skill:** nestjs-code generic src/testing/start-test-stack.ts (MODIFY)
   - Внутренняя функция «свежая база» для `<svc>_template` (шаг `create-template`) и `<svc>` (шаг `copy`, `TEMPLATE <svc>_template`). Путь общий для внешнего и контейнерного PostgreSQL. Порядок:
     - база есть, метка равна `verdeect-kit startTestStack` → `DROP DATABASE IF EXISTS … WITH (FORCE)`;
@@ -313,7 +313,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Логи (stderr, как у существующих шагов): «startTestStack: БД <name> осталась от прерванного прогона — пересоздаётся», «startTestStack: БД <name> без метки — не удаляется».
   - Готово, когда: 11a, `ac-1-13-postgres.spec.ts`, `ac-1-14-external-stack.spec.ts`, `ac-4-18-scratch-database.spec.ts` зелёные.
 
-- [ ] **Task 12a: тесты AC-5.13 `expectOutbox({app, traceId})`** — §3.8, AC-5.13 (I, C)
+- [x] **Task 12a: тесты AC-5.13 `expectOutbox({app, traceId})`** — §3.8, AC-5.13 (I, C)
   - **Skill:** nestjs-code test integration testing ac-5-13-expect-outbox (MODIFY) → `test/integration/testing/ac-5-13-expect-outbox.spec.ts`; nestjs-code test consumer outbox-coverage (MODIFY) → `test/consumer/minimal/outbox-coverage/coverage.spec.ts`
   - Интеграционный файл:
     - `AC-5.13: use-case со своей транзакцией — после COMMIT expectOutbox({app, traceId}) находит строку и засчитывает покрытие`. Транзакция — `app.get(Db).transaction` с `ctx` и уникальным `traceId` (`newId`), внутри `OutboxStore.add`. Ключ покрытия записан;
@@ -323,7 +323,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Форма с `tx` не меняется: существующие тесты без правок.
   - На старом коде падает: перегрузки нет.
 
-- [ ] **Task 12b: перегрузка `expectOutbox({app, traceId}, Event, expected)`** — §3.8, AC-5.13 (depends on 12a)
+- [x] **Task 12b: перегрузка `expectOutbox({app, traceId}, Event, expected)`** — §3.8, AC-5.13 (depends on 12a)
   - **Skill:** nestjs-code generic src/testing/outbox-coverage.ts (MODIFY)
   - Первый аргумент — `DbTx` или `{app, traceId}`. Отличие — по наличию полей `app` и `traceId`. Две сигнатуры-перегрузки с TSDoc.
   - Форма `{app, traceId}`:
@@ -335,7 +335,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Логи: нет (помощник тестов). Сообщения `expect` — как сейчас.
   - Готово, когда: 12a и весь `test/integration/testing` зелёные.
 
-- [ ] **Task 13a: тест AC-4.19 `createTestDb`** — §3.8, AC-4.19 (I)
+- [x] **Task 13a: тест AC-4.19 `createTestDb`** — §3.8, AC-4.19 (I)
   - **Skill:** nestjs-code test integration testing ac-4-19-create-test-db (CREATE) → `test/integration/testing/ac-4-19-create-test-db.spec.ts`
   - `describe('UC-14: createTestDb')`:
     - `AC-4.19: чтение read only и statement_timeout 5 с, как у модуля`: через пул чтения `db` показать `default_transaction_read_only = on` и `statement_timeout = 5s`;
@@ -345,7 +345,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - `test/package/ac-1-1-package.spec.ts` (nestjs-code test package ac-1-1-package (MODIFY)), в тесте `AC-1.1: dist/testing не импортирует amqplib и messaging/index статически`: статический граф `dist/testing/index.js` не содержит `database/kit-database.module.js` (KT-77). Существующие проверки графа проходят без новых исключений.
   - На старом коде падает: экспортов нет.
 
-- [ ] **Task 13b: общая сборка пулов и ключ очистки** — §3.8, AC-4.19 (depends on 13a)
+- [x] **Task 13b: общая сборка пулов и ключ очистки** — §3.8, AC-4.19 (depends on 13a)
   - **Skill:** nestjs-code generic src/database/pools.ts (CREATE); nestjs-code generic src/database/kit-database.module.ts (MODIFY); nestjs-code generic src/database/pg.ts (MODIFY — только TSDoc константы); nestjs-code generic src/internal/outbox-policy.ts (MODIFY); nestjs-code generic src/messaging/cleanup.ts (MODIFY)
   - `src/database/pools.ts` (новый, без импортов `@nestjs/*`, KT-77): внутренняя функция построения пулов. Принимает `{url, max, connectionTimeoutMs, metrics?, log}`, где `log` — объект с `warn` и `debug` (поля, сообщение). Создаёт основной пул и пул чтения с теми же обработчиками `error`/`connect`, тем же `instrumentPoolTimeouts` (переносится сюда вместе с `READ_POOL_OPTIONS` и `READ_STATEMENT_TIMEOUT_MS`) и теми же текстами логов. Импорты — только `./pg.js`, `../internal/pg-errors.js`, типы `/observability`, `sanitizeError`, `captureThrottled`. Тип `KitPools` (основной пул и пул чтения) объявляется здесь; `kit-database.module.ts` реэкспортирует его как тип — `test/support/database.ts` (стр. 10, 19) не меняется; `create-test-db.ts` берёт тип из `pools.ts`. Из `src/database/index.ts` не реэкспортируется.
   - `kit-database.module.ts`: `createPools` становится тонкой обёрткой — зовёт функцию `pools.ts` с `DATABASE_URL`, `DB_POOL_MAX`, `DB_POOL_ACQUIRE_TIMEOUT_MS` и логгером модуля (Nest `Logger('KitDatabase')`). Поведение модуля и `test/support/database.ts` (использует `createPools`) не меняется.
@@ -355,7 +355,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - Логи: существующий `debug` «очистка сообщений: другая реплика» сохраняется.
   - Готово, когда: `test/integration/database`, `ac-5-12-cleanup.spec.ts` и `ac-9-5-messaging-observability.spec.ts` зелёные.
 
-- [ ] **Task 13c: `createTestDb`, `KIT_DB_CONNECTION_TIMEOUT_MS`, `messagingCleanupLockKey` в `/testing`** — §3.8, AC-4.19 (depends on 13b)
+- [x] **Task 13c: `createTestDb`, `KIT_DB_CONNECTION_TIMEOUT_MS`, `messagingCleanupLockKey` в `/testing`** — §3.8, AC-4.19 (depends on 13b)
   - **Skill:** nestjs-code generic src/testing/create-test-db.ts (CREATE); nestjs-code generic src/testing/index.ts (MODIFY)
   - `create-test-db.ts`:
     - `createTestDb({url, service})` возвращает `{db: Db, close()}`;
@@ -372,7 +372,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 6: CLI (пункт к)
 
-- [ ] **Task 14a: тесты AC-5.10 (U) и AC-9.7** — AC-5.10, AC-9.7 (U)
+- [x] **Task 14a: тесты AC-5.10 (U) и AC-9.7** — AC-5.10, AC-9.7 (U)
   - **Skill:** nestjs-code test unit cli ac-5-10-rabbitmq-command (MODIFY) → `test/unit/cli/ac-5-10-rabbitmq-command.spec.ts`; nestjs-code test unit cli ac-9-7-help (CREATE) → `test/unit/cli/ac-9-7-help.spec.ts`
   - `ac-5-10-rabbitmq-command.spec.ts`: `AC-5.10: неверный хеш RABBITMQ_PASSWORD_HASH_<SVC> → выход 1, в stderr имя ключа и hash_password, значения нет`. Проверка текста «ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)».
   - Существующие проверки `message: 'Неверное окружение'` для ключей хеша — `ac-5-10-rabbitmq-command.spec.ts` около стр. 75 (`RABBITMQ_PASSWORD_HASH_SVC_B`) и 273 (`RABBITMQ_PASSWORD_HASH_DEV`), `test/integration/cli/ac-5-10-rabbitmq-definitions.spec.ts` около стр. 181 (`RABBITMQ_PASSWORD_HASH_KITCLI_B`, nestjs-code test integration cli ac-5-10-rabbitmq-definitions (MODIFY)): ожидаемый `message` — новый текст с именами ключей, `keys` без изменений, проверка отсутствия значения хеша остаётся. Путь `LOG_LEVEL`/`REPLICA_ID` и `redis-acl-command.spec.ts` не меняются.
@@ -382,12 +382,12 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     - `AC-9.7: неизвестная команда — UNKNOWN_COMMAND JSON в stdout, список команд и форм в stderr, код 1`.
   - На старом коде падает: файла `run.ts` нет, сообщение хеша — «Неверное окружение».
 
-- [ ] **Task 14b: формат хеша в `INVALID_ENVIRONMENT`** — §3.4, AC-5.10 (depends on 14a)
+- [x] **Task 14b: формат хеша в `INVALID_ENVIRONMENT`** — §3.4, AC-5.10 (depends on 14a)
   - **Skill:** nestjs-code generic src/cli/commands/rabbitmq.ts (MODIFY)
   - Неверные ключи `RABBITMQ_PASSWORD_HASH_*`: `message` — «<ключи через запятую>: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)», `keys` — имена. Значений нет. Ошибки `LOG_LEVEL`/`REPLICA_ID` — без изменений.
   - Логи: stderr-строка ошибки — как сейчас, с новым `message`.
 
-- [ ] **Task 14c: справка `verdeect-kit --help`** — §3.8, AC-9.7 (depends on 14a)
+- [x] **Task 14c: справка `verdeect-kit --help`** — §3.8, AC-9.7 (depends on 14a)
   - **Skill:** nestjs-code generic src/cli/run.ts (CREATE); nestjs-code generic src/cli/main.ts (MODIFY)
   - `run.ts`: таблица команд — одна на загрузку и справку: имя, ленивый загрузчик, формы строками, как в README:
     - `openapi --out <f> [--module <f>#<export>]`;
@@ -406,7 +406,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
 
 ### Фаза 7: документация и выпуск (пункты л, 3)
 
-- [ ] **Task 15: README** — AC-9.3, «Library Package Scope» (7) (depends on 1b, 2b, 3b, 4c, 5b, 6b, 7b, 8, 9b, 10b, 11b, 12b, 13c, 14b, 14c)
+- [x] **Task 15: README** — AC-9.3, «Library Package Scope» (7) (depends on 1b, 2b, 3b, 4c, 5b, 6b, 7b, 8, 9b, 10b, 11b, 12b, 13c, 14b, 14c)
   - Правка `README.md` (документация, без skill):
     - «Шифр» — `deriveKeys`, ротация: подпись первым ключом, проверка всеми. «Развёртывание» — та же строка ротации;
     - «Идемпотентность» — `redact`: ответ клиенту без изменений, в хранилище `null`, повтор отдаёт `null`; только поля верхнего уровня — пустое имя, `.` или `[` → `TypeError` при объявлении;
@@ -434,7 +434,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
     - «API» — все новые экспорты: `deriveKeys`, `KitDerivedKey`, `declareEventsExchange`, `createTestDb`, `KitTestDb`, `KIT_DB_CONNECTION_TIMEOUT_MS`, `messagingCleanupLockKey`, `readTimeoutScale`; подпуть `testing/timeout-scale`.
   - Готово, когда: `test/package/ac-9-3-docs.spec.ts` зелёный.
 
-- [ ] **Task 16: CHANGELOG `[1.0.0-rc.7]` и версия** — G14, NFR-5 (depends on 15)
+- [x] **Task 16: CHANGELOG `[1.0.0-rc.7]` и версия** — G14, NFR-5 (depends on 15)
   - Правка `CHANGELOG.md`, `package.json` (без skill):
     - запись `## [1.0.0-rc.7] - YYYY-MM-DD` под пустым `[Unreleased]`, дата — день выполнения задачи (формат по `ac-9-3-docs.spec.ts`, как `[1.0.0-rc.6] - 2026-11-13`);
     - строка-сводка: находки переходов rc.6, PRD v1.26–v1.27;
@@ -444,7 +444,7 @@ Authority: `requirements/0000-kit/prd.md` v1.27 (r22) > ответы KT-75 (за
   - `package.json` `version` → `1.0.0-rc.7`. Тег не ставится: его ставит мейнтейнер.
   - Готово, когда: `ac-9-3-docs.spec.ts` зелёный (заголовки, все экспорты в CHANGELOG).
 
-- [ ] **Task 17: проверка** (depends on 16)
+- [x] **Task 17: проверка** (depends on 16)
   - Команды, без skill:
     1. `free -h` и `uptime`: available ≥ 3 ГБ и load < 5. Иначе — ждать и сообщить пользователю, тесты не запускать.
     2. `pnpm db:fixtures`, затем `git status --short test/fixtures/database test/consumer/minimal/drizzle` — пусто (AC-5.21: снимок drizzle-kit не меняется).
