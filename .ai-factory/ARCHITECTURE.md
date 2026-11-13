@@ -85,7 +85,9 @@ verdeect-kit/
 │   │   ├── pagination.ts              #   keyset (эталон I)
 │   │   └── api/                       #   api.decorator.ts (@Api), openapi-document.ts (OpenAPI 3.1, z.toJSONSchema)
 │   ├── database/                      # "./database" — E4 (§3.3); pg: requirePeer при загрузке, import() при вызове; drizzle-orm
-│   │   ├── kit-database.module.ts     #   пулы основной и чтения, DRIZZLE, DRIZZLE_READ, пробы, шаг 4
+│   │   ├── kit-database.module.ts     #   DRIZZLE, DRIZZLE_READ, пробы, шаг 4; пулы — через pools.ts
+│   │   ├── pools.ts                   #   buildPools: основной и чтения, срок пула; без @nestjs/* (общий с createTestDb, AC-4.19)
+│   │   ├── pg.ts · timeouts.ts        #   requirePeer pg, loadPg/loadDrizzle; CONNECTION_TIMEOUT_MS — в timeouts.ts без peer
 │   │   ├── db.ts                      #   Db.transaction/read/readGlobal/afterCommit/setLocal (эталон O)
 │   │   ├── tenant.ts                  #   tenantColumn, tenantPolicy, DbContext
 │   │   ├── prepare-database.ts        #   роли <svc>_owner/_app/_directory, схема (эталон O)
@@ -102,20 +104,23 @@ verdeect-kit/
 │   │   ├── config.ts                  #   внутренние токены и опции модуля (типы database — вне публичного .d.ts)
 │   │   └── kit-messaging.module.ts    #   pg — динамически только при outbox или dedupe: 'inbox'
 │   ├── crypto/                        # "./crypto" — E7 (§3.6); только node:crypto
-│   │   └── cipher.ts                  #   createCipher, DecryptError, generateSecret (эталон B + HKDF из O)
+│   │   └── cipher.ts                  #   createCipher, deriveKeys (HMAC, AC-7.6), DecryptError, generateSecret (эталон B + HKDF из O)
 │   ├── redis/                         # "./redis" — E8 (§3.7); ioredis через loadPeer
 │   │   ├── kit-redis.module.ts · rate-limiter.ts (эталон I)
 │   ├── testing/                       # "./testing" — только условие development; testcontainers, vitest через loadPeer
 │   │   ├── images.ts                  #   TEST_IMAGES
 │   │   ├── start-test-stack.ts        #   startTestStack (растёт E1 → E4 → E5 → E8)
-│   │   ├── tcp-proxy.ts · timing-guard.ts · timeout-scale.ts · worker-scope.ts (E4)
+│   │   ├── tcp-proxy.ts · timing-guard.ts · worker-scope.ts (E4)
+│   │   ├── timeout-scale.ts           #   ещё и подпуть "./testing/timeout-scale" (types + default, граф только node:*, AC-9.6)
+│   │   ├── create-test-db.ts          #   createTestDb — pools.js и pg.js динамически (AC-4.19)
 │   │   ├── repo-files.ts              #   поиск и разбор compose, env_file, CI, Dockerfile, package.json, redaction.ts
 │   │   ├── repo-conventions.ts        #   assertRepoConventions — все правила с E1
 │   │   ├── create-test-app.ts         #   createTestApp — @nestjs/testing через loadPeer при вызове (E3)
 │   │   ├── expect-problem.ts · expect-matches-api.ts   # E3; ajv — только здесь
 │   │   └── …                          #   assertStrictTenantIsolation, expectOutbox — по этапам
 │   └── cli/                           # bin verdeect-kit
-│       ├── main.ts                    #   разбор команды → динамический import() обработчика
+│       ├── main.ts                    #   bin: только вызов runCli
+│       ├── run.ts                     #   runCli: таблица команд (загрузчик + формы справки), --help, UNKNOWN_COMMAND (AC-9.7)
 │       └── commands/                  #   openapi.ts (E3); db.ts, rabbitmq.ts, crypto.ts, redis.ts — по этапам
 ├── test/
 │   ├── unit/<подпуть>/                # U: без сети и Docker
@@ -185,6 +190,7 @@ verdeect-kit/
 - ✅ Тесты могут импортировать любой подпуть, включая `testing`. Внутри своего подпути — через относительные пути, между подпутями — через `../<подпуть>/index.js`.
 - ❌ Импорт вверх или вбок вне таблицы: `config` → `observability`, `http` → `database`/`idempotency`, `database` → `http`, `crypto` → Nest-модулей.
 - ❌ Статический `import` значений из `pg`, `ioredis`, `amqplib`, `amqp-connection-manager`, `testcontainers`, `vitest` где-либо в `src/` (peer — только `requirePeer` + `import()` или `loadPeer`).
+- ✅ `/testing` загружается без `pg` (сервисы без БД, BFF): модули, которые требуют `pg` при импорте (`database/pg.ts`, `database/pools.ts`, `kit-database.module.ts`), берутся только динамическим `import()`; значения без peer (`Db`, `CONNECTION_TIMEOUT_MS` из `timeouts.ts`) — статически. Граф `dist/testing` проверяет `ac-1-1-package.spec.ts` (KT-77).
 - ❌ Импорт `testing` из любого другого подпути. `default` у `./testing` в `exports`.
 - ❌ Импорт по имени собственного пакета (`@verdeect/kit/...`) внутри `src/` — только относительные пути с `.js`.
 - ❌ Перенос peer из NFR-3 в `dependencies` или смена «обязательный ↔ опциональный» без требования.
@@ -225,8 +231,8 @@ verdeect-kit/
   - `createTestApp` использует тот же `createHttpApp`.
 
   Тестовый контур повторяет production-путь, а не подделывает его.
-- **CLI:** `main.ts` разбирает команду и динамически импортирует только её обработчик. `crypto generate-secret` работает без `pg`, `ioredis` и `amqplib`. Результат — JSON в stdout, ошибка — JSON и выход 1.
-- **Сборка и загрузка:** `exports` — по записи на подпуть (`types` + `default`). У `./testing` записи `types` + `development` без `default`. Поле `bin` → `dist/cli/main.js` — с первой CLI-командой (E3); в E1 его нет. Архив: `dist`, `alerts`, `README.md`, `CHANGELOG.md`, без `src`, спеков и карт.
+- **CLI:** `main.ts` только вызывает `runCli` (`run.ts`); `runCli` разбирает команду, по одной таблице команд выдаёт справку (`--help`, `help`, без аргументов; `<команда> --help`) и динамически импортирует только обработчик выполняемой команды. `crypto generate-secret` работает без `pg`, `ioredis` и `amqplib`. Результат — JSON в stdout, ошибка — JSON и выход 1.
+- **Сборка и загрузка:** `exports` — по записи на подпуть (`types` + `default`). У `./testing` записи `types` + `development` без `default`; исключение — `./testing/timeout-scale` (`types` + `default`, стоит перед `./testing`): файл без импортов, кроме `node:*`, для `vitest.config.ts`. Поле `bin` → `dist/cli/main.js` — с первой CLI-командой (E3); в E1 его нет. Архив: `dist`, `alerts`, `README.md`, `CHANGELOG.md`, без `src`, спеков и карт.
 
 ## Ключевые принципы
 

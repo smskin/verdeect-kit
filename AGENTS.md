@@ -32,7 +32,8 @@ verdeect-kit/
 │   ├── http/                     # ./http — §3.5: bootstrap-service, create-http-app, kit-http-core.module, errors,
 │                                 #   zod-validation.pipe, kit-exception.filter, pagination, api/ (@Api, OpenAPI)
 │   ├── database/                 # ./database — §3.3: pg (requirePeer, ленивый драйвер), tenant, prepare-database,
-│                                 #   migrations, db, kit-database.module, batches, run-exclusive, if-newer
+│                                 #   migrations, db, kit-database.module, pools (buildPools, без @nestjs/*),
+│                                 #   timeouts (CONNECTION_TIMEOUT_MS без peer), batches, run-exclusive, if-newer
 │   ├── idempotency/              # ./idempotency — §3.3а: peer, table, idempotent.decorator, idempotency.interceptor,
 │                                 #   kit-idempotency.module
 │   ├── messaging/                # ./messaging — §3.4: peer, errors, define-event, envelope, tables, topology, redelivery,
@@ -42,10 +43,12 @@ verdeect-kit/
 │   ├── redis/                    # ./redis — §3.7: peer, client (KIT_REDIS, соединения), kit-redis.module, channels,
 │                                 #   rate-limiter (RateLimiter, throwRateLimited), index
 │   ├── testing/                  # ./testing (только development) — §3.8 E1, E3, E4: images, start-test-stack, repo-files,
-│                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale, create-test-app,
+│                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale (ещё подпуть ./testing/timeout-scale
+│                                 #   без development, только node:*), create-test-app, create-test-db,
 │                                 #   expect-problem, expect-matches-api, scratch-database, worker-scope,
 │                                 #   tenant-isolation, count-queries, rabbitmq-admin, outbox-coverage, test-events, redis-worker
-│   └── cli/                      # bin verdeect-kit: main.ts, commands/openapi.ts, commands/db.ts, commands/rabbitmq.ts,
+│   └── cli/                      # bin verdeect-kit: main.ts (только runCli), run.ts (runCli: таблица команд, справка --help),
+│                                 #   commands/openapi.ts, commands/db.ts, commands/rabbitmq.ts,
 │                                 #   commands/crypto.ts, commands/redis.ts
 ├── alerts/verdeect-kit.rules.yml # шаблон правил vmalert (alertRulesTemplate, §3.2), входит в архив
 ├── test/
@@ -100,8 +103,10 @@ verdeect-kit/
 | `src/messaging/index.ts` | публичная поверхность `@verdeect/kit/messaging` |
 | `src/crypto/index.ts` | публичная поверхность `@verdeect/kit/crypto` |
 | `src/redis/index.ts` | публичная поверхность `@verdeect/kit/redis` |
-| `src/cli/main.ts` | CLI `verdeect-kit` (поле `bin`) |
+| `src/cli/main.ts` | CLI `verdeect-kit` (поле `bin`): только вызов `runCli` |
+| `src/cli/run.ts` | `runCli`: разбор команды, справка `--help`, загрузка обработчика |
 | `src/testing/index.ts` | публичная поверхность `@verdeect/kit/testing` |
+| `src/testing/timeout-scale.ts` | подпуть `@verdeect/kit/testing/timeout-scale` (`TEST_TIMEOUT_SCALE`, `readTimeoutScale`) |
 | `package.json` | `exports`, peer-зависимости (NFR-3), скрипты |
 | `scripts/publish.mjs` | публикация по тегу (AC-1.10) |
 | `requirements/0000-kit/prd.md` | требования: P0 и G (§0), API по подпутям (§3), UC-1–UC-16, AC (§5), модель данных (§6), NFR (§7), этапы (§9) |
