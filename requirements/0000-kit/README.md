@@ -2,13 +2,13 @@
 
 Общий инфраструктурный npm-пакет сервисов Вердикт 2.0: конфигурация, наблюдаемость и запуск, HTTP-каркас, БД с RLS, идемпотентность, outbox/inbox и RabbitMQ, шифр секретов, Redis, тестовый контур. Код переносится из копий в Identity, BFF, Platform, Orchestrator (эталон — `files/inventory.md`).
 
-> Режим: INIT · Ревизия: r23 · 2026-11-13 · PRD v1.28 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
+> Режим: INIT · Ревизия: r24 · 2026-11-13 · PRD v1.29 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
 
 ## Файлы
 
 | Файл | Что внутри |
 |---|---|
-| `prd.md` | PRD v1.28 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
+| `prd.md` | PRD v1.29 — источник истины: P0 и решения G (§0), публичный API по подпутям (§3), UC-1–UC-16 (§4), AC с уровнем теста (§5), модель данных (§6), NFR (§7), процесс (§8), этапы (§9), переходы сервисов (§10), открытые вопросы (§11) |
 | `files/inventory.md` | Инвентаризация копий в сервисах: модуль × сервис, столбец «Эталон», тесты эквивалентности, точные версии зависимостей и образов. §4 — расхождения на момент инвентаризации; решения по ним — в `prd.md` (при расхождении действует `prd.md`) |
 
 UI нет, макетов нет. Пакет `@verdeect/events` — отдельный PRD и отдельный репозиторий (`verdeect2/verdeect-events`), не входит сюда.
@@ -73,3 +73,4 @@ UI нет, макетов нет. Пакет `@verdeect/events` — отдель
 - r21 — 2026-11-13: по находкам переходов (ID-52, PL-51, PL-67, OR-146, KT-70) — deriveKeys, ключи HMAC по версиям (§3.6, AC-7.6); @Idempotent({redact}) (§3.3а, AC-4.14); метка и удаление копии и шаблона БД во внешнем PostgreSQL, подсказка POSTGRES_DB (§3.8, AC-1.14); срок обработчиков при остановке — от начала остановки (§3.4, AC-5.11); тип колонки tenant по tenantNullable (§3.4, AC-5.21); обработчик по паре (type, version), неподписанная версия — skipped (§3.4, UC-6, AC-5.22); JSON-парсер в configureFastify не заменяется (§3.5, AC-3.12); /testing/timeout-scale, adminUrl воркера, declareEventsExchange (§3.8, AC-9.6, AC-1.15, AC-5.10); сообщения и справка CLI (AC-5.10, AC-9.7); expectOutbox({app, traceId}) (§3.8, AC-5.13); createTestDb, KIT_DB_CONNECTION_TIMEOUT_MS, messagingCleanupLockKey (§3.8, AC-4.19); первое подключение — RABBITMQ_RECONNECT_SECONDS, литеральный name:, глобальные extraProviders (§3.4, §3.8); README — права inbox, healthcheck брокера, @UseGuards на методе, KIT_OUTBOX_COVERAGE, переименование политики; PRD v1.26.
 - r22 — 2026-11-13: вопросы плана rc.7 — AC-2.11 без правила алерта на verdeect_events_skipped_total (исключение в тесте по §3.4); onReplica — выбор по паре (type, version), как у on (§3.4, AC-5.22); messagingCleanupLockKey(schema) — ключ по схеме таблиц (§3.8, AC-4.19); outbox.events по паре (type, version), публикующий шлёт обе версии, relay — по паре (§3.4, AC-5.23); PRD v1.27.
 - r23 — 2026-11-13: по итогам rc.7 (PL-69, review) — unknownVersion: 'skip' | 'dlq' у subscriber.on, x-dlq-reason: version (§3.4, AC-5.22); createTestDb({max}) с доступом к пулам, два срока БД (§3.8, AC-4.19); тип KitOutboxTrace (§3.8); redact — только простой объект, имена верхнего уровня (§3.3а, AC-4.14); повтор идемпотентности с Content-Type первого ответа, колонка content_type (§3.3а, §6, AC-4.14); UNKNOWN_COMMAND — JSON в stdout, список в stderr (§3.8, AC-9.7); PRD v1.28.
+- r24 — 2026-11-13: вопрос плана rc.8 (KT-87) — повтор идемпотентности: JSON-тело равно первому ответу как JSON (порядок ключей — нормализация jsonb), не-JSON тело — побайтово (§3.3а, AC-4.14); код не меняется. PRD v1.29.
