@@ -70,7 +70,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
 
 ### Фаза 1: `/messaging` — `unknownVersion`
 
-- [ ] **Task 1a: тесты AC-5.22 `unknownVersion`** — §3.4, AC-5.22
+- [x] **Task 1a: тесты AC-5.22 `unknownVersion`** — §3.4, AC-5.22
   - **Skill:** nestjs-code test integration messaging ac-5-22-version-dispatch (MODIFY) → `test/integration/messaging/ac-5-22-version-dispatch.spec.ts`; nestjs-code test integration messaging ac-5-22-unknown-version-dlq (CREATE) → `test/integration/messaging/ac-5-22-unknown-version-dlq.spec.ts`; nestjs-code test integration messaging support (MODIFY) → `test/support/messaging.ts`; nestjs-code test integration messaging ac-5-7-dlq-retry (MODIFY) → `test/integration/messaging/ac-5-7-dlq-retry.spec.ts` (только вынос `dlqReason`); nestjs-code test unit messaging ac-5-22-unknown-version (CREATE) → `test/unit/messaging/ac-5-22-unknown-version.test-d.ts`; `vitest.integration.config.ts` (MODIFY, конфиг)
   - Случай DLQ с проверкой `captureThrottled` (первый тест ниже) — в отдельном файле `ac-5-22-unknown-version-dlq.spec.ts` с `initFakeSentry`. Файл добавляется в `ISOLATED` конфига `vitest.integration.config.ts` с комментарием `// initFakeSentry — процесс-глобальный Sentry.` (правило «Fast Test Suites» (3)). Остальные тесты ниже (v1, регистрация, неверное значение) — в `ac-5-22-version-dispatch.spec.ts` без Sentry; файл остаётся в `shared`.
   - `support/messaging.ts`: потребитель `TestConsumerDlq` по образцу `TestConsumer`, `on(TestNoteCreated, h, {unknownVersion: 'dlq'})`. Рядом — `TestConsumerDlqV2`: `on(TestNoteCreatedV2, h, {unknownVersion: 'dlq'})`, пишет `received`. Существующий `TestConsumerV2` не подходит: он регистрируется с умолчанием `'skip'` и вместе с `TestConsumerDlq` даст `TypeError` регистрации. Если нужен — помощник чтения `kit.dlq` с заголовком `x-dlq-reason` (взять из `ac-5-7-dlq-retry.spec.ts`, не дублировать: вынести в support и переиспользовать в обоих файлах).
@@ -85,7 +85,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
   - На старом коде падает: опции нет (ошибка типов), v2 подтверждается без DLQ.
   - Логи: нет.
 
-- [ ] **Task 1b: `unknownVersion` в `KitSubscriber`** — §3.4, AC-5.22 (depends on 1a)
+- [x] **Task 1b: `unknownVersion` в `KitSubscriber`** — §3.4, AC-5.22 (depends on 1a)
   - **Skill:** nestjs-code generic src/messaging/subscriber.ts (MODIFY)
   - `on(event, handler, options: {dedupe?, unknownVersion?: 'skip' | 'dlq'})`. Проверка значения — рядом с `dedupe`: `TypeError('KitSubscriber.on: unknownVersion <v> — \'skip\' или \'dlq\'')`.
   - `Registered` — поле `unknownVersion` (у `onReplica` — всегда `'skip'`). В `register` для `on`: если в реестре есть запись того же `type` с другим `unknownVersion` → `TypeError('KitSubscriber.on: у обработчиков <type> разные unknownVersion — значение одно на type')`.
@@ -98,7 +98,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
 
 ### Фаза 2: `/idempotency` — `Content-Type` повтора
 
-- [ ] **Task 2a: тесты AC-4.14 — сериализация и `Content-Type` повтора** — §3.3а, §6, AC-4.14
+- [x] **Task 2a: тесты AC-4.14 — сериализация и `Content-Type` повтора** — §3.3а, §6, AC-4.14
   - **Skill:** nestjs-code test integration idempotency ac-4-14-content-type (CREATE) → `test/integration/idempotency/ac-4-14-content-type.spec.ts`; nestjs-code test integration idempotency support (MODIFY) → `test/integration/idempotency/support.ts`
   - `support.ts`, `EchoController` (`@Idempotent()`, под guard'ом), маршруты:
     - `POST /text` — строка `'42'`;
@@ -115,7 +115,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
   - На старом коде падает: колонки `content_type` нет; `/text` повтор — `application/json`; `/empty` повтор — `null`.
   - Логи: нет.
 
-- [ ] **Task 2b: колонка `content_type` и миграции** — §6, AC-4.14 (depends on 2a)
+- [x] **Task 2b: колонка `content_type` и миграции** — §6, AC-4.14 (depends on 2a)
   - **Skill:** nestjs-code generic src/idempotency/table.ts (MODIFY); миграции — команды drizzle-kit (без skill)
   - `table.ts`: `contentType: text('content_type')` (nullable) после `responseLocation`; TSDoc `createIdempotencyTable` — «`content_type` — `Content-Type` первого ответа; `''` — пустой ответ; `NULL` — запись до колонки». Шапка — ссылка на v1.28.
   - Фикстура: `pnpm db:fixtures` → новая миграция `test/fixtures/database/migrations/0008_*.sql` (`ALTER TABLE "kit"."idempotency_key" ADD COLUMN "content_type" text`) и снимок `meta/0008_snapshot.json`. Повтор `pnpm db:fixtures` — «No schema changes».
@@ -124,7 +124,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
   - Логи: нет.
   - Готово, когда: `pnpm typecheck` зелёный, миграции применяются в `startTestStack` (прогон 2a доходит до проверок поведения).
 
-- [ ] **Task 2c: сохранение и повтор `Content-Type`** — §3.3а, AC-4.14 (depends on 2b)
+- [x] **Task 2c: сохранение и повтор `Content-Type`** — §3.3а, AC-4.14 (depends on 2b)
   - **Skill:** nestjs-code generic src/idempotency/idempotency.interceptor.ts (MODIFY)
   - Сохранение (`run`, после обработчика) — `contentType` первого ответа:
     - заголовок ответа уже задан (`reply.getHeader('content-type')`: `@Header` Nest ставит до перехватчиков, `reply.type()` в обработчике) — его значение, только если `typeof header === 'string'`, как уже сделано с `location` в `run` (`typeof header === 'string' ? header : null`). Число или массив → правила ниже;
@@ -145,7 +145,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
 
 ### Фаза 3: `/testing` — `createTestDb({max})` и `pools`
 
-- [ ] **Task 3a: тесты AC-4.19 `max` и `pools`** — §3.8, AC-4.19
+- [x] **Task 3a: тесты AC-4.19 `max` и `pools`** — §3.8, AC-4.19
   - **Skill:** nestjs-code test integration testing ac-4-19-create-test-db (MODIFY) → `test/integration/testing/ac-4-19-create-test-db.spec.ts`
   - Тесты:
     - `AC-4.19: createTestDb({max: 1}) — у pools.main и pools.read по одному соединению, второй одновременный запрос ждёт`. Клиент берётся через `pools.main.connect()`, запускается `db.transaction(…)`. Опросом со сроком проверяется `pools.main.waitingCount === 1` и что транзакция не завершена. После `release()` транзакция завершается, `pools.main.totalCount === 1`. Так же для `pools.read` — через `db.readGlobal((r) => r.execute(sql\`select 1\`))`, пул чтения без транзакции. `db.read` требует тенанта (`TenantRequiredError`) и здесь не подходит. Без пауз. Срок ожидания в очереди pg-pool ограничен `connectionTimeoutMillis` = `CONNECTION_TIMEOUT_MS` (5000 мс, `src/database/timeouts.ts`, передаётся в `buildPools`), независимо от масштабированного срока опроса. Поэтому клиент отпускается сразу, как только опрос увидит `waitingCount === 1` и незавершённую транзакцию. Дальше тест проверяет, что транзакция (и `readGlobal`) завершилась успешно, а не отклонена с «timeout exceeded when trying to connect»;
@@ -157,7 +157,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
   - На старом коде падает: `pools` нет, `max` игнорируется.
   - Логи: нет.
 
-- [ ] **Task 3b: `createTestDb({max})` → `pools`** — §3.8, AC-4.19 (depends on 3a)
+- [x] **Task 3b: `createTestDb({max})` → `pools`** — §3.8, AC-4.19 (depends on 3a)
   - **Skill:** nestjs-code generic src/testing/create-test-db.ts (MODIFY)
   - Опция `max?: number`: `Number.isInteger(max) && max >= 1`, иначе `TypeError('createTestDb: max — целое ≥ 1')`. Умолчание — `POOL_MAX` (10).
   - `KitTestDb` — поле `readonly pools: KitPools`: `import type { KitPools } from '../database/pools.js'` (`src/database/pools.ts:20`). Тип стирается и в граф не попадает. Возвращается объект `buildPools` — те же пулы, что переданы в `Db`.
@@ -167,7 +167,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
 
 ### Фаза 4: CLI — сверка AC-9.7
 
-- [ ] **Task 4: тест UNKNOWN_COMMAND — одна JSON-строка в stdout** — §3.8 стр. 199, AC-9.7
+- [x] **Task 4: тест UNKNOWN_COMMAND — одна JSON-строка в stdout** — §3.8 стр. 199, AC-9.7
   - **Skill:** nestjs-code test unit cli ac-9-7-help (MODIFY) → `test/unit/cli/ac-9-7-help.spec.ts`
   - В тесте `AC-9.7: неизвестная команда …` добавить: `stdout.trimEnd().split('\n')` — ровно одна строка, она разбирается как `{error: {code: 'UNKNOWN_COMMAND', message}}`, `stderr` не содержит `UNKNOWN_COMMAND`.
   - Код `src/cli/run.ts` по сверке уже соответствует — не менять. Если тест падает, исправить `runCli` минимально и отметить в отчёте.
@@ -175,7 +175,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
 
 ### Фаза 5: документация и выпуск
 
-- [ ] **Task 5: README** — §3.3а, §3.4, §3.8, AC-9.3 (depends on 1b, 2c, 3b)
+- [x] **Task 5: README** — §3.3а, §3.4, §3.8, AC-9.3 (depends on 1b, 2c, 3b)
   - **Skill:** none (Markdown)
   - `README.md`:
     - `/messaging`, `subscriber.on` — три места README:
@@ -188,7 +188,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
     - `/testing`, `createTestDb` (стр. 679, 1039–1041): `createTestDb({url, service, max?})` → `{db, pools: {main, read}, close()}`. `KitTestDb` — с `pools`. `KIT_DB_CONNECTION_TIMEOUT_MS` — срок установки соединения в CLI, миграциях и `createTestDb`. Это не `DB_POOL_ACQUIRE_TIMEOUT_MS`: тот — срок взятия соединения пулом приложения. Тест «пул приложения не отдаёт соединение» берёт значение из окружения приложения или умолчания `envDatabase`.
   - Логи: нет.
 
-- [ ] **Task 6: CHANGELOG и версия** — G14, NFR-5 (depends on 5)
+- [x] **Task 6: CHANGELOG и версия** — G14, NFR-5 (depends on 5)
   - **Skill:** none (Markdown, JSON)
   - `CHANGELOG.md`: заголовок `## [1.0.0-rc.8] - 2026-11-13` (ASCII-дефис, как `## [1.0.0-rc.7] - 2026-11-13`) сразу под `## [Unreleased]`, разделы в порядке rc.7:
     - `### Changed`: повтор идемпотентности с `Content-Type` и сериализацией первого ответа;
@@ -202,7 +202,7 @@ Authority: `requirements/0000-kit/prd.md` v1.28 (r23) > ответ пользо�
 
 ### Фаза 6: проверка
 
-- [ ] **Task 7: полная проверка** (depends on 1b, 2c, 3b, 4, 6)
+- [x] **Task 7: полная проверка** (depends on 1b, 2c, 3b, 4, 6)
   - Команды по одной (правило пользователя: без `&&`):
     1. `pnpm lint`, `pnpm typecheck`, `pnpm test`;
     2. `pnpm db:fixtures` — «No schema changes»; затем `git status --short test/fixtures/database test/consumer/minimal/drizzle` показывает только новые миграции задачи 2b;
