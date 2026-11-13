@@ -1,6 +1,6 @@
 // OutboxRelay (prd.md §3.4 relay, UC-5, AC-5.3–AC-5.5, AC-5.11, AC-5.16, AC-9.5). Эталон — O outbox-relay.ts; из P —
 // гонка publish с остановкой (STOPPED) и beforeApplicationShutdown против shutdownDeadline; по PRD — опрос 1000 мс
-// (O — 200), метрики verdeect_outbox_* раз в RELAY_POLL_MS независимо от канала (П10), строка неизвестного типа —
+// (O — 200), метрики verdeect_outbox_* при запросе /metrics (collect, срок 1 с) независимо от канала (П10, v1.25), строка неизвестного типа —
 // subject.kind 'unknown' (П23). Пачка ≤ 100 по seq под FOR UPDATE SKIP LOCKED, публикация последовательно с
 // подтверждением; первая неудача прерывает пачку — порядок сохраняется. Без соединения или канала БД не опрашивается.
 // Остановка во время неподтверждённой публикации оставляет строку без attempts + 1: повтор после рестарта —
@@ -34,13 +34,17 @@ import {
 const CHANNEL_NAME = 'outbox-relay';
 const CONFIRM_DEADLINE_ERROR = 'confirm deadline';
 const STOPPED = Symbol('stopped');
+/** Срок запроса метрик outbox при `/metrics`, мс (§3.4 v1.25). */
+const STATS_QUERY_TIMEOUT_MS = 1000;
+/** `debug` о сбое метрик outbox — не чаще, мс. */
+const STATS_FAILURE_LOG_MS = 60_000;
 
 /** Часы relay (внутренние): подмена в тесте AC-5.16 — без реальных пауз. */
 export interface RelayTimers {
     /** Текущее время, мс. */
     now(): number;
     /** Пауза `ms` (`Infinity` — до прерывания); прерывание `signal` — resolve. */
-    sleep(ms: number, signal: AbortSignal, kind: 'pause' | 'confirm' | 'stats'): Promise<void>;
+    sleep(ms: number, signal: AbortSignal, kind: 'pause' | 'confirm'): Promise<void>;
 }
 
 const realTimers: RelayTimers = {
@@ -88,17 +92,16 @@ export class OutboxRelay {
     private channel: ManagedChannel | null = null;
     private unsubscribe: (() => void) | null = null;
     private loop: Promise<void> | null = null;
-    private stats: Promise<void> | null = null;
     private running = false;
     private backoffMs = 0;
     private wakeRequested = false;
     private sleepAbort = new AbortController();
-    private readonly statsAbort = new AbortController();
     private requestStop: () => void = () => undefined;
     private readonly stopRequested = new Promise<typeof STOPPED>((resolve) => {
         this.requestStop = () => resolve(STOPPED);
     });
-    private statsFailing = false;
+    private statsQuery: Promise<{ readonly pending: number; readonly lag: number }> | null = null;
+    private statsLoggedAt: number | undefined;
     private readonly unknownTypes = new Set<string>();
 
     constructor(private readonly deps: OutboxRelayDeps) {
@@ -123,7 +126,8 @@ export class OutboxRelay {
             this.wake();
         });
         this.loop = this.run();
-        this.stats = this.statsLoop();
+        // Метрики outbox — при запросе /metrics, независимо от канала (П10, §3.4 v1.25).
+        this.deps.metrics?.setOutboxSource(() => this.refreshStats());
         this.log.debug({}, 'outbox: relay запущен');
     }
 
@@ -141,7 +145,7 @@ export class OutboxRelay {
         this.running = false;
         this.requestStop();
         this.wake();
-        this.statsAbort.abort();
+        this.deps.metrics?.setOutboxSource(null);
         const loop = this.loop ?? Promise.resolve();
         const stopped = await Promise.race([
             loop.then(() => true),
@@ -150,7 +154,6 @@ export class OutboxRelay {
         if (!stopped) {
             this.log.warn({}, 'outbox: срок остановки relay вышел, идём дальше');
         }
-        await this.stats;
         this.unsubscribe?.();
         this.unsubscribe = null;
         await this.channel?.close();
@@ -327,24 +330,43 @@ export class OutboxRelay {
         this.wakeRequested = false;
     }
 
-    /** Метрики outbox раз в RELAY_POLL_MS, независимо от канала (П10). */
-    private async statsLoop(): Promise<void> {
+    /**
+     * Метрики outbox для `/metrics` (П10, §3.4 v1.25): запрос к БД со сроком 1 с; сбой или срок — последнее значение и
+     * `debug` не чаще раза в минуту; запрос в полёте не повторяется — `/metrics` не зависает и не копит запросы.
+     */
+    private async refreshStats(): Promise<void> {
+        const { metrics } = this.deps;
+        if (metrics === undefined) {
+            return;
+        }
         const ctx = { tenant: null, traceId: ulid(), actor: { channel: 'system' } };
-        while (!this.statsAbort.signal.aborted) {
-            try {
-                const { pending, lag } = await this.deps.db.transaction(ctx, (tx) =>
-                    this.deps.store.stats(tx),
-                );
-                this.deps.metrics?.outboxPending.set(pending);
-                this.deps.metrics?.outboxLagSeconds.set(lag);
-                this.statsFailing = false;
-            } catch (error) {
-                if (!this.statsFailing) {
-                    this.statsFailing = true;
-                    this.log.warn({ err: sanitizeError(error) }, 'outbox: метрики не обновлены');
-                }
+        this.statsQuery ??= this.deps.db
+            .transaction(ctx, (tx) => this.deps.store.stats(tx))
+            .finally(() => {
+                this.statsQuery = null;
+            });
+        try {
+            const stats = await Promise.race([
+                this.statsQuery,
+                sleepFor(STATS_QUERY_TIMEOUT_MS, null, { ref: false }),
+            ]);
+            if (stats === null) {
+                throw new Error(`запрос метрик outbox дольше ${String(STATS_QUERY_TIMEOUT_MS)} мс`);
             }
-            await this.timers.sleep(RELAY_POLL_MS, this.statsAbort.signal, 'stats');
+            metrics.outboxPending.set(stats.pending);
+            metrics.outboxLagSeconds.set(stats.lag);
+        } catch (error) {
+            const now = this.timers.now();
+            if (
+                this.statsLoggedAt === undefined ||
+                now - this.statsLoggedAt >= STATS_FAILURE_LOG_MS
+            ) {
+                this.statsLoggedAt = now;
+                this.log.debug(
+                    { err: sanitizeError(error) },
+                    'outbox: метрики — последнее значение',
+                );
+            }
         }
     }
 }

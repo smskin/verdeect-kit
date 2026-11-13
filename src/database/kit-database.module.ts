@@ -14,6 +14,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { KitDatabaseEnv } from '../config/fragments.js';
 import { isPoolTimeout, tagPoolTimeout, type KitPoolName } from '../internal/pg-errors.js';
+import { requireKitCore } from '../internal/kit-core-required.js';
 import { KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import type { KitMetrics } from '../observability/metrics.js';
@@ -146,11 +147,14 @@ function databaseEnv(config: ConfigService | undefined): KitDatabaseEnv {
 @Module({})
 export class KitDatabaseModule implements OnModuleInit, OnApplicationShutdown {
     private readonly logger = new Logger(KitDatabaseModule.name);
+    private readonly health: HealthRegistry;
 
     constructor(
         @Inject(KIT_PG_POOLS) private readonly pools: KitPools,
-        @Optional() private readonly health?: HealthRegistry,
-    ) {}
+        @Optional() health?: HealthRegistry,
+    ) {
+        this.health = requireKitCore(health, 'KitDatabaseModule');
+    }
 
     /** Модуль БД со схемой Drizzle сервиса. */
     static forRoot(options: KitDatabaseModuleOptions): DynamicModule {
@@ -169,7 +173,7 @@ export class KitDatabaseModule implements OnModuleInit, OnApplicationShutdown {
                 {
                     provide: KIT_PG_POOLS,
                     useFactory: (env: KitDatabaseEnv, metrics?: KitMetrics) =>
-                        createPools(env, { metrics }),
+                        createPools(env, { metrics: requireKitCore(metrics, 'KitDatabaseModule') }),
                     inject: [KIT_DATABASE_ENV, { token: KIT_PACKAGE_METRICS, optional: true }],
                 },
                 {
@@ -195,9 +199,6 @@ export class KitDatabaseModule implements OnModuleInit, OnApplicationShutdown {
 
     /** Пробы `/health` обоих пулов — `select 1` (без `Db.read`: ему нужен тенант). */
     onModuleInit(): void {
-        if (this.health === undefined) {
-            return;
-        }
         const probe = (pool: Pool) => async (): Promise<boolean> => {
             await pool.query('select 1');
 

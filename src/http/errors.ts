@@ -117,6 +117,29 @@ export function errorMessage(code: string): string {
     return registry.get(code)?.message ?? FALLBACK_MESSAGE;
 }
 
+/**
+ * Тело ошибки целиком `{error: {code, message, details}}`, текст — из словаря `defineErrors` (§3.5 v1.25): для подделок
+ * соседних сервисов и проверок ответа (`errorMessage` отдельно не экспортируется).
+ * @throws {TypeError} код не зарегистрирован в словаре.
+ */
+export function errorBody(
+    code: string,
+    details: Readonly<Record<string, unknown>> = {},
+): {
+    readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly details: Readonly<Record<string, unknown>>;
+    };
+} {
+    const entry = registry.get(code);
+    if (entry === undefined) {
+        throw new TypeError(`errorBody: код ${code} не зарегистрирован в defineErrors`);
+    }
+
+    return { error: { code, message: entry.message, details } };
+}
+
 /** Объявленные статусы кода по возрастанию; `undefined` — код не зарегистрирован. Внутренняя функция. */
 export function errorStatuses(code: string): readonly number[] | undefined {
     return registry.get(code)?.statuses;

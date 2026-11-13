@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { idempotencyPurgeSql } from '../../../src/idempotency/table.js';
 
 const FIXTURE = new URL(
-    '../../fixtures/database/migrations/0003_idempotency_purge.sql',
+    '../../fixtures/database/migrations/0007_idempotency_purge_v125.sql',
     import.meta.url,
 );
 
@@ -15,7 +15,10 @@ describe('UC-7: idempotencyPurgeSql', () => {
 
     it('AC-4.14: функция "kit"."idempotency_purge"(batch integer) RETURNS integer, SECURITY DEFINER, SET search_path = "kit", pg_temp', () => {
         expect(text).toContain(
-            'CREATE OR REPLACE FUNCTION "kit"."idempotency_purge"(batch integer) RETURNS integer',
+            'CREATE FUNCTION "kit"."idempotency_purge"(batch integer) RETURNS integer',
+        );
+        expect(text.startsWith('DROP FUNCTION IF EXISTS "kit"."idempotency_purge"(integer);')).toBe(
+            true,
         );
         expect(text).toContain('SECURITY DEFINER SET search_path = "kit", pg_temp');
     });
@@ -31,7 +34,7 @@ describe('UC-7: idempotencyPurgeSql', () => {
             'GRANT EXECUTE ON FUNCTION "kit"."idempotency_purge"(integer) TO "kit_app";',
         );
         expect(text).toContain("o.created_at < now() - interval '24 hours'");
-        expect(text.split('\n--> statement-breakpoint\n')).toHaveLength(7);
+        expect(text.split('\n--> statement-breakpoint\n')).toHaveLength(9);
     });
 
     it.each(['Kit', 'k', 'kit_app', 'kit;drop', 'kit"x', 'a'.repeat(33)])(
@@ -52,7 +55,21 @@ describe('UC-7: idempotencyPurgeSql', () => {
         expect(hyphen).not.toMatch(/[^"]bff-app[^"_]/);
     });
 
-    it('AC-4.14: 0003_idempotency_purge.sql фикстуры содержит текст idempotencyPurgeSql(kit) без изменений', () => {
+    it('AC-4.14 v1.25: права kit_directory — REVOKE SELECT на таблицу, затем SELECT (ctid, created_at) и DELETE', () => {
+        const statements = text.split('\n--> statement-breakpoint\n');
+        const revoke = statements.indexOf(
+            'REVOKE SELECT ON "kit"."idempotency_key" FROM "kit_directory";',
+        );
+        const grant = statements.indexOf(
+            'GRANT SELECT (ctid, created_at), DELETE ON "kit"."idempotency_key" TO "kit_directory";',
+        );
+
+        expect(revoke).toBeGreaterThan(0);
+        expect(grant).toBe(revoke + 1);
+        expect(text).not.toContain('GRANT SELECT, DELETE');
+    });
+
+    it('AC-4.14: 0007_idempotency_purge_v125.sql фикстуры (поверх 0003) содержит текст idempotencyPurgeSql(kit) без изменений', () => {
         expect(readFileSync(FIXTURE, 'utf8')).toContain(text);
     });
 });

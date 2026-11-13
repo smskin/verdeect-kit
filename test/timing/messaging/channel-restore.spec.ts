@@ -1,11 +1,13 @@
 // UC-5, AC-5.11: восстановление канала relay без разрыва соединения — брокер закрыл канал (404 публикации в удалённый
 // exchange) → /health down ≤ 2 с; после объявления exchange канал заменён, строки опубликованы (prd.md §3.4). Эквивалентность
 // — P channel-restore.timing-spec.
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
+import { RELAY_POLL_MS } from '../../../src/messaging/topology.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
 import { countQueries } from '../../../src/testing/count-queries.js';
@@ -81,24 +83,13 @@ describe('UC-5: восстановление канала relay', () => {
         await waitUntil(() => !connection.isChannelReady('outbox-relay'), 'канал relay не готов');
         const store = app.get(OutboxStore);
         const claim = vi.spyOn(store, 'claimBatch');
-        // Окно наблюдения закрывает сигнал системы, а не пауза: цикл метрик relay (statsLoop) тикает раз в
-        // RELAY_POLL_MS и без канала — два его запроса значат, что период опроса прошёл, а захвата не было.
-        let statsTicks = 0;
-        const { queries } = await countQueries(
-            mainPoolOf(app.get(Db)),
-            async () => {
-                await add(2);
-                await add(3);
-                await waitUntil(() => statsTicks >= 2, 'два тика метрик relay', 5_000);
-            },
-            {
-                onQuery: (text) => {
-                    if (text.includes('as pending')) {
-                        statsTicks += 1;
-                    }
-                },
-            },
-        );
+        // Окно наблюдения — два периода опроса relay (RELAY_POLL_MS): без канала захвата нет. Цикла метрик больше нет
+        // (метрики outbox — при запросе /metrics, v1.25), длительность окна здесь — предмет проверки.
+        const { queries } = await countQueries(mainPoolOf(app.get(Db)), async () => {
+            await add(2);
+            await add(3);
+            await sleep(2 * RELAY_POLL_MS + 200);
+        });
 
         expect(claim).not.toHaveBeenCalled();
         expect(

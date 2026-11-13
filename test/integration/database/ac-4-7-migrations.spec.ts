@@ -2,6 +2,8 @@
 // сервиса переносится вместе с журналом; moveJournal (prd.md §3.3, §5.4). Перенос O ac-10-8-migrate.int-spec.ts и
 // I migrations.int-spec.ts (повтор — applied: 0), обобщён на схему сервиса. Свои БД (пустая и createScratchDatabase), роли kit_* — globalSetup.
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
@@ -22,7 +24,12 @@ import {
 } from '../../support/postgres.js';
 
 const FOLDER = fileURLToPath(new URL('../../fixtures/database/migrations', import.meta.url));
-const MIGRATION_COUNT = 7;
+/** Миграций фикстуры — из журнала drizzle-kit (не число в коде: фикстура растёт). */
+const MIGRATION_COUNT = (
+    JSON.parse(readFileSync(join(FOLDER, 'meta', '_journal.json'), 'utf8')) as {
+        entries: unknown[];
+    }
+).entries.length;
 
 describe('UC-1: миграции', () => {
     const database = uniqueName('ac47');

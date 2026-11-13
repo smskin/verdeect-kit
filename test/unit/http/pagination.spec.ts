@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { DomainError } from '../../../src/http/errors.js';
 import {
     afterCursor,
+    cursorTimestamp,
     decodeCursor,
     encodeCursor,
     pageOf,
@@ -78,7 +79,7 @@ describe('UC-4: keyset-пагинация', () => {
         const query = dialect.sqlToQuery(condition);
 
         expect(query.sql).toBe(
-            '("items"."created_at" < $1 or ("items"."created_at" = $2 and "items"."id" < $3))',
+            '("items"."created_at" < $1::timestamptz or ("items"."created_at" = $2::timestamptz and "items"."id" < $3))',
         );
         expect(query.params).toEqual(['2026-11-10', '2026-11-10', 'b']);
         expect(afterCursor([items.id], null, 'asc')).toBeUndefined();
@@ -93,5 +94,14 @@ describe('UC-4: keyset-пагинация', () => {
 
     it('AC-3.6: afterCursor с курсором другой длины → 422 path: cursor', () => {
         expect(() => afterCursor([items.createdAt, items.id], ['x'], 'asc')).toThrow(DomainError);
+    });
+
+    it('AC-3.6 (К23): cursorTimestamp — ISO UTC с микросекундами из БД; столбец не timestamptz — TypeError', () => {
+        const query = new PgDialect().sqlToQuery(cursorTimestamp(items.createdAt));
+
+        expect(query.sql).toBe(
+            `to_char("items"."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+        );
+        expect(() => cursorTimestamp(items.id)).toThrow(TypeError);
     });
 });

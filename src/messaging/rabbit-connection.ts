@@ -70,8 +70,8 @@ export interface RabbitConnectionOptions {
     readonly log?: MessagingLog;
     /** RABBITMQ_URL. */
     readonly url: string;
-    /** Пауза переподключения и повтора настройки канала, с (RABBITMQ_RETRY_SECONDS). */
-    readonly retrySeconds: number;
+    /** Пауза переподключения и повтора настройки канала, с (RABBITMQ_RECONNECT_SECONDS). */
+    readonly reconnectSeconds: number;
     /** Общий срок обработчиков остановки, мс (handlersDeadlineMs). */
     readonly deadlineMs: number;
 }
@@ -436,7 +436,7 @@ export class RabbitConnection {
         }
         const manager = acm.connect([this.options.url], {
             heartbeatIntervalInSeconds: HEARTBEAT_SECONDS,
-            reconnectTimeInSeconds: this.options.retrySeconds,
+            reconnectTimeInSeconds: this.options.reconnectSeconds,
         });
         this.first = new Promise((resolve) => {
             manager.once('connect', () => resolve('connected'));
@@ -659,7 +659,7 @@ export class RabbitConnection {
         this.retryTimer = setTimeout(() => {
             this.retryTimer = undefined;
             void this.retryFailedChannels();
-        }, this.options.retrySeconds * 1000);
+        }, this.options.reconnectSeconds * 1000);
         this.retryTimer.unref();
     }
 

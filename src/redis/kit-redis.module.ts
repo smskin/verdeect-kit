@@ -20,6 +20,7 @@ import {
     KIT_REDIS_PREFIX,
     KIT_REDIS_SUBSCRIBER,
 } from '../internal/tokens.js';
+import { requireKitCore } from '../internal/kit-core-required.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import { KitRedisChannels } from './channels.js';
 import {
@@ -60,17 +61,21 @@ function redisUrl(config: ConfigService | undefined): string {
 /** Проба `/health` и закрытие соединений на шаге 4 (внутренний). */
 @Injectable()
 class RedisLifecycle implements OnModuleInit, OnApplicationShutdown {
+    private readonly health: HealthRegistry;
+
     constructor(
         @Inject(KIT_REDIS) private readonly redis: Redis,
         @Inject(KIT_REDIS_LOG) private readonly log: RedisLog,
         @Inject(REDIS_PROBE_CRITICAL) private readonly critical: boolean,
         @Optional() @Inject(KIT_REDIS_SUBSCRIBER) private readonly subscriber?: Redis,
-        @Optional() private readonly health?: HealthRegistry,
-    ) {}
+        @Optional() health?: HealthRegistry,
+    ) {
+        this.health = requireKitCore(health, 'KitRedisModule');
+    }
 
     /** Проба `redis`: некритичная по умолчанию (недоступен → `degraded`), с `critical: true` — 503 (§3.7). */
     onModuleInit(): void {
-        this.health?.register('redis', async () => (await this.redis.ping()) === 'PONG', {
+        this.health.register('redis', async () => (await this.redis.ping()) === 'PONG', {
             critical: this.critical,
         });
     }

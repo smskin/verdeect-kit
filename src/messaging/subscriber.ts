@@ -58,6 +58,8 @@ const PARSE_REASONS = new Set(['not-json', 'envelope', 'unsubscribed', 'tenant',
 interface Registered {
     readonly event: KitEvent;
     readonly handler: (event: Envelope, tx: DbTx | null) => Promise<void>;
+    /** Защита от повторов обработчика: опция `on` или `dedupe` модуля. */
+    readonly dedupe: 'inbox' | 'none';
 }
 
 /** Зависимости подписчика (внутренние). */
@@ -72,10 +74,12 @@ export interface KitSubscriberDeps {
     readonly inbox?: KitInboxTable;
     /** `Db` при `dedupe: 'inbox'`. */
     readonly db?: Db;
-    /** Соединение. */
-    readonly connection: RabbitConnection;
-    /** TTL `.retry` и пауза повтора, с. */
+    /** Соединение; `null` — режим CLI (`listen: false`): обработчики принимаются, подписчик не запускается. */
+    readonly connection: RabbitConnection | null;
+    /** TTL `.retry`, с (RABBITMQ_RETRY_SECONDS). */
     readonly retrySeconds: number;
+    /** Срок ожидания первого подключения и настройки канала, с (RABBITMQ_RECONNECT_SECONDS). */
+    readonly reconnectSeconds: number;
     /** Метрики. */
     readonly metrics?: KitMetrics;
     /** Логгер. */
@@ -119,11 +123,27 @@ export class KitSubscriber {
     }
 
     /**
-     * Обработчик события из очереди `<svc>`.
-     * @throws {TypeError} тип уже зарегистрирован или приложение уже запущено.
+     * Обработчик события из очереди `<svc>`. `dedupe` переопределяет `dedupe` модуля (§3.4 v1.25): `'none'` — без inbox
+     * и без транзакции пакета, обработчик получает `(event, null)` и сам открывает короткие транзакции через `Db`;
+     * `'inbox'` — inbox и транзакция `Db` с `DbContext` из конверта.
+     * @throws {TypeError} тип уже зарегистрирован, приложение уже запущено, `dedupe` вне `'inbox' | 'none'` или
+     * `'inbox'` без таблицы inbox у модуля (отказ запуска).
      */
-    on<E extends KitEvent>(event: E, handler: KitEventHandler<E>): void {
-        this.register(this.handlers, 'on', event, handler as Registered['handler']);
+    on<E extends KitEvent>(
+        event: E,
+        handler: KitEventHandler<E>,
+        options: { readonly dedupe?: 'inbox' | 'none' } = {},
+    ): void {
+        const dedupe = options.dedupe ?? this.deps.dedupe;
+        if (dedupe !== 'inbox' && dedupe !== 'none') {
+            throw new TypeError(`KitSubscriber.on: dedupe ${String(dedupe)} — 'inbox' или 'none'`);
+        }
+        if (dedupe === 'inbox' && this.deps.inbox === undefined) {
+            throw new TypeError(
+                `KitSubscriber.on: обработчик ${event.type} с dedupe: 'inbox' — у KitMessagingModule нет таблицы inbox (subscriber.inbox: createInboxTable(schema))`,
+            );
+        }
+        this.register(this.handlers, 'on', event, handler as Registered['handler'], dedupe);
     }
 
     /**
@@ -133,15 +153,37 @@ export class KitSubscriber {
      * @throws {TypeError} тип уже зарегистрирован или приложение уже запущено.
      */
     onReplica<E extends KitEvent>(event: E, handler: KitReplicaHandler<E>): void {
-        this.register(this.replicaHandlers, 'onReplica', event, (envelope) =>
-            (handler as KitReplicaHandler<KitEvent>)(envelope),
+        this.register(
+            this.replicaHandlers,
+            'onReplica',
+            event,
+            (envelope) => (handler as KitReplicaHandler<KitEvent>)(envelope),
+            'none',
         );
+    }
+
+    /** Соединение режима прослушивания; в режиме CLI сюда не доходит (подписчик не запускается). */
+    private connectionOf(): RabbitConnection {
+        const { connection } = this.deps;
+        if (connection === null) {
+            throw new Error('KitSubscriber: listen: false — соединения с брокером нет');
+        }
+
+        return connection;
     }
 
     /** Топология, потребители и проверка TTL `.retry` до прослушивания порта (AC-5.19). */
     async onApplicationBootstrap(): Promise<void> {
         this.started = true;
         const { connection } = this.deps;
+        if (connection === null) {
+            this.log.debug(
+                { handlers: this.handlers.size },
+                'messaging: listen: false — подписчик не запускается',
+            );
+
+            return;
+        }
         const types = [...this.handlers.keys()];
         this.main = connection.createChannel({
             name: MAIN_CHANNEL,
@@ -192,7 +234,7 @@ export class KitSubscriber {
 
             return true as const;
         });
-        const done = await Promise.race([steps, this.deps.connection.shutdownDeadline()]);
+        const done = await Promise.race([steps, this.connectionOf().shutdownDeadline()]);
         if (!done) {
             this.main = null;
             this.replica = null;
@@ -208,6 +250,7 @@ export class KitSubscriber {
         method: 'on' | 'onReplica',
         event: KitEvent,
         handler: Registered['handler'],
+        dedupe: Registered['dedupe'],
     ): void {
         if (this.started) {
             throw new TypeError(
@@ -219,17 +262,18 @@ export class KitSubscriber {
                 `KitSubscriber.${method}: обработчик ${event.type} уже зарегистрирован`,
             );
         }
-        registry.set(event.type, { event, handler });
+        registry.set(event.type, { event, handler, dedupe });
     }
 
     /**
-     * Первый исход подключения и настройки канала, не дольше RABBITMQ_RETRY_SECONDS (П8): другой TTL `.retry` —
+     * Первый исход подключения и настройки канала, не дольше RABBITMQ_RECONNECT_SECONDS (П8, v1.25): другой TTL `.retry` —
      * отказ запуска; брокер недоступен или другая ошибка стадии — запуск продолжается (`/health` rabbitmq down).
      */
     private async awaitStartupOutcome(): Promise<void> {
-        const { connection, retrySeconds } = this.deps;
+        const { reconnectSeconds } = this.deps;
+        const connection = this.connectionOf();
         const limit = (): Promise<'timeout'> =>
-            sleep(retrySeconds * 1000, 'timeout' as const, { ref: false });
+            sleep(reconnectSeconds * 1000, 'timeout' as const, { ref: false });
         const attempt = await Promise.race([connection.firstAttempt(), limit()]);
         if (attempt !== 'connected') {
             return;
@@ -276,7 +320,7 @@ export class KitSubscriber {
     private openReplica(): void {
         const queue = replicaQueueOf(this.deps.service, this.deps.replica);
         const types = [...this.replicaHandlers.keys()];
-        this.replica = this.deps.connection.createChannel({
+        this.replica = this.connectionOf().createChannel({
             name: REPLICA_CHANNEL,
             confirm: false,
             setup: async (channel) => {
@@ -382,7 +426,7 @@ export class KitSubscriber {
     /** true — повтор `id` (inbox занят), обработчик не вызван. */
     private async invoke(registered: Registered, envelope: Envelope): Promise<boolean> {
         const { db, inbox } = this.deps;
-        if (this.deps.dedupe === 'none' || db === undefined || inbox === undefined) {
+        if (registered.dedupe === 'none' || db === undefined || inbox === undefined) {
             await registered.handler(envelope, null);
 
             return false;

@@ -270,11 +270,20 @@ interface CheckedService {
  */
 function checkedServices(files: RepoFiles): CheckedService[] {
     const baseFile = baseComposeFile(files);
+    const baseProject = files.compose.find((service) => service.file === baseFile)?.project ?? null;
 
     return files.compose.map((service) => {
-        const base = files.compose.find(
-            (other) => other.file === baseFile && other.name === service.name,
-        );
+        // Файл со своим name: — отдельный проект (§3.8 v1.25): проверяется сам по себе, с базовым не сливается. Своё —
+        // буквальное имя, отличное от имени базового файла; имя из переменной (${COMPOSE_PROJECT_NAME:?…}) задаётся при
+        // выкатке — такой файл накладывается на базовый (-f compose.yml -f compose.production.yml).
+        const standalone =
+            service.file !== baseFile &&
+            service.project !== null &&
+            !service.project.includes('${') &&
+            service.project !== baseProject;
+        const base = standalone
+            ? undefined
+            : files.compose.find((other) => other.file === baseFile && other.name === service.name);
         const merged = mergeService(service, base);
         const launch = composeLaunch(files, merged);
         const analysis = launch === null ? null : analyzeLaunch(launch.argv);

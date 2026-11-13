@@ -1,10 +1,11 @@
 // OutboxStore (prd.md §3.4, §6, UC-5, AC-5.1, AC-5.2, AC-5.15). Эталон — O outbox-store.ts; по PRD — id = newId('evt') в
 // коде, tenant/actor/traceId из DbContext (txContextOf), проверка data и признака tenant до записи, afterCommit →
 // relay.wake(); SQL-триггеров нет (P0). Запросы relay и очистки — построителем Drizzle по объекту таблицы (AC-9.4).
+import { setTimeout as sleep } from 'node:timers/promises';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { z } from 'zod';
 import type { Db, DbTx } from '../database/db.js';
-import { newId } from '../internal/ids.js';
+import { newId, ulid } from '../internal/ids.js';
 import { txContextOf } from '../internal/tx-context.js';
 import type { KitEvent } from './define-event.js';
 import { nestLog, type MessagingLog } from './rabbit-connection.js';
@@ -12,6 +13,9 @@ import type { KitOutboxTable } from './tables.js';
 
 /** Предел `last_error`. */
 const LAST_ERROR_MAX = 500;
+
+/** Шаг опроса `awaitPublished`, мс. */
+const AWAIT_POLL_MS = 100;
 
 /** Строка, взятая relay. */
 export interface OutboxClaimedRow {
@@ -176,6 +180,65 @@ export class OutboxStore {
             .returning({ attempts: t.attempts });
 
         return row?.attempts ?? 0;
+    }
+
+    /**
+     * Ждёт, пока relay реплики опубликует строки (опрос `published_at` раз в 100 мс): по `id` или по `traceId`. По сроку
+     * исключения нет — `pending > 0`. Работает при любом `listen`; сам не публикует (порядок по `seq` — у relay).
+     * Вызывать после COMMIT транзакции `add`: id невидимой строки считается неопубликованным, по `traceId` невидимые
+     * строки не учитываются.
+     * @throws {TypeError} пустой `traceId` или `timeoutMs` не целое ≥ 0.
+     */
+    async awaitPublished(
+        target: readonly string[] | { readonly traceId: string },
+        options: { readonly timeoutMs: number },
+    ): Promise<{ readonly published: number; readonly pending: number }> {
+        const { timeoutMs } = options;
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
+            throw new TypeError('OutboxStore.awaitPublished: timeoutMs — целое ≥ 0');
+        }
+        const t = this.deps.table;
+        let where;
+        // Ожидаемых строк по id — столько, сколько уникальных id: невидимые (не закоммичены, неверный id) — pending.
+        let expected: number | null = null;
+        if (Array.isArray(target)) {
+            const ids = [...new Set(target as readonly string[])];
+            if (ids.length === 0) {
+                return { published: 0, pending: 0 };
+            }
+            expected = ids.length;
+            where = inArray(t.id, ids);
+        } else {
+            const { traceId } = target as { readonly traceId: string };
+            if (typeof traceId !== 'string' || traceId === '') {
+                throw new TypeError('OutboxStore.awaitPublished: пустой traceId');
+            }
+            where = eq(t.traceId, traceId);
+        }
+        const ctx = { tenant: null, traceId: ulid(), actor: { channel: 'system' } } as const;
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+            const counts = await this.deps.db.transaction(ctx, async (tx) => {
+                const [row] = await tx
+                    .select({
+                        published: sql<number>`count(*) filter (where ${t.publishedAt} is not null)::int`,
+                        pending: sql<number>`count(*) filter (where ${t.publishedAt} is null)::int`,
+                    })
+                    .from(t)
+                    .where(where);
+
+                const published = row?.published ?? 0;
+
+                return {
+                    published,
+                    pending: expected === null ? (row?.pending ?? 0) : expected - published,
+                };
+            });
+            if (counts.pending === 0 || Date.now() >= deadline) {
+                return counts;
+            }
+            await sleep(Math.min(AWAIT_POLL_MS, Math.max(0, deadline - Date.now())));
+        }
     }
 
     /** @internal Число неопубликованных и возраст старейшей, с (метрики). */

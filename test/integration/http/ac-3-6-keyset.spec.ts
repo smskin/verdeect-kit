@@ -2,7 +2,7 @@
 // пропусков, вставка между страницами, неуникальный последний ключ, limit 201 и неверный курсор → 422. PostgreSQL —
 // globalSetup уровня I (startTestStack); своя временная схема на файл, удаляется в afterAll. Порядок — по уникальному id.
 import { randomBytes } from 'node:crypto';
-import { desc, sql } from 'drizzle-orm';
+import { asc, desc, sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { pgSchema, text, timestamp } from 'drizzle-orm/pg-core';
 import pg from 'pg';
@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'v
 import { DomainError } from '../../../src/http/errors.js';
 import {
     afterCursor,
+    cursorTimestamp,
     decodeCursor,
     pageOf,
     PageQuerySchema,
@@ -24,6 +25,11 @@ const items = schema.table('items', {
     title: text('title').notNull(),
 });
 type Row = typeof items.$inferSelect;
+/** Время в режиме date (JS Date, как у сервисов): микросекунды timestamptz в Date теряются (К23). */
+const events = schema.table('events', {
+    id: text('id').primaryKey(),
+    at: timestamp('at', { withTimezone: true }).notNull(),
+});
 
 let pool: pg.Pool;
 let db: NodePgDatabase;
@@ -37,6 +43,9 @@ beforeAll(async () => {
             `create table "${SCHEMA}".items (id text primary key, created_at timestamptz not null, title text not null)`,
         ),
     );
+    await db.execute(
+        sql.raw(`create table "${SCHEMA}".events (id text primary key, at timestamptz not null)`),
+    );
 });
 
 afterAll(async () => {
@@ -46,6 +55,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
     await db.delete(items);
+    await db.delete(events);
 });
 
 /** Строки: по две на каждую минуту — ключ created_at неуникален, порядок держит id. */
@@ -132,5 +142,38 @@ describe('UC-4: keyset на PostgreSQL', () => {
         expect((error as DomainError).details).toEqual({
             issues: [{ path: 'cursor', code: 'invalid' }],
         });
+    });
+
+    it('AC-3.6 (К23): 6 строк в одну миллисекунду с разными микросекундами, обход по (at, id) desc и asc с limit 2 — все строки ровно один раз', async () => {
+        // Порядок id обратен порядку микросекунд: потеря микросекунд в курсоре даёт пропуски и повторы.
+        await db.execute(
+            sql.raw(
+                `insert into "${SCHEMA}".events (id, at) values ${Array.from(
+                    { length: 6 },
+                    (_, index) =>
+                        `('ev-${String(index)}', '2026-11-13T10:00:00.123${String(6 - index).padStart(3, '0')}Z')`,
+                ).join(', ')}`,
+            ),
+        );
+        for (const dir of ['desc', 'asc'] as const) {
+            const order = dir === 'desc' ? desc : asc;
+            const seen: string[] = [];
+            let cursor: string | undefined;
+            do {
+                const keys = decodeCursor(cursor, 2);
+                const rows = await db
+                    .select({ id: events.id, cursorAt: cursorTimestamp(events.at) })
+                    .from(events)
+                    .where(afterCursor([events.at, events.id], keys, dir))
+                    .orderBy(order(events.at), order(events.id))
+                    .limit(3);
+                const current = pageOf(rows, 2, (row) => [row.cursorAt, row.id]);
+                seen.push(...current.items.map((row) => row.id));
+                cursor = current.nextCursor ?? undefined;
+            } while (cursor !== undefined && seen.length < 20);
+
+            const byTime = ['ev-0', 'ev-1', 'ev-2', 'ev-3', 'ev-4', 'ev-5'];
+            expect(seen, dir).toEqual(dir === 'desc' ? byTime : [...byTime].reverse());
+        }
     });
 });

@@ -93,24 +93,25 @@ export class AppModule {}
 
 Ключи пакета (prd.md §3.1):
 
-| Фрагмент         | Ключ                                                 | Умолчание                                              |
-| ---------------- | ---------------------------------------------------- | ------------------------------------------------------ |
-| `envBase`        | `NODE_ENV`                                           | `production` (`development`, `test`)                   |
-| `envBase`        | `LOG_LEVEL`                                          | `info` (`fatal` … `trace`, `silent`)                   |
-| `envBase`        | `PORT`                                               | 3000                                                   |
-| `envBase`        | `METRICS_PORT`                                       | 9100; не равен `PORT`, кроме 0                         |
-| `envBase`        | `REPLICA_ID`                                         | `hostname()`                                           |
-| `envBase`        | `SHUTDOWN_TIMEOUT_MS`                                | 10000                                                  |
-| `envBase`        | `SHUTDOWN_DRAIN_MS`                                  | 0; меньше `SHUTDOWN_TIMEOUT_MS`                        |
-| `envDatabase`    | `DATABASE_URL`                                       | обязателен                                             |
-| `envDatabase`    | `DB_POOL_MAX`                                        | 10                                                     |
-| `envDatabase`    | `DB_POOL_ACQUIRE_TIMEOUT_MS`                         | 5000 (минимум 1)                                       |
-| `envMessaging`   | `RABBITMQ_URL`                                       | обязателен                                             |
-| `envMessaging`   | `RABBITMQ_RETRY_SECONDS`                             | 30 (целое ≥ 1)                                         |
-| `envRedis`       | `REDIS_URL`                                          | обязателен                                             |
-| `envSentry`      | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | пусто → `null`                                         |
-| `envCrypto`      | `ENCRYPTION_KEYS`                                    | JSON `[{version, secret}]`, секрет base64url ≥ 32 байт |
-| `envServiceUrls` | `SERVICE_URLS`                                       | JSON `{имя: http(s)-URL}`, названные имена обязательны |
+| Фрагмент         | Ключ                                                 | Умолчание                                                                       |
+| ---------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `envBase`        | `NODE_ENV`                                           | `production` (`development`, `test`)                                            |
+| `envBase`        | `LOG_LEVEL`                                          | `info` (`fatal` … `trace`, `silent`)                                            |
+| `envBase`        | `PORT`                                               | 3000                                                                            |
+| `envBase`        | `METRICS_PORT`                                       | 9100; не равен `PORT`, кроме 0                                                  |
+| `envBase`        | `REPLICA_ID`                                         | `hostname()`                                                                    |
+| `envBase`        | `SHUTDOWN_TIMEOUT_MS`                                | 10000                                                                           |
+| `envBase`        | `SHUTDOWN_DRAIN_MS`                                  | 0; меньше `SHUTDOWN_TIMEOUT_MS`                                                 |
+| `envDatabase`    | `DATABASE_URL`                                       | обязателен                                                                      |
+| `envDatabase`    | `DB_POOL_MAX`                                        | 10                                                                              |
+| `envDatabase`    | `DB_POOL_ACQUIRE_TIMEOUT_MS`                         | 5000 (минимум 1)                                                                |
+| `envMessaging`   | `RABBITMQ_URL`                                       | обязателен                                                                      |
+| `envMessaging`   | `RABBITMQ_RETRY_SECONDS`                             | 30 (целое ≥ 1); только TTL `<svc>.retry`                                        |
+| `envMessaging`   | `RABBITMQ_RECONNECT_SECONDS`                         | 5 (целое ≥ 1); пауза переподключения и повтора канала, срок первого подключения |
+| `envRedis`       | `REDIS_URL`                                          | обязателен                                                                      |
+| `envSentry`      | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | пусто → `null`                                                                  |
+| `envCrypto`      | `ENCRYPTION_KEYS`                                    | JSON `[{version, secret}]`, секрет base64url ≥ 32 байт                          |
+| `envServiceUrls` | `SERVICE_URLS`                                       | JSON `{имя: http(s)-URL}`, названные имена обязательны                          |
 
 Правила:
 
@@ -160,13 +161,13 @@ export const redaction: KitRedaction = {
 
 **Остановка `KitLifecycle`.** Участники регистрируются на шаг: `lifecycle.register(participant, {step})`.
 
-| Шаг | Что                                                                       |
-| --- | ------------------------------------------------------------------------- |
-| 1   | `/health` → 503, пауза `SHUTDOWN_DRAIN_MS` (выполняет сам `KitLifecycle`) |
-| 2   | HTTP не принимает новые соединения, начатые дорабатывают; потоки SSE      |
-| 3   | хуки модулей Nest, подписчики, relay, очистка                             |
-| 4   | пулы БД, RabbitMQ, Redis                                                  |
-| 5   | сервер метрик                                                             |
+| Шаг | Что                                                                                                                                                                        |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `/health` → 503, пауза `SHUTDOWN_DRAIN_MS` (выполняет сам `KitLifecycle`)                                                                                                  |
+| 2   | HTTP не принимает новые соединения, начатые дорабатывают; SSE, WebSocket и другие долгие соединения закрывает участник шага 2 сервиса (иначе HTTP-сервер ждёт их до срока) |
+| 3   | хуки модулей Nest, подписчики, relay, очистка                                                                                                                              |
+| 4   | пулы БД, RabbitMQ, Redis                                                                                                                                                   |
+| 5   | сервер метрик                                                                                                                                                              |
 
 Участники шага работают параллельно, следующий шаг начинается после предыдущего. Два режима:
 
@@ -320,6 +321,8 @@ throw new DomainError('UPGRADE_REQUIRED', {}, { headers: { upgrade: 'websocket' 
 
 **Пагинация.** `PageQuerySchema` (`cursor`, `limit` 1–200, умолчание 100), чтение `limit + 1` строк, `pageOf(rows, limit, keyOf)` → `{items, nextCursor}`; условие — `afterCursor([t.createdAt, t.id], decodeCursor(query.cursor, 2), 'desc')`. Последний ключ сортировки — `primaryKey()` или `unique()`, все ключи сортировки — `NOT NULL` (`null` в курсоре — 422); неверный курсор — 422 `path: cursor`.
 
+**Точность курсора по времени.** JS `Date` хранит миллисекунды, `timestamptz` — микросекунды: ключ `row.createdAt.toISOString()` теряет микросекунды, и строки одной миллисекунды пропускаются или повторяются на границе страницы. Ключ по столбцу времени выбирайте `cursorTimestamp(t.createdAt)` — строка ISO UTC с микросекундами из БД: `db.select({...getTableColumns(t), cursorAt: cursorTimestamp(t.createdAt)})`, `pageOf(rows, limit, (row) => [row.cursorAt, row.id])`. `afterCursor` сравнивает столбец времени с полным значением курсора (`::timestamptz`). Формат курсора — тот же неподписанный base64url JSON.
+
 **OpenAPI.** `@Api({summary, response?, envelope?, errors?, extra?})` на маршруте; `verdeect-kit openapi --out contracts/openapi.json --module dist/app.module.js#AppModule` строит OpenAPI 3.1 по метаданным без запуска приложения (окружение не нужно), `info` — из `package.json`. Тело, query и path — из `ZodValidationPipe`, ответ — `response`, ошибки — коды `errors` со всеми их статусами по словарю + стандартные по факту: 400 `BAD_REQUEST` и 422 `VALIDATION_FAILED` — у маршрута с `ZodValidationPipe` тела или query, только 422 — у pipe параметра пути, 401/403 — у защищённых, 429 `RATE_LIMITED` — **только если перечислен в `errors`** (пакет не знает, где сервис зовёт лимитер: маршрут с `RateLimiter` пишет `errors: ['RATE_LIMITED']`); у маршрута без тела, query и аутентификации стандартных ошибок нет; ответы вне общего формата ошибки (редиректы, OIDC) — через `extra` (409 `TENANT_REQUIRED` — у маршрутов с `@RequireTenant()`, тело guard'а `{error: {code: 'TENANT_REQUIRED', message: 'Не выбрана компания', details: {}}}`). `security` — по `@UseGuards(VerdeectAuthGuard)` и `Require*` из `@verdeect/auth/nest`; защиту через `APP_GUARD` генерация не видит, поэтому `@UseGuards` ставится на контроллер, а маршрут без guard'а документируется без `security`. Наследование — как у Nest при регистрации маршрутов: методы собираются по цепочке прототипов, `@Api` базового (в том числе абстрактного, без `@Controller`) контроллера попадает в документ с путём наследника, метод наследника с тем же именем заменяет метод предка — один маршрут. Метод наследника переопределяет и `@Api`: без своего `@Api` он в документ не попадает. Расхождений с регистрацией маршрутов Nest нет. Что генерация не выражает (SSE, сырой прокси) — `extra` или `contracts/openapi.extra.json` рядом с `--out`. Модуль сервиса с `register(…)` (динамический модуль) — отдельный файл с экспортом значения, например `export const openapiModule = AppModule.register({entry: 'http'})`, и `--module dist/openapi.module.js#openapiModule`. Снимок `contracts/openapi.json` коммитится; тест сравнивает его с документом из кода байт в байт, поэтому добавьте его в `.prettierignore` сервиса — иначе форматирование Prettier разойдётся с выводом CLI:
 
 ```gitignore
@@ -380,6 +383,8 @@ CLI `verdeect-kit db` (результат — одна строка JSON в stdo
 | `db move-journal --from drizzle --to <svc>` | `DATABASE_MIGRATOR_URL`                                      | `{from, to, moved}`          |
 
 Коды ошибок: `USAGE` (нет подкоманды или опции, имя вне формата, нет журнала `drizzle-kit` в папке), `INVALID_ENVIRONMENT` (`keys` — имена), `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED` (`sqlState`).
+
+**Повтор после `DATABASE_UNAVAILABLE`.** Миграции пачки и журнал — одна транзакция: после обрыва либо применено и отмечено всё, либо ничего. При обрыве на `COMMIT` миграции могли примениться (COMMIT дошёл до сервера), хотя CLI вернул `DATABASE_UNAVAILABLE`; повторите `db migrate` — он идемпотентен (`applied: 0`, если всё уже применено).
 
 ## Идемпотентность
 
@@ -444,7 +449,7 @@ KitMessagingModule.forRoot({
 KitMessagingModule.forRoot({ service: 'bff-app', subscriber: { dedupe: 'none' } });
 ```
 
-`outbox.events` — все события, которые сервис публикует. `tenantNullable` берётся из таблицы: событие `'none'` при NOT NULL `tenant` — отказ запуска `MESSAGING_TENANT_NOT_NULLABLE`. `subscriber` не задан — подписчика нет; `dedupe` по умолчанию `'inbox'` (требует `inbox`). Окружение — `envBase` и `envMessaging`; outbox и inbox — вместе с `KitDatabaseModule`.
+`outbox.events` — все события, которые сервис публикует. `tenantNullable` берётся из таблицы: событие `'none'` при NOT NULL `tenant` — отказ запуска `MESSAGING_TENANT_NOT_NULLABLE`. `subscriber` не задан — подписчика нет; `dedupe` по умолчанию `'inbox'` (требует `inbox`). Окружение — `envBase` и `envMessaging`; outbox и inbox — вместе с `KitDatabaseModule`. Переподключение к брокеру и повтор настройки канала — раз в `RABBITMQ_RECONNECT_SECONDS` (умолч. 5), `RABBITMQ_RETRY_SECONDS` — только TTL `<svc>.retry`. `listen: false` — режим CLI (см. «CLI сервиса»).
 
 **Запись** — `OutboxStore.add(tx, Event, {subjectId, data})` в `Db.transaction`: `tenant`, `actor`, `traceId` — из `DbContext`, id — `evt_` + ULID. `data` не по схеме, нарушение признака `tenant`, событие вне `outbox.events` или транзакция `Db.read` — исключение до записи, транзакция откатывается. Публикация мимо outbox невозможна, SQL-триггеров нет.
 
@@ -461,9 +466,15 @@ export class CompanyEvents implements OnModuleInit {
         this.subscriber.on(CompanyCreated, async (event, tx) => {
             // tx — транзакция Db с DbContext события; inbox уже занят в ней
         });
+        // Обработчик с внешними вызовами — без inbox и транзакции пакета: tx = null, идемпотентность — у обработчика.
+        this.subscriber.on(CompanyArchived, async (event) => this.notifyExternal(event), {
+            dedupe: 'none',
+        });
     }
 }
 ```
+
+`on(E, h, {dedupe})` переопределяет `dedupe` модуля: `'none'` — без inbox и без транзакции пакета, обработчик получает `(event, null)` и сам открывает короткие транзакции через `Db` (не держите соединение пула во время HTTP-вызова); повтор того же `id` вызывает его снова. `{dedupe: 'inbox'}` без таблицы `inbox` у модуля — отказ запуска; при `dedupe: 'none'` модуля таблицу `inbox` можно задать — для обработчиков с `{dedupe: 'inbox'}`.
 
 Топологию объявляет подписчик: `<svc>` (DLX → `<svc>.retry`), `<svc>.retry` (TTL `RABBITMQ_RETRY_SECONDS` → `<svc>`), `<svc>.dlq`; привязки — по типам `on`. `prefetch` 10. inbox занимается в транзакции обработчика: повтор `id` → `duplicate` без вызова. `ExpectedMessageError` — `warn` и повтор через `.retry`, до 5 раз по `x-death`, затем DLQ без события GlitchTip; прочие ошибки — `warn` и повтор, после 5 — DLQ и ровно одно событие GlitchTip; `InvalidMessageError` — сразу DLQ без события GlitchTip; ошибки разбора (`not-json`, `envelope`, `unsubscribed`, `tenant`, `data`) — `captureThrottled`. Порядок по `occurredAt` — `ifNewer` из `/database`. `dedupe: 'none'` — без БД, `tx = null`. `onReplica(Event, handler)` — очередь реплики `<svc>.replica.<REPLICA_ID>` (exclusive, auto-delete) без inbox, повторов и DLQ: неразобранное сообщение или ошибка обработчика — `error`-лог, событие `captureThrottled`, `verdeect_events_consumed_total{result="dlq"}`; у очередей реплики (`<svc>.replica.*`) сообщение не сохраняется — смотрите лог и GlitchTip. Метрика — `verdeect_events_consumed_total{type, result}` (`handled`, `duplicate`, `retry`, `dlq`).
 
@@ -628,12 +639,42 @@ export default startTestStack({
 - **Команда не распознана** (`command-unrecognized`): раннеры (`pnpm`/`npm`/`yarn start*` и `run start*`, `node --run start*`, `nest start`, `tsx`, `ts-node`, `pm2`, `pm2-runtime`, `nodemon`), `gosu`, `su-exec`, опция `tini`/`dumb-init` вне списка, вызов оболочки с `-c` без выделенного скрипта, `$(…)` и `` `…` ``, `eval`, переменная без умолчания на месте программы или обёртки, среди опций `node` до файла входа или в самом файле входа (аргументы после файла входа не проверяются: `dist/main.js --port $PORT` — без нарушения), `main.*` в аргументах любой команды, кроме файла входа `node` (`node --max-old-space-size 512 dist/main.js`, `./docker-entrypoint.sh node dist/main.js`).
 - **Dockerfile**: действуют последние `CMD` и `ENTRYPOINT` стадии; `FROM <стадия>` наследует их, `ENTRYPOINT` дочерней стадии сбрасывает унаследованный `CMD`; `CMD` внутри `HEALTHCHECK` — не `CMD` стадии; `\` с пробелами или табуляцией перед переводом строки — продолжение. Exec-форма `ENTRYPOINT` получает `CMD` аргументами (exec-форма как есть, shell-форма как `/bin/sh -c "…"`); у `ENTRYPOINT ["sh", "-c", "<скрипт>"]` запуск ищется в скрипте, `CMD` — только `$0…`; shell-форма `ENTRYPOINT` игнорирует `CMD`; невалидный JSON (`CMD ['node', …]`) — shell-форма, как в Docker.
 - **Compose**: базовый файл — первый найденный из `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`. Переопределение проверяется как слитый сервис: `environment:`/`env_file:` сливаются с базой, `command:`, `entrypoint:`, `build:`, `stop_grace_period` без своего значения берутся из базы; `!reset` возвращает умолчание, `!override` заменяет значение базы целиком. `entrypoint:` задан — `CMD` образа отбрасывается, `command:` — его аргументы; только `command:` — аргументы `ENTRYPOINT` стадии `build:` (`target` или последняя стадия), если Dockerfile найден.
+- **Отдельные проекты и `env_file`** (v1.25): файл со своим буквальным `name:` верхнего уровня, отличным от имени базового (`compose.e2e.yml` с `name: x-e2e`), — отдельный проект: проверяется сам по себе и с `compose.yml` не сливается; имя из переменной (`${COMPOSE_PROJECT_NAME:?…}`) задаётся при выкатке, такой файл накладывается на базовый. Файлы `env_file:` читаются только отслеживаемые git (`git ls-files`): неотслеживаемые `.env`, `.env.e2e` разработчика пропускаются; вне git-репозитория — все. `REPLICA_ID: ${REPLICA_ID:-}` — по-прежнему нарушение («не задан» буквально).
 - `stop_grace_period` — после подстановки `${VAR:-default}`; переменная без умолчания — «значение не определено»; нет нигде — 10 с Docker. `SHUTDOWN_TIMEOUT_MS` — целое или `${NAME:-N}`; нет нигде — 10000; иное — «значение не определено или не целое число мс» (без значения в тексте). В `env_file` у значения без кавычек ` #…` — комментарий, как в Compose.
 - `image:` в compose разбирается как значение: подстановка `${VAR:-default}`, без префикса `docker.io/library/` или `docker.io/`, дайджест `@sha256:…` отдельно, без тега — `latest`. Неразрешённая переменная в теге образа из `TEST_IMAGES` — нарушение «тег не определён»; образы вне `TEST_IMAGES` и с неопределяемым репозиторием не проверяются. В тексте CI префикс `docker.io/library/` и `docker.io/` снимается так же, тег учитывается, только если в нём есть точка или буква (`postgres:5432` — адрес, а не образ).
 
-HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. `http` — тот же объект опций, что `bootstrapService({http})` в `main.ts` (вынесите его в модуль сервиса): фильтр `exceptionFilter`, `securityHeaders` и `configureFastify` в тесте работают как в приложении. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
+HTTP-тесты: `createTestApp({module, service, overrides?, extraProviders?, env?, http?, logger?, redaction?})` — тот же `createHttpApp` на `Test.createTestingModule`, запросы — `app.inject(...)`, закрытие — `app.close()`. `http`, `logger` и `redaction` — те же объекты, что `bootstrapService({http, logger, redaction})` в `main.ts` (вынесите их в модуль сервиса): фильтр `exceptionFilter`, `securityHeaders`, `configureFastify` и `trustTraceparent` в тесте работают как в приложении; тесты с другими опциями логгера — в отдельном файле (один журнал доступа на процесс). `overrides` — `{provide, useValue}`, `{provide, useClass}` или `{provide, useFactory, inject?}`; `extraProviders` — провайдеры теста, видны модулям сервиса (их можно внедрить в подделку `useFactory`). `env` — окружение объектом: разбирается схемой `KitConfigModule` модуля, `process.env` не читается и не меняется — приложения с разным `env` работают параллельно. Тело ошибки для подделок соседних сервисов — `errorBody(code, details?)` из `/http`. Нужен `@nestjs/testing` в зависимостях сервиса (иначе — текст AC-1.2 при вызове). `expectProblem(res, {status, code, issues?})` — ответ-ошибка; `expectMatchesApi(res, [ItemsController, 'list'])` — статус и тело по `@Api` маршрута: успешный статус — схема `response`, описанный статус ошибки (стандартные, `errors`, 401/403/409 guard'а) — `{error: {code, message, details}}`, прочий статус — падение (Ajv 2020, тот же построитель, что у CLI; схема компилируется один раз на маршрут и статус).
 
 Ещё в `/testing`: `tcpProxy(target)` — обрывы (`break`, `restore`, `blackhole`, `freeze`, `blackholeOn`) и задержки (`delayOn`) TCP; `timingGuard` — `globalSetup` замеров времени (нагрузка, ядра, отказ при запущенном e2e-контуре `verdeect-*-e2e`); `TEST_TIMEOUT_SCALE` — множитель тайм-аутов конфигов Vitest.
+
+## CLI сервиса
+
+Команды сервиса (импорт, пересчёт, разовые задания) — контекст Nest без HTTP: ядро `KitCoreModule({entry: 'cli'})` (логгер в stderr, без сервера метрик и `/health`) и общий модуль сервиса с `KitMessagingModule({listen: false})` — без соединения с брокером, подписчика, relay и очистки. `OutboxStore.add` пишет строки, публикует их relay реплики API (порядок по `seq`); `subscriber.on` в общем модуле принимается и не выполняется. Модули пакета без ядра — ошибка при сборке контекста.
+
+```ts
+@Module({
+    imports: [
+        KitConfigModule.forRoot({ schema: env }),
+        KitCoreModule.forRoot({ service: 'platform', entry: 'cli' }),
+        KitDatabaseModule.forRoot({ schema }),
+        await KitMessagingModule.forRoot({ ...messagingOptions, listen: false }),
+    ],
+    providers: [ImportCommand],
+})
+class CliModule {}
+
+const ctx = await NestFactory.createApplicationContext(CliModule, { bufferLogs: true });
+try {
+    const ids = await ctx.get(ImportCommand).run();
+    // Дождаться публикации репликой API (необязательно): по сроку исключения нет — pending > 0.
+    const { pending } = await ctx.get(OutboxStore).awaitPublished(ids, { timeoutMs: 30_000 });
+    process.exitCode = pending === 0 ? 0 : 2;
+} finally {
+    await ctx.close();
+}
+```
+
+`awaitPublished(ids | {traceId}, {timeoutMs})` опрашивает `published_at` и возвращает `{published, pending}`; работает при любом `listen`.
 
 ## Развёртывание
 
@@ -739,6 +780,9 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `alertRulesTemplate` — абсолютный путь к `alerts/verdeect-kit.rules.yml`.
 - `failStartup` — `failStartup(raw, logger)`: `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`.
 - `StartupFailure` — интерфейс ошибки запуска сервиса `{startupCode, startupDetails()}`.
+- `KitCoreModule` — `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})`: ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер; `cli` — stderr), требует `KitConfigModule`; `createHttpApp` подключает его сам; в `cli` сервера метрик и `/health` нет. Модули `/database`, `/messaging`, `/redis`, `/idempotency` и лимитер без ядра — ошибка при сборке контекста. См. «CLI сервиса».
+- `KitCoreModuleOptions` — тип опций `KitCoreModule.forRoot`.
+- `KitCoreLoggerOptions` — `{trustTraceparent?, quietRoutes?, extraBase?}`: опции логгера по роли, общие у `bootstrapService`, `createTestApp` и `KitCoreModule`.
 - `KitLifecycle` — остановка по шагам 1–5: `register`, `listen()` (сигнал ОС, сторож срока), `close()` (без сторожа).
 - `KitShutdownParticipant` — участник `{name, stop()}`.
 - `KitShutdownStep` — шаг участника `2 | 3 | 4 | 5`.
@@ -756,6 +800,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `defineErrors` — `defineErrors({...kitErrors, …})`: словарь сервиса на процесс; `status` — число или список объявленных статусов.
 - `KitErrorDictionary` — тип словаря `код → {status, message}`.
 - `KitErrorEntry` — тип записи словаря.
+- `errorBody` — `errorBody(code, details?)`: тело ошибки целиком `{error: {code, message, details}}`, текст из словаря; для подделок соседних сервисов и проверок ответа; код вне словаря — `TypeError`.
 - `DomainError` — `new DomainError(code, details?, {message?, headers?, status?, cause?})`: ошибка домена со статусом из словаря, `headers`, `toBody()`.
 - `KitDomainErrorOptions` — тип третьего аргумента `DomainError`.
 - `KitExceptionFilter` — фильтр ошибок (регистрирует `createHttpApp`; фильтр сервиса — `exceptionFilter` с делегированием в `kit.catch(exception, host)`).
@@ -766,6 +811,7 @@ HTTP-тесты: `createTestApp({module, service, overrides?, http?})` — то�
 - `encodeCursor` — курсор base64url от JSON ключей.
 - `decodeCursor` — `decodeCursor(cursor, arity)`: ключи или `null`; неверный — 422 `path: cursor`.
 - `afterCursor` — `afterCursor(cols, cursor, dir)`: условие Drizzle «после курсора».
+- `cursorTimestamp` — `cursorTimestamp(col)`: ключ курсора по `timestamptz` без потери точности (ISO UTC с микросекундами); столбец не `timestamptz` — `TypeError`.
 - `Api` — `@Api({summary, response?, envelope?, errors?, extra?})`: маршрут в OpenAPI.
 - `KitApiOptions` — тип опций `@Api`.
 
@@ -814,7 +860,7 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitIdempotentOptions` — тип опций `@Idempotent`.
 - `createIdempotencyTable` — `createIdempotencyTable(schema)`: таблица `idempotency_key` схемы сервиса.
 - `KitIdempotencyTable` — тип таблицы идемпотентности.
-- `idempotencyPurgeSql` — `idempotencyPurgeSql(schema)`: текст SQL функции очистки для миграции сервиса.
+- `idempotencyPurgeSql` — `idempotencyPurgeSql(schema)`: текст SQL функции очистки для миграции сервиса; начинается с `DROP FUNCTION IF EXISTS <svc>.idempotency_purge(integer)` (замена своей функции сервиса с другим именем параметра — без 42P13), права `<svc>_directory` — `DELETE` и `SELECT (ctid, created_at)`. Обновление пакета — новая миграция `drizzle-kit generate --custom` с тем же текстом поверх старой: повтор идемпотентен.
 
 ### @verdeect/kit/messaging
 
@@ -828,10 +874,10 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitOutboxTable` — тип таблицы outbox.
 - `KitInboxTable` — тип таблицы inbox.
 - `KitOutboxTableOptions` — `{tenantNullable?}`.
-- `KitMessagingModule` — `KitMessagingModule.forRoot({service, outbox?, subscriber?})`: соединение, relay, подписчик, очистка.
+- `KitMessagingModule` — `KitMessagingModule.forRoot({service, listen?, outbox?, subscriber?})`: соединение, relay, подписчик, очистка; `listen: false` — режим CLI без брокера.
 - `KitMessagingModuleOptions` — тип опций модуля.
-- `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции.
-- `KitSubscriber` — `on(Event, handler)`, `onReplica(Event, handler)`.
+- `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции; `awaitPublished(ids | {traceId}, {timeoutMs})` → `{published, pending}`.
+- `KitSubscriber` — `on(Event, handler, {dedupe?})` (опция переопределяет `dedupe` модуля), `onReplica(Event, handler)`.
 - `KitEventHandler` — `(event, tx) => Promise<void>`; `tx = null` при `dedupe: 'none'`.
 - `KitReplicaHandler` — `(event) => Promise<void>`.
 - `ExpectedMessageError` — ожидаемый отказ: повтор, затем DLQ с кодом, без GlitchTip.
@@ -864,9 +910,9 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 
 ### @verdeect/kit/testing
 
-- `createTestApp` — `createTestApp({module, service, overrides?, http?})`: приложение сервиса для тестов; `http` — тот же объект `KitHttpOptions`, что `bootstrapService({http})` в `main.ts` (`bodyLimit`, `securityHeaders`, `exceptionFilter`, `configureFastify`).
+- `createTestApp` — `createTestApp({module, service, overrides?, extraProviders?, env?, http?, logger?, redaction?})`: приложение сервиса для тестов; `http`, `logger`, `redaction` — те же объекты, что у `bootstrapService` в `main.ts`; `env` — окружение объектом без `process.env`.
 - `KitTestAppOptions` — тип опций `createTestApp`.
-- `KitTestOverride` — подмена провайдера `{provide, useValue}`.
+- `KitTestOverride` — подмена провайдера `{provide, useValue}`, `{provide, useClass}` или `{provide, useFactory, inject?}`.
 - `expectProblem` — `expectProblem(res, {status, code, issues?})`: утверждение об ответе-ошибке.
 - `KitExpectedProblem` — тип ожидаемой ошибки.
 - `KitTestResponse` — тип ответа `{statusCode, json()}`.
@@ -900,6 +946,7 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 - `assertOutboxCoverage` — `assertOutboxCoverage(events)`: события без успешного `expectOutbox` (teardown `startTestStack` при `KIT_OUTBOX_COVERAGE=1`).
 - `publishTestEvent` — `publishTestEvent(Event, data, opts?)`: конверт `01` §7.1 в `verdeect.events` vhost воркера.
 - `waitForInbox` — `waitForInbox(id, {timeoutMs})`: ожидание строки `<svc>.inbox` без `sleep`.
+- `waitForBrokerReady` — `waitForBrokerReady(app, {timeoutMs?})`: ожидание пробы `rabbitmq: up` (соединение и канал) после рестарта брокера, срок по умолч. 10 с × `TEST_TIMEOUT_SCALE`; короткое переподключение — `RABBITMQ_RECONNECT_SECONDS`.
 
 ## Документация
 

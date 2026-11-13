@@ -5,7 +5,7 @@
 import type { DynamicModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import type { z } from 'zod';
-import { takePreparsedEnv } from '../internal/preparsed-env.js';
+import { KIT_ENV_SCHEMA, KIT_PARSED_ENV, takePreparsedEnv } from '../internal/preparsed-env.js';
 import { parseEnv } from './parse-env.js';
 
 /** Схема окружения: результат — объект ключей (его ожидает validate у ConfigModule). */
@@ -25,18 +25,30 @@ export class KitConfigModule {
      * `InvalidEnvironmentError`, сборка контекста отклоняется (сам `forRoot` не отклоняется). Файл `.env` не
      * читается, в `process.env` ничего не пишется, ConfigService читает только разобранные значения.
      */
-    static forRoot<S extends EnvSchema>(
+    static async forRoot<S extends EnvSchema>(
         options: KitConfigModuleOptions<S>,
     ): Promise<DynamicModule> {
         const { schema } = options;
-
-        return ConfigModule.forRoot({
+        // Постоянный токен провайдера разобранного окружения (по умолчанию @nestjs/config даёт случайный): createTestApp
+        // подменяет его разбором объекта env той же схемой — фабрика с process.env не вызывается (§3.8 v1.25).
+        // Пространство имён задаёт registerAs, не KEY: значения остаются в корне ConfigService.
+        const load = Object.assign(
+            () => takePreparsedEnv(schema) ?? parseEnv(schema, process.env),
+            { KEY: KIT_PARSED_ENV },
+        );
+        const module = await ConfigModule.forRoot({
             isGlobal: true,
             ignoreEnvFile: true,
             // Без validate @nestjs/config копирует process.env сам в себя; false — копии нет совсем.
             validatePredefined: false,
             skipProcessEnv: true,
-            load: [() => takePreparsedEnv(schema) ?? parseEnv(schema, process.env)],
+            load: [load],
         });
+
+        return {
+            ...module,
+            providers: [...(module.providers ?? []), { provide: KIT_ENV_SCHEMA, useValue: schema }],
+            exports: [...(module.exports ?? []), KIT_ENV_SCHEMA],
+        };
     }
 }

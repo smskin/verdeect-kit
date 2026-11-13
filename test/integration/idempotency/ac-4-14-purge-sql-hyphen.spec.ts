@@ -1,9 +1,12 @@
 // KT-20 п. 1 (AC-4.14): idempotencyPurgeSql для схемы с дефисом — сервис bff-app: функция создаётся по тексту пакета,
 // SECURITY DEFINER, владелец bff-app_directory, у PUBLIC нет EXECUTE; под bff-app_app удаляет записи старше 24 ч
-// (prd.md §3.3а v1.14). Своя БД, роли bff-app_* удаляются в afterAll.
+// (prd.md §3.3а v1.14). v1.25: помощник применяется поверх функции сервиса idempotency_purge(p_limit integer) без 42P13
+// и повторно поверх себя; под bff-app_directory столбцы ответа и ключа — permission denied. Своя БД, роли bff-app_*
+// удаляются в afterAll.
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { pgSchema } from 'drizzle-orm/pg-core';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prepareDatabase } from '../../../src/database/prepare-database.js';
 import { idempotencyPurgeSql } from '../../../src/idempotency/table.js';
@@ -54,10 +57,16 @@ describe('KT-20: функция очистки для схемы с дефисо
             password: OWNER_PASSWORD,
         });
         app = databaseUrl(admin, { database, user: `${SERVICE}_app`, password: APP_PASSWORD });
+        const helper = idempotencyPurgeSql(pgSchema(SERVICE)).split('\n--> statement-breakpoint\n');
         for (const statement of [
             ...tableDdl(),
             `GRANT SELECT, INSERT, UPDATE, DELETE ON "${SERVICE}"."idempotency_key" TO "${SERVICE}_app"`,
-            ...idempotencyPurgeSql(pgSchema(SERVICE)).split('\n--> statement-breakpoint\n'),
+            // Своя функция сервиса до пакета: то же имя, другое имя параметра (CREATE OR REPLACE — 42P13).
+            `CREATE FUNCTION "${SERVICE}".idempotency_purge(p_limit integer) RETURNS integer LANGUAGE sql AS 'select 0'`,
+            `GRANT SELECT, DELETE ON "${SERVICE}"."idempotency_key" TO "${SERVICE}_directory"`,
+            ...helper,
+            // Повторная миграция с тем же текстом — поверх функции, принадлежащей bff-app_directory.
+            ...helper,
         ]) {
             await adminQuery(owner, statement);
         }
@@ -111,5 +120,27 @@ describe('KT-20: функция очистки для схемы с дефисо
 
         expect(result?.deleted).toBe(1);
         expect(rows).toEqual([{ key: 'new' }]);
+    });
+
+    it('AC-4.14 v1.25: под bff-app_directory SELECT колонки ответа и ключа → permission denied', async () => {
+        const client = new pg.Client({ connectionString: admin });
+        await client.connect();
+        try {
+            await client.query('BEGIN');
+            await client.query('SET LOCAL ROLE "bff-app_directory"');
+            for (const column of ['response_body', 'key']) {
+                await client.query('SAVEPOINT probe');
+                await expect(
+                    client.query(`select ${column} from "bff-app".idempotency_key`),
+                ).rejects.toThrow(/permission denied/);
+                await client.query('ROLLBACK TO SAVEPOINT probe');
+            }
+            await expect(
+                client.query('select created_at from "bff-app".idempotency_key'),
+            ).resolves.toBeDefined();
+        } finally {
+            await client.query('ROLLBACK').catch(() => undefined);
+            await client.end();
+        }
     });
 });

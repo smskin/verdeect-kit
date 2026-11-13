@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { defineEvent } from '../../../src/messaging/define-event.js';
 import { MessagingStartupError } from '../../../src/messaging/errors.js';
 import { KitMessagingModule } from '../../../src/messaging/kit-messaging.module.js';
+import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import { createInboxTable, createOutboxTable } from '../../../src/messaging/tables.js';
 
 const kitnn = pgSchema('kitnn');
@@ -48,13 +49,16 @@ describe('UC-5: опции outbox', () => {
         expect(module.module).toBe(KitMessagingModule);
     });
 
-    it('§3.4: inbox без dedupe inbox, таблицы разных схем, дубликат события → TypeError', async () => {
-        await expect(
-            KitMessagingModule.forRoot({
-                service: 'kitnn',
-                subscriber: { dedupe: 'none', inbox: createInboxTable(kitnn) },
-            }),
-        ).rejects.toThrow(TypeError);
+    it("§3.4 v1.25: inbox при dedupe: 'none' модуля — собирается (для обработчиков с {dedupe: 'inbox'})", async () => {
+        const module = await KitMessagingModule.forRoot({
+            service: 'kitnn',
+            subscriber: { dedupe: 'none', inbox: createInboxTable(kitnn) },
+        });
+
+        expect(module.module).toBe(KitMessagingModule);
+    });
+
+    it('§3.4: dedupe inbox без таблицы, таблицы разных схем, дубликат события → TypeError', async () => {
         await expect(
             KitMessagingModule.forRoot({ service: 'kitnn', subscriber: {} }),
         ).rejects.toThrow(/требует inbox/);
@@ -81,5 +85,21 @@ describe('UC-5: опции outbox', () => {
         });
 
         expect(module.module).toBe(KitMessagingModule);
+    });
+
+    it('AC-2.15: listen: false с одним outbox без ядра — OutboxStore не собирается, текст про KitCoreModule', async () => {
+        const module = await KitMessagingModule.forRoot({
+            service: 'kitnn',
+            listen: false,
+            outbox: { table: createOutboxTable(kitnn), events: [NoteCreated] },
+        });
+        const store = (module.providers ?? []).find(
+            (provider) => typeof provider === 'object' && provider.provide === OutboxStore,
+        ) as { useFactory: (...args: unknown[]) => unknown } | undefined;
+
+        expect(store).toBeDefined();
+        expect(() => store?.useFactory({}, console, undefined)).toThrow(
+            /KitMessagingModule: нет ядра пакета — подключите KitCoreModule\.forRoot/,
+        );
     });
 });

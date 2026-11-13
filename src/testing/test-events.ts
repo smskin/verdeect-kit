@@ -1,6 +1,7 @@
-// publishTestEvent, waitForInbox (prd.md §3.8 E5, UC-14, AC-5.13; П17, П18). Эталон — O test/support/bus.ts
+// publishTestEvent, waitForInbox, waitForBrokerReady (prd.md §3.8 E5 v1.25, UC-14, AC-5.13, AC-5.18; П17, П18). Эталон — O test/support/bus.ts
 // (publishEvent, waitInbox). amqplib, pg, vitest — loadPeer при вызове: /testing импортируется без них; /messaging
 // не импортируется (без peer.ts) — только envelope.ts и define-event.ts.
+import type { INestApplicationContext } from '@nestjs/common';
 import type * as Amqp from 'amqplib';
 import type Pg from 'pg';
 import type * as Vitest from 'vitest';
@@ -11,6 +12,7 @@ import { EVENTS_EXCHANGE } from '../internal/rabbitmq-definitions.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import type { KitEvent } from '../messaging/define-event.js';
 import { EnvelopeSchema, type Envelope } from '../messaging/envelope.js';
+import { HealthRegistry } from '../observability/health-registry.js';
 import { TEST_TIMEOUT_SCALE } from './timeout-scale.js';
 import { workerScope } from './worker-scope.js';
 import { INBOX_TABLE } from '../internal/outbox-policy.js';
@@ -190,5 +192,42 @@ export async function waitForInbox(
         }
     } finally {
         await client.end();
+    }
+}
+
+/** Шаг опроса `waitForBrokerReady`, мс. */
+const BROKER_READY_POLL_MS = 20;
+
+/** Срок `waitForBrokerReady` по умолчанию, мс (× `TEST_TIMEOUT_SCALE`). */
+const BROKER_READY_TIMEOUT_MS = 10_000;
+
+/**
+ * Ждёт пробу `/health` `rabbitmq: up` приложения (соединение и канал): после рестарта брокера или обрыва в тесте
+ * сервиса. Опрос с шагом 20 мс до `timeoutMs × TEST_TIMEOUT_SCALE` (умолч. 10 с) — ожидание результата, не пауза.
+ * Короткие сроки переподключения в тестах — `RABBITMQ_RECONNECT_SECONDS`.
+ * @throws {Error} у приложения нет пробы `rabbitmq` (не подключён `KitMessagingModule` с `listen: true`) или срок вышел.
+ */
+export async function waitForBrokerReady(
+    app: Pick<INestApplicationContext, 'get'>,
+    options: { readonly timeoutMs?: number } = {},
+): Promise<void> {
+    const timeoutMs = options.timeoutMs ?? BROKER_READY_TIMEOUT_MS;
+    const health = app.get(HealthRegistry);
+    const deadline = Date.now() + timeoutMs * TEST_TIMEOUT_SCALE;
+    for (;;) {
+        const { status, checks } = await health.evaluate();
+        if (checks['rabbitmq'] === 'up') {
+            return;
+        }
+        // Во время остановки проб нет (unavailable, checks {}) — это не «нет пробы».
+        if (checks['rabbitmq'] === undefined && status !== 'unavailable') {
+            throw new Error(
+                'waitForBrokerReady: у приложения нет пробы rabbitmq (KitMessagingModule с listen: true)',
+            );
+        }
+        if (Date.now() > deadline) {
+            throw new Error(`waitForBrokerReady: брокер не готов за ${String(timeoutMs)} мс`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, BROKER_READY_POLL_MS));
     }
 }

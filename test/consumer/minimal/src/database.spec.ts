@@ -15,6 +15,10 @@ import { describe, expect, inject, it } from 'vitest';
 import { consumer } from './service/schema.js';
 
 const DRIZZLE = fileURLToPath(new URL('../drizzle', import.meta.url));
+/** Миграций потребителя — из журнала drizzle-kit. */
+const MIGRATIONS = (
+    JSON.parse(readFileSync(`${DRIZZLE}/meta/_journal.json`, 'utf8')) as { entries: unknown[] }
+).entries.length;
 
 function provided(key: 'kitDatabaseUrl' | 'kitDatabaseAdminUrl'): string {
     const value = inject(key);
@@ -47,7 +51,7 @@ describe('UC-1: БД потребителя', () => {
             "select rolname from pg_roles where rolname like 'consumer\\_%' order by rolname",
         );
 
-        expect(journal[0]?.count).toBe(5);
+        expect(journal[0]?.count).toBe(MIGRATIONS);
         expect(roles.map((row) => row.rolname)).toEqual([
             'consumer_app',
             'consumer_directory',
@@ -79,10 +83,10 @@ describe('UC-1: БД потребителя', () => {
         }
     });
 
-    it('AC-9.1: 0001_force_grants_purge.sql содержит idempotencyPurgeSql(consumer) без изменений', () => {
-        const file = readdirSync(DRIZZLE).find((name) => name.startsWith('0001_'));
+    it('AC-9.1: 0005_idempotency_purge_v125.sql (поверх 0001) содержит idempotencyPurgeSql(consumer) без изменений', () => {
+        const file = readdirSync(DRIZZLE).find((name) => name.startsWith('0005_'));
 
-        expect(file).toBe('0001_force_grants_purge.sql');
+        expect(file).toBe('0005_idempotency_purge_v125.sql');
         expect(readFileSync(`${DRIZZLE}/${String(file)}`, 'utf8')).toContain(
             idempotencyPurgeSql(consumer),
         );

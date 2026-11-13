@@ -28,8 +28,10 @@ export interface KitMessagingConfig {
 export interface KitMessagingRuntimeEnv {
     /** Адрес брокера. */
     readonly RABBITMQ_URL: string;
-    /** Пауза переподключения и TTL .retry, с. */
+    /** TTL .retry, с. */
     readonly RABBITMQ_RETRY_SECONDS: number;
+    /** Пауза переподключения и повтора настройки канала, срок ожидания первого подключения, с. */
+    readonly RABBITMQ_RECONNECT_SECONDS: number;
     /** Реплика. */
     readonly REPLICA_ID: string;
     /** Общий срок остановки, мс. */

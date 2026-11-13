@@ -18,6 +18,7 @@ import type { Logger as PinoLogger } from 'pino';
 import type * as Database from '../database/index.js';
 import { requirePeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
+import { requireKitCore } from '../internal/kit-core-required.js';
 import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import type { KitMetrics } from '../observability/metrics.js';
@@ -44,13 +45,20 @@ export interface KitMessagingModuleOptions {
     /** Имя экземпляра (`^[a-z][a-z0-9-]{1,31}$`): очереди `<svc>`, `<svc>.retry`, `<svc>.dlq`. */
     readonly service: string;
     /**
+     * Прослушивание брокера (умолч. `true`). `false` — режим CLI сервиса (§3.4 v1.25): без соединения с брокером,
+     * подписчика, relay и очистки; `OutboxStore.add` пишет строки (публикует relay реплики API), `subscriber.on`
+     * принимается и не выполняется — общий модуль сервиса подходит API и CLI.
+     */
+    readonly listen?: boolean;
+    /**
      * Outbox: таблица `createOutboxTable(schema, {tenantNullable})` и все события, которые сервис публикует
      * (`OutboxStore.add` события вне списка — `TypeError`). `tenantNullable` читается из таблицы.
      */
     readonly outbox?: { readonly table: KitOutboxTable; readonly events: readonly KitEvent[] };
     /**
      * Подписчик; не задан — подписчика нет. `dedupe` по умолчанию `'inbox'` и требует `inbox: createInboxTable(schema)`;
-     * `'none'` — без БД и inbox (роль BFF).
+     * `'none'` — без БД и inbox (роль BFF). Обработчик может переопределить `dedupe` опцией `on(E, h, {dedupe})`;
+     * `inbox` при `'none'` модуля — для обработчиков с `{dedupe: 'inbox'}`.
      */
     readonly subscriber?: {
         /** Защита от повторов подписчика. */
@@ -70,6 +78,7 @@ function messagingEnv(config: ConfigService | undefined): KitMessagingRuntimeEnv
     return {
         RABBITMQ_URL: config.getOrThrow<string>('RABBITMQ_URL'),
         RABBITMQ_RETRY_SECONDS: config.getOrThrow<number>('RABBITMQ_RETRY_SECONDS'),
+        RABBITMQ_RECONNECT_SECONDS: config.getOrThrow<number>('RABBITMQ_RECONNECT_SECONDS'),
         REPLICA_ID: config.getOrThrow<string>('REPLICA_ID'),
         SHUTDOWN_TIMEOUT_MS: config.getOrThrow<number>('SHUTDOWN_TIMEOUT_MS'),
         SHUTDOWN_DRAIN_MS: config.getOrThrow<number>('SHUTDOWN_DRAIN_MS'),
@@ -129,17 +138,21 @@ function eventsOf(
 /** Старт соединения, проба `/health` и шаг 4 остановки (внутренний). */
 @Injectable()
 class MessagingLifecycle implements OnModuleInit, OnApplicationShutdown {
+    private readonly health: HealthRegistry;
+
     constructor(
         @Inject(KIT_RABBIT_CONNECTION) private readonly connection: RabbitConnection,
         @Inject(KIT_MESSAGING_OPTIONS) private readonly config: KitMessagingConfig,
         @Inject(KIT_MESSAGING_LOG) private readonly log: MessagingLog,
-        @Optional() private readonly health?: HealthRegistry,
-    ) {}
+        @Optional() health?: HealthRegistry,
+    ) {
+        this.health = requireKitCore(health, 'KitMessagingModule');
+    }
 
     /** Соединение в фоне; проба `rabbitmq` некритичная (П11). */
     async onModuleInit(): Promise<void> {
         await this.connection.start();
-        this.health?.register(
+        this.health.register(
             'rabbitmq',
             () => Promise.resolve(this.connection.isConnected() && this.connection.topologyReady()),
             { critical: false },
@@ -190,7 +203,7 @@ function outboxProviders(config: KitMessagingConfig): Provider[] {
                     store,
                     connection,
                     events: config.events,
-                    metrics,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 });
                 relayStores.set(relay, store);
@@ -224,7 +237,8 @@ function subscriberProviders(config: KitMessagingConfig): Provider[] {
     if (!config.subscriber) {
         return [];
     }
-    const withDb = config.dedupe === 'inbox' && config.database !== undefined;
+    // Db — при таблице inbox: её используют обработчики с dedupe 'inbox' (модуля или опции on, v1.25).
+    const withDb = config.inbox !== undefined && config.database !== undefined;
 
     return [
         {
@@ -244,7 +258,8 @@ function subscriberProviders(config: KitMessagingConfig): Provider[] {
                     ...(db === undefined ? {} : { db }),
                     connection,
                     retrySeconds: env.RABBITMQ_RETRY_SECONDS,
-                    metrics,
+                    reconnectSeconds: env.RABBITMQ_RECONNECT_SECONDS,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 }),
             inject: [
@@ -283,7 +298,7 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
                         ...(config.outbox === undefined ? {} : { outbox: config.outbox }),
                         ...(config.inbox === undefined ? {} : { inbox: config.inbox }),
                     },
-                    metrics,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
                 }),
             inject: [
@@ -293,6 +308,57 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
             ],
         },
     ];
+}
+
+/**
+ * Провайдеры режима CLI (`listen: false`): `OutboxStore` без relay (`wake` — пусто) и подписчик без соединения — `on`
+ * принимается, `onApplicationBootstrap` ничего не запускает. Окружение брокера не читается.
+ */
+function cliProviders(config: KitMessagingConfig): Provider[] {
+    const { outbox, database } = config;
+    const providers: Provider[] = [];
+    if (outbox !== undefined && database !== undefined) {
+        providers.push({
+            provide: OutboxStore,
+            useFactory: (db: Database.Db, log: MessagingLog, metrics?: KitMetrics): OutboxStore => {
+                // Ядро обязательно и в режиме CLI (§3.2, AC-2.15), даже без подписчика.
+                requireKitCore(metrics, 'KitMessagingModule');
+
+                return new OutboxStore({
+                    db,
+                    table: outbox,
+                    events: config.events,
+                    wake: () => undefined,
+                    log,
+                });
+            },
+            inject: [
+                database.Db,
+                KIT_MESSAGING_LOG,
+                { token: KIT_PACKAGE_METRICS, optional: true },
+            ],
+        });
+    }
+    if (config.subscriber) {
+        providers.push({
+            provide: KitSubscriber,
+            useFactory: (log: MessagingLog, metrics?: KitMetrics): KitSubscriber =>
+                new KitSubscriber({
+                    service: config.service,
+                    replica: '',
+                    dedupe: config.dedupe,
+                    ...(config.inbox === undefined ? {} : { inbox: config.inbox }),
+                    connection: null,
+                    retrySeconds: 0,
+                    reconnectSeconds: 0,
+                    metrics: requireKitCore(metrics, 'KitMessagingModule'),
+                    log,
+                }),
+            inject: [KIT_MESSAGING_LOG, { token: KIT_PACKAGE_METRICS, optional: true }],
+        });
+    }
+
+    return providers;
 }
 
 /** Store, построенный фабрикой relay. */
@@ -314,14 +380,17 @@ export class KitMessagingModule {
         assertServiceName(options.service, 'KitMessagingModule');
         const dedupe = options.subscriber?.dedupe ?? 'inbox';
         const subscriber = options.subscriber !== undefined;
-        const needsDb = options.outbox !== undefined || (subscriber && dedupe === 'inbox');
+        const needsDb =
+            options.outbox !== undefined ||
+            (subscriber && (dedupe === 'inbox' || options.subscriber?.inbox !== undefined));
         if (subscriber && dedupe === 'inbox' && options.subscriber?.inbox === undefined) {
             throw new TypeError(
                 "KitMessagingModule: subscriber с dedupe: 'inbox' требует inbox: createInboxTable(schema)",
             );
         }
-        if (dedupe === 'none' && options.subscriber?.inbox !== undefined) {
-            throw new TypeError("KitMessagingModule: inbox не используется при dedupe: 'none'");
+        const listen = options.listen ?? true;
+        if (typeof listen !== 'boolean') {
+            throw new TypeError('KitMessagingModule: listen — true или false');
         }
         const schema = schemaOf([options.outbox?.table, options.subscriber?.inbox]);
         const events = eventsOf(options, schema);
@@ -340,6 +409,24 @@ export class KitMessagingModule {
             inbox: options.subscriber?.inbox,
             database,
         };
+        const log: Provider = {
+            provide: KIT_MESSAGING_LOG,
+            useFactory: (logger?: PinoLogger): MessagingLog => logger ?? nestLog('KitMessaging'),
+            inject: [{ token: KIT_LOGGER, optional: true }],
+        };
+        if (!listen) {
+            const cli = cliProviders(config);
+
+            return {
+                module: KitMessagingModule,
+                global: true,
+                providers: [{ provide: KIT_MESSAGING_OPTIONS, useValue: config }, log, ...cli],
+                exports: [
+                    ...(config.outbox === undefined ? [] : [OutboxStore]),
+                    ...(config.subscriber ? [KitSubscriber] : []),
+                ],
+            };
+        }
 
         const outbox = outboxProviders(config);
         const subscriberList = subscriberProviders(config);
@@ -354,18 +441,13 @@ export class KitMessagingModule {
                     useFactory: messagingEnv,
                     inject: [{ token: ConfigService, optional: true }],
                 },
-                {
-                    provide: KIT_MESSAGING_LOG,
-                    useFactory: (logger?: PinoLogger): MessagingLog =>
-                        logger ?? nestLog('KitMessaging'),
-                    inject: [{ token: KIT_LOGGER, optional: true }],
-                },
+                log,
                 {
                     provide: KIT_RABBIT_CONNECTION,
                     useFactory: (env: KitMessagingRuntimeEnv, log: MessagingLog) =>
                         new RabbitConnection({
                             url: env.RABBITMQ_URL,
-                            retrySeconds: env.RABBITMQ_RETRY_SECONDS,
+                            reconnectSeconds: env.RABBITMQ_RECONNECT_SECONDS,
                             deadlineMs: handlersDeadlineMs(env),
                             log,
                         }),

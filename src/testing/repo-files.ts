@@ -2,6 +2,7 @@
 // package.json, src/redaction.ts. Разбор compose — эталон O test/support/compose-env.spec.ts (yaml, merge, !reset);
 // образы в тексте CI — эталон BFF test/image-tags.spec.ts (тег по regex, адреса вида postgres:5432 — не образ).
 // Всё синхронно; пути в результатах — относительно root, через `/`.
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, relative, sep } from 'node:path';
 import { parse, Scalar, YAMLMap, YAMLSeq, type CollectionTag, type ScalarTag } from 'yaml';
@@ -27,6 +28,8 @@ export interface ComposeBuild {
 export interface ComposeService {
     /** Путь compose-файла относительно root. */
     readonly file: string;
+    /** `name:` верхнего уровня файла или null: свой `name:` — отдельный проект, с базовым файлом не сливается. */
+    readonly project: string | null;
     /** Имя сервиса. */
     readonly name: string;
     /** Значение `image:` или null. */
@@ -378,7 +381,36 @@ function hasOverrideMark(value: unknown): boolean {
         : isRecord(value) && OVERRIDE_MARK in value;
 }
 
-function readComposeFile(root: string, path: string): ComposeService[] {
+/**
+ * Файлы, отслеживаемые git в `root` (`git ls-files`, пути относительно root); вне git-репозитория или без git — null:
+ * читаются все файлы (§3.8 v1.25).
+ */
+function trackedFiles(root: string): ReadonlySet<string> | null {
+    try {
+        const output = execFileSync('git', ['ls-files', '-z'], {
+            cwd: root,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            // Большой репозиторий: по умолчанию 1 МБ — ENOBUFS молча включил бы неотслеживаемые .env.
+            maxBuffer: 256 * 1024 * 1024,
+        });
+
+        return new Set(output.split('\0').filter(Boolean));
+    } catch (error) {
+        const { code, status } = error as { code?: unknown; status?: unknown };
+        // Нет git (ENOENT) или не git-репозиторий (выход 128) — читаются все файлы; прочее — ошибка.
+        if (code === 'ENOENT' || status === 128) {
+            return null;
+        }
+        throw error;
+    }
+}
+
+function readComposeFile(
+    root: string,
+    path: string,
+    tracked: ReadonlySet<string> | null,
+): ComposeService[] {
     let document: unknown;
     try {
         document = parse(readFileSync(path, 'utf8'), {
@@ -391,6 +423,7 @@ function readComposeFile(root: string, path: string): ComposeService[] {
     }
     const services = isRecord(document) && isRecord(document.services) ? document.services : {};
     const file = rel(root, path);
+    const project = isRecord(document) ? scalar(document.name) : null;
 
     return Object.entries(services).map(([name, raw]) => {
         const service = isRecord(raw) ? raw : {};
@@ -399,7 +432,11 @@ function readComposeFile(root: string, path: string): ComposeService[] {
         if (!isReset(service.env_file)) {
             for (const envFile of envFilePaths(withoutMarks(service.env_file))) {
                 const envPath = join(dirname(path), envFile);
-                if (!existsSync(envPath)) {
+                // Неотслеживаемые git файлы (.env, .env.e2e разработчика) не читаются.
+                if (
+                    !existsSync(envPath) ||
+                    (tracked !== null && !tracked.has(rel(root, envPath)))
+                ) {
                     continue;
                 }
                 for (const [key, value] of parseEnvFile(readFileSync(envPath, 'utf8'))) {
@@ -423,6 +460,7 @@ function readComposeFile(root: string, path: string): ComposeService[] {
 
         return {
             file,
+            project,
             name,
             image: scalar(service.image),
             env,
@@ -544,6 +582,7 @@ function existing(paths: readonly string[]): string[] {
 
 /** Находит и разбирает файлы репозитория сервиса; отсутствующий каталог — пустой список. */
 export function readRepoFiles(root: string): RepoFiles {
+    const tracked = trackedFiles(root);
     const apps = listDirs(join(root, 'apps'));
     const packages = listDirs(join(root, 'packages'));
     const ciFiles = [
@@ -552,7 +591,9 @@ export function readRepoFiles(root: string): RepoFiles {
     ];
 
     return {
-        compose: listFiles(root, COMPOSE_FILE).flatMap((path) => readComposeFile(root, path)),
+        compose: listFiles(root, COMPOSE_FILE).flatMap((path) =>
+            readComposeFile(root, path, tracked),
+        ),
         ci: ciFiles.map((path) => readText(root, path)),
         docker: [root, ...apps]
             .flatMap((dir) => listFiles(dir, DOCKERFILE))

@@ -5,6 +5,7 @@ import 'reflect-metadata';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { KitConfigModule, defineEnv, envBase, envDatabase } from '@verdeect/kit/config';
+import { KitCoreModule } from '@verdeect/kit/observability';
 import { Db, KitDatabaseModule, newId } from '@verdeect/kit/database';
 import { expectOutbox } from '@verdeect/kit/testing';
 import { sql } from 'drizzle-orm';
@@ -25,6 +26,8 @@ describe('UC-14: покрытие outbox потребителя', () => {
         @Module({
             imports: [
                 KitConfigModule.forRoot({ schema: envSchema }),
+                // Контекст без HTTP — ядро пакета явно (v1.25, AC-2.15).
+                KitCoreModule.forRoot({ service: 'consumer', entry: 'cli' }),
                 KitDatabaseModule.forRoot({ schema }),
             ],
         })
