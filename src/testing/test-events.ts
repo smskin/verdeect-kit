@@ -1,4 +1,5 @@
-// publishTestEvent, waitForInbox, waitForBrokerReady (prd.md §3.8 E5 v1.25, UC-14, AC-5.13, AC-5.18; П17, П18). Эталон — O test/support/bus.ts
+// publishTestEvent, waitForInbox, waitForBrokerReady, declareEventsExchange (prd.md §3.8 E5 v1.25–v1.26, UC-14, AC-5.10,
+// AC-5.13, AC-5.18; П17, П18). Эталон — O test/support/bus.ts
 // (publishEvent, waitInbox). amqplib, pg, vitest — loadPeer при вызове: /testing импортируется без них; /messaging
 // не импортируется (без peer.ts) — только envelope.ts и define-event.ts.
 import type { INestApplicationContext } from '@nestjs/common';
@@ -8,11 +9,12 @@ import type * as Vitest from 'vitest';
 import type { z } from 'zod';
 import { newId } from '../internal/ids.js';
 import { loadPeer } from '../internal/peer.js';
-import { EVENTS_EXCHANGE } from '../internal/rabbitmq-definitions.js';
+import { EVENTS_EXCHANGE, topicPermissionsOf } from '../internal/rabbitmq-definitions.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import type { KitEvent } from '../messaging/define-event.js';
 import { EnvelopeSchema, type Envelope } from '../messaging/envelope.js';
 import { HealthRegistry } from '../observability/health-registry.js';
+import { rabbitAdminFromProvided, type KitRabbitWorker } from './rabbitmq-admin.js';
 import { TEST_TIMEOUT_SCALE } from './timeout-scale.js';
 import { workerScope } from './worker-scope.js';
 import { INBOX_TABLE } from '../internal/outbox-policy.js';
@@ -52,18 +54,23 @@ export function testEventsClosed(): Promise<void> | undefined {
     return closed;
 }
 
-async function adminUrl(): Promise<string> {
-    if (urlOverride !== undefined) {
-        return urlOverride;
-    }
+async function providedWorker(caller: string): Promise<KitRabbitWorker> {
     const { inject } = await loadPeer<typeof Vitest>('vitest', 'testing');
     const pool = Number(process.env.VITEST_POOL_ID ?? '1');
     const worker = inject('kitRabbitmqWorkers')?.[pool - 1];
     if (worker === undefined) {
-        throw new TypeError('publishTestEvent: startTestStack запущен без rabbitmq: true');
+        throw new TypeError(`${caller}: startTestStack запущен без rabbitmq: true`);
     }
 
-    return worker.adminUrl;
+    return worker;
+}
+
+async function adminUrl(): Promise<string> {
+    if (urlOverride !== undefined) {
+        return urlOverride;
+    }
+
+    return (await providedWorker('publishTestEvent')).adminUrl;
 }
 
 async function openChannel(): Promise<Amqp.ConfirmChannel> {
@@ -230,4 +237,35 @@ export async function waitForBrokerReady(
         }
         await new Promise((resolve) => setTimeout(resolve, BROKER_READY_POLL_MS));
     }
+}
+
+/**
+ * Объявляет `verdeect.events` (topic, durable) в vhost воркера от имени его администратора и заново выдаёт topic-права
+ * пользователю воркера по `startTestStack({publishes})` (без `publishes` — `write ^$`, как в definitions.json).
+ * Нужна тесту, который удалял exchange: RabbitMQ удаляет topic-права вместе с exchange — без восстановления следующие
+ * файлы воркера публиковали бы с любым ключом.
+ * @throws {TypeError} стек без `rabbitmq: true`.
+ * @throws {Error} management API ответил ошибкой (код ответа, без пароля).
+ */
+export async function declareEventsExchange(): Promise<void> {
+    const worker = await providedWorker('declareEventsExchange');
+    const amqp = await loadPeer<typeof Amqp>('amqplib', 'testing');
+    const connection = await amqp.connect(worker.adminUrl);
+    try {
+        const created = await connection.createChannel();
+        await created.assertExchange(EVENTS_EXCHANGE, 'topic', { durable: true });
+    } finally {
+        await connection.close().catch(() => undefined);
+    }
+    const { inject } = await loadPeer<typeof Vitest>('vitest', 'testing');
+    const managementUrl = inject('kitRabbitmqManagementUrl');
+    if (managementUrl === undefined) {
+        throw new TypeError('declareEventsExchange: startTestStack запущен без rabbitmq: true');
+    }
+    // Пользователь воркера назван как его vhost (prepareWorkerVhosts).
+    await rabbitAdminFromProvided(managementUrl, worker.adminUrl).setTopicPermissions(
+        worker.vhost,
+        worker.vhost,
+        { exchange: EVENTS_EXCHANGE, ...topicPermissionsOf(worker.publishes) },
+    );
 }

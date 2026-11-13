@@ -6,7 +6,9 @@ import { IDEMPOTENT_METADATA, type KitIdempotentOptions } from '../internal/meta
 /**
  * Маршрут принимает `Idempotency-Key` (§3.3а): повтор с тем же ключом и телом — сохранённый ответ и
  * `Idempotent-Replayed: true`. Только на маршрутах с `VerdeectAuthGuard`: без проверенного принципала — 500.
- * @throws {TypeError} `tenantFromBody` — пустая строка или путь с пустым сегментом.
+ * `redact` — поля верхнего уровня ответа, которые в хранилище заменяются на `null`.
+ * @throws {TypeError} `tenantFromBody` — пустая строка или путь с пустым сегментом; имя `redact` пустое или
+ * содержит `.` или `[`.
  */
 export function Idempotent(options: KitIdempotentOptions = {}): MethodDecorator {
     const path = options.tenantFromBody;
@@ -14,6 +16,10 @@ export function Idempotent(options: KitIdempotentOptions = {}): MethodDecorator 
         throw new TypeError(
             '@Idempotent: tenantFromBody — путь поля через точку без пустых сегментов',
         );
+    }
+
+    if (options.redact?.some((name) => name === '' || /[.[]/.test(name)) === true) {
+        throw new TypeError('@Idempotent: redact — только поля верхнего уровня');
     }
 
     return SetMetadata(IDEMPOTENT_METADATA, options);

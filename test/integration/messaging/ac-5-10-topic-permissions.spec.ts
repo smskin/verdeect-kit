@@ -1,8 +1,10 @@
 // AC-5.10 (UC-12): topic-права пользователя воркера на verdeect.events и пересоздание exchange в тестах — предпосылка
 // declareEventsExchange (брокер удаляет topic-права вместе с exchange) и восстановление прав: после пересоздания
-// публикация с ключом вне префикса снова ACCESS_REFUSED (prd.md §3.4 M3, v1.20; KT-62).
+// публикация с ключом вне префикса снова ACCESS_REFUSED (prd.md §3.4 M3, v1.20; KT-62). declareEventsExchange — экспорт
+// /testing (§3.8 v1.26).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EVENTS_EXCHANGE, topicPermissionsOf } from '../../../src/internal/rabbitmq-definitions.js';
+import { declareEventsExchange } from '../../../src/testing/index.js';
 import { asWorker, BrokerClient, topicPermissions, workerBroker } from '../../support/broker.js';
 
 /** Публикация пользователем воркера с подтверждением. */
@@ -23,7 +25,7 @@ describe('UC-12: topic-права при пересоздании verdeect.event
     });
 
     afterAll(async () => {
-        await broker.declareEventsExchange();
+        await declareEventsExchange();
         await broker.close();
     });
 
@@ -42,9 +44,9 @@ describe('UC-12: topic-права при пересоздании verdeect.event
         ).toEqual([]);
     });
 
-    it('AC-5.10: declareEventsExchange возвращает topic-права — ключ вне префикса снова ACCESS_REFUSED, свой ключ публикуется', async () => {
+    it('AC-5.10: после удаления exchange и declareEventsExchange() публикация воркера по своему префиксу проходит, по чужому — ACCESS_REFUSED', async () => {
         await broker.deleteExchange(EVENTS_EXCHANGE);
-        await broker.declareEventsExchange();
+        await declareEventsExchange();
 
         expect(
             (await topicPermissions(vhost, vhost)).filter(

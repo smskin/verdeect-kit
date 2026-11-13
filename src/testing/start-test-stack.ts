@@ -1,7 +1,8 @@
 // startTestStack — globalSetup Vitest: контейнеры TEST_IMAGES раз на прогон, адреса через provide (prd.md §3.8, E1;
 // AC-1.12, AC-1.13). Эталоны — O test/support/global-setup.ts (minio, provide, teardown), I global-setup.ts (mailpit),
 // O setup-error.ts (текст ошибки в stderr до throw: Vite теряет текст ошибок globalSetup).
-// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии.
+// E4: при postgres — prepareDatabase и шаблон <svc>_template; migrations — runMigrations до копии. v1.26 (AC-1.14): метка
+// баз COMMENT ON DATABASE, пересоздание и удаление только с меткой.
 // Код БД — динамический import() (без pg /testing импортируется).
 // E5: rabbitmq — definitions.json (internal/rabbitmq-definitions, как CLI), vhost и пользователь на воркер (эталон B
 // test/support/broker.ts), удаление по префиксу <svc>-test-.
@@ -233,11 +234,86 @@ class PrepareStepError extends Error {
     }
 }
 
+/** База с тем же именем есть, но без метки startTestStack: текст для разработчика (имя базы, подсказка CI). */
+class UnlabeledDatabaseError extends Error {
+    constructor(name: string, service: string) {
+        super(
+            `БД ${name} уже есть и создана не startTestStack; у service-контейнера CI POSTGRES_DB не должен совпадать с ${service} (используйте postgres)`,
+        );
+    }
+}
+
 async function step<T>(name: string, work: () => Promise<T>): Promise<T> {
     try {
         return await work();
     } catch (error) {
+        if (error instanceof UnlabeledDatabaseError) {
+            throw error;
+        }
         throw new PrepareStepError(name, error);
+    }
+}
+
+/** Метка баз startTestStack (§3.8 v1.26, AC-1.14): удаляются и пересоздаются только базы с ней. */
+const DATABASE_LABEL = 'verdeect-kit startTestStack';
+
+type PgClient = InstanceType<typeof Pg.Client>;
+
+/** Метка базы: `undefined` — базы нет, `null` — есть без комментария. */
+async function databaseLabel(client: PgClient, name: string): Promise<string | null | undefined> {
+    const result = await client.query<{ label: string | null }>(
+        "select shobj_description(oid, 'pg_database') as label from pg_database where datname = $1",
+        [name],
+    );
+    const [row] = result.rows;
+
+    return row === undefined ? undefined : row.label;
+}
+
+/**
+ * Свежая база `name`: помеченная — остаток прерванного прогона, удаляется; без метки — отказ, ничего не удаляется;
+ * затем `CREATE DATABASE` (`template` — копия шаблона) и метка.
+ */
+async function freshDatabase(
+    client: PgClient,
+    name: string,
+    service: string,
+    template?: string,
+): Promise<void> {
+    const label = await databaseLabel(client, name);
+    if (label !== undefined && label !== DATABASE_LABEL) {
+        throw new UnlabeledDatabaseError(name, service);
+    }
+    if (label === DATABASE_LABEL) {
+        process.stderr.write(
+            `startTestStack: БД ${name} осталась от прерванного прогона — пересоздаётся\n`,
+        );
+        await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`);
+    }
+    const from = template === undefined ? '' : ` TEMPLATE ${quoteIdentifier(template)}`;
+    await client.query(`CREATE DATABASE ${quoteIdentifier(name)}${from}`);
+    await client.query(`COMMENT ON DATABASE ${quoteIdentifier(name)} IS '${DATABASE_LABEL}'`);
+}
+
+/** teardown: базы с меткой удаляются, без метки — остаются (запись в stderr). */
+async function dropLabeledDatabases(pg: typeof Pg, adminUrl: string, names: readonly string[]) {
+    const client = new pg.Client({ connectionString: adminUrl });
+    client.on('error', () => undefined);
+    await client.connect();
+    try {
+        for (const name of names) {
+            const label = await databaseLabel(client, name);
+            if (label === undefined) {
+                continue;
+            }
+            if (label !== DATABASE_LABEL) {
+                process.stderr.write(`startTestStack: БД ${name} без метки — не удаляется\n`);
+                continue;
+            }
+            await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(name)} WITH (FORCE)`);
+        }
+    } finally {
+        await client.end();
     }
 }
 
@@ -252,20 +328,9 @@ function withDatabase(base: string, database: string, user?: string, password?: 
     return url.toString();
 }
 
-async function adminExec(pg: typeof Pg, url: string, sql: string): Promise<void> {
-    const client = new pg.Client({ connectionString: url });
-    client.on('error', () => undefined);
-    await client.connect();
-    try {
-        await client.query(sql);
-    } finally {
-        await client.end();
-    }
-}
-
 /**
  * Подготовка БД стека (§3.8, AC-4.18): шаблон `<svc>_template` — prepareDatabase, миграции; копия `<svc>` — права
- * уровня БД заново (при копировании не переносятся).
+ * уровня БД заново (при копировании не переносятся). Обе базы — с меткой startTestStack (AC-1.14, v1.26).
  */
 async function prepareStackDatabase(
     adminUrl: string,
@@ -283,17 +348,11 @@ async function prepareStackDatabase(
     const template = `${service}_template`;
     const templateAdmin = withDatabase(adminUrl, template);
     await step('create-template', async () => {
-        // IF NOT EXISTS (в PostgreSQL его нет у CREATE DATABASE): внешний сервер мог остаться от прерванного прогона.
         const client = new pg.Client({ connectionString: adminUrl });
         client.on('error', () => undefined);
         await client.connect();
         try {
-            const exists = await client.query('select 1 from pg_database where datname = $1', [
-                template,
-            ]);
-            if (exists.rowCount === 0) {
-                await client.query(`CREATE DATABASE ${quoteIdentifier(template)}`);
-            }
+            await freshDatabase(client, template, service);
         } finally {
             await client.end();
         }
@@ -311,15 +370,11 @@ async function prepareStackDatabase(
         );
     }
     await step('copy', async () => {
-        await adminExec(
-            pg,
-            adminUrl,
-            `CREATE DATABASE ${quoteIdentifier(service)} TEMPLATE ${quoteIdentifier(template)}`,
-        );
         const client = new pg.Client({ connectionString: adminUrl });
         client.on('error', () => undefined);
         await client.connect();
         try {
+            await freshDatabase(client, service, service, template);
             await grantDatabaseAccess(client, service, service);
         } finally {
             await client.end();
@@ -394,11 +449,8 @@ function postgresPart(
                 return;
             }
             const pg = (await loadPeer<{ default: typeof Pg }>('pg', 'testing')).default;
-            await adminExec(
-                pg,
-                adminUrl,
-                `DROP DATABASE IF EXISTS ${quoteIdentifier(`${service}_template`)} WITH (FORCE)`,
-            );
+            // Только базы с меткой startTestStack (AC-1.14): копия и шаблон.
+            await dropLabeledDatabases(pg, adminUrl, [service, `${service}_template`]);
         },
     };
 }

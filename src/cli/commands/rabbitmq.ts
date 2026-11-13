@@ -186,7 +186,12 @@ async function definitions(
         adminUser = { user: admin, passwordHash: hash };
     }
     if (keys.length > 0) {
-        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
+        // Формат — в тексте (§3.4 v1.26, AC-5.10): только имена ключей, значений нет.
+        throw new CommandError(
+            'INVALID_ENVIRONMENT',
+            `${keys.join(', ')}: ожидается вывод rabbitmqctl hash_password (base64, ≥ ${MIN_HASH_LENGTH} символов)`,
+            { keys },
+        );
     }
     if (adminUser !== undefined) {
         // Не зависит от LOG_LEVEL: файл с администратором не должен уйти в production незамеченным.

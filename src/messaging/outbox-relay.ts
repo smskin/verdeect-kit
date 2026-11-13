@@ -1,6 +1,7 @@
 // OutboxRelay (prd.md §3.4 relay, UC-5, AC-5.3–AC-5.5, AC-5.11, AC-5.16, AC-9.5). Эталон — O outbox-relay.ts; из P —
 // гонка publish с остановкой (STOPPED) и beforeApplicationShutdown против shutdownDeadline; по PRD — опрос 1000 мс
-// (O — 200), метрики verdeect_outbox_* при запросе /metrics (collect, срок 1 с) независимо от канала (П10, v1.25), строка неизвестного типа —
+// (O — 200), метрики verdeect_outbox_* при запросе /metrics (collect, срок 1 с) независимо от канала (П10, v1.25), строка с парой
+// (type, version) вне outbox.events (AC-5.23) —
 // subject.kind 'unknown' (П23). Пачка ≤ 100 по seq под FOR UPDATE SKIP LOCKED, публикация последовательно с
 // подтверждением; первая неудача прерывает пачку — порядок сохраняется. Без соединения или канала БД не опрашивается.
 // Остановка во время неподтверждённой публикации оставляет строку без attempts + 1: повтор после рестарта —
@@ -11,7 +12,7 @@ import { ulid } from '../internal/ids.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError, captureThrottled } from '../observability/sentry.js';
-import type { KitEvent } from './define-event.js';
+import { eventKey, type KitEvent } from './define-event.js';
 import { buildEnvelope } from './envelope.js';
 import type { OutboxClaimedRow, OutboxStore } from './outbox-store.js';
 import {
@@ -70,7 +71,7 @@ export interface OutboxRelayDeps {
         RabbitConnection,
         'isConnected' | 'isChannelReady' | 'createChannel' | 'onChannelReady' | 'shutdownDeadline'
     >;
-    /** События модуля по type. */
+    /** События модуля по паре (`eventKey`). */
     readonly events: ReadonlyMap<string, KitEvent>;
     /** Метрики экземпляра. */
     readonly metrics?: KitMetrics;
@@ -247,7 +248,7 @@ export class OutboxRelay {
         if (channel === null) {
             return 'channel closed';
         }
-        const envelope = buildEnvelope({ ...row, subjectKind: this.subjectKind(row.type) });
+        const envelope = buildEnvelope({ ...row, subjectKind: this.subjectKind(row) });
         const confirmAbort = new AbortController();
         const confirmed = channel
             .publish(EVENTS_EXCHANGE, row.type, Buffer.from(JSON.stringify(envelope)), {
@@ -277,14 +278,19 @@ export class OutboxRelay {
         }
     }
 
-    private subjectKind(type: string): string {
-        const event = this.deps.events.get(type);
+    /** Определение — по паре (`type`, `version`) строки (AC-5.23); вне `outbox.events` — `unknown`, warn раз на пару. */
+    private subjectKind(row: { readonly type: string; readonly version: number }): string {
+        const key = eventKey(row);
+        const event = this.deps.events.get(key);
         if (event !== undefined) {
             return event.subject;
         }
-        if (!this.unknownTypes.has(type)) {
-            this.unknownTypes.add(type);
-            this.log.warn({ type }, 'outbox: тип события вне outbox.events — subject.kind unknown');
+        if (!this.unknownTypes.has(key)) {
+            this.unknownTypes.add(key);
+            this.log.warn(
+                { type: row.type, version: row.version },
+                'outbox: пара события вне outbox.events — subject.kind unknown',
+            );
         }
 
         return 'unknown';

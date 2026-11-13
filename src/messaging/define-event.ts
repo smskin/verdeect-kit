@@ -70,3 +70,11 @@ export function defineEvent<
 
     return Object.freeze({ type, version, subject, tenant, data });
 }
+
+/**
+ * Ключ пары (`type`, `version`) события: реестры подписчика и `outbox.events` (§3.4 v1.26–v1.27, AC-5.22, AC-5.23).
+ * @internal
+ */
+export function eventKey(event: { readonly type: string; readonly version: number }): string {
+    return `${event.type}@${event.version}`;
+}

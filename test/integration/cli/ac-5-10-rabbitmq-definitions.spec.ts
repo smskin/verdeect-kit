@@ -178,7 +178,8 @@ describe('UC-12: definitions.json в брокере', () => {
         expect(JSON.parse(output.join(''))).toEqual({
             error: {
                 code: 'INVALID_ENVIRONMENT',
-                message: 'Неверное окружение',
+                message:
+                    'RABBITMQ_PASSWORD_HASH_KITCLI_B: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
                 keys: ['RABBITMQ_PASSWORD_HASH_KITCLI_B'],
             },
         });

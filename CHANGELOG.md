@@ -4,6 +4,44 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.7] - 2026-11-13
+
+Находки переходов rc.6 (PRD v1.26–v1.27): ID-52, PL-51, PL-67, OR-146, KT-70; вопросы плана rc.7 (KT-75–KT-77).
+
+### Changed
+
+- **Обработчик по паре (`type`, `version`) (ломающее для rc):** `subscriber.on` и `onReplica` выбирают обработчик по паре; конверт подписанного `type` с неподписанной версией подтверждается без обработки (без inbox, проверки `data` и DLQ) с метрикой `verdeect_events_skipped_total{type, version}` и `debug`-строкой — раньше его получал обработчик v1. `on(E v1)` и `on(E v2)` одного `type` — можно, повтор пары — `TypeError`. `type` без обработчиков — DLQ `unsubscribed`, как раньше.
+- **Outbox по паре (ломающее для rc):** `outbox.events` уникальны по (`type`, `version`) — публикующий указывает обе версии на время перехода; `OutboxStore.add` ищет событие по паре; relay ищет определение по паре строки, пара вне `outbox.events` — `subject.kind = 'unknown'`, `warn` раз на пару (было — раз на тип).
+- **Срок обработчиков при остановке — от начала остановки:** `shutdownDeadline = min(max(1000, T − D − 3000), остаток − 3000)`, остаток — `SHUTDOWN_TIMEOUT_MS` минус время от сигнала или `close()`; остаток < 3000 — 0. Долгий шаг 2 сокращает срок подписчика и relay (раньше срок считался от начала шага 3 и мог выйти за `SHUTDOWN_TIMEOUT_MS`).
+- **Тип `tenant` по `tenantNullable` (ломающее для rc, только типы):** `createOutboxTable(schema)` и `{tenantNullable: false}` — select даёт `tenant: string`, `{tenantNullable: true}` — `string | null`; `KitOutboxTable` — объединение. DDL и снимок `drizzle-kit` не меняются. Проверки `tenant` на `null` у таблицы по умолчанию могут дать ошибки компиляции.
+- **Первое подключение к брокеру — один срок `RABBITMQ_RECONNECT_SECONDS`** на подключение и настройку канала (раньше — два срока подряд, до 2 × срок).
+- CLI: неизвестная команда — `UNKNOWN_COMMAND` в stdout, как раньше, и список команд и форм в stderr; без аргументов — справка и код 0 (было — `UNKNOWN_COMMAND`).
+- CLI `rabbitmq definitions`: `INVALID_ENVIRONMENT` неверного хеша — текст «`<ключи>`: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)» (было — «Неверное окружение»); `keys` — те же имена, значений нет.
+- `/testing` `startTestStack`: копия `<svc>` тоже удаляется в teardown (раньше — только шаблон) — обе базы только с меткой.
+- `MessagingCleanup.run()` возвращает `{ran}` (внутренний провайдер; цикл по интервалу итог не использует).
+
+### Added
+
+- `/crypto`: `deriveKeys({service, keys, purpose})` — ключи HMAC по версиям `ENCRYPTION_KEYS` в порядке списка (HKDF-SHA256, `info = verdeect-<svc>:<purpose>:mac`), тип `KitDerivedKey` (`{version, key}`). README — «Шифр», ротация.
+- `/idempotency`: `@Idempotent({redact})` — поля верхнего уровня ответа в хранилище заменяются на `null`, клиент получает ответ без изменений, повтор — `null`; имя пустое или с `.`/`[` — `TypeError` при объявлении.
+- `/observability`: метрика `verdeect_events_skipped_total{type, version}` в `kitMetrics` (правила алерта нет).
+- `/testing`: метка баз `startTestStack` — `COMMENT ON DATABASE … IS 'verdeect-kit startTestStack'` у `<svc>_template` и `<svc>`; помеченная база — остаток прерванного прогона, пересоздаётся; без метки — отказ с именем базы и подсказкой `POSTGRES_DB`, база не удаляется.
+- Подпуть `@verdeect/kit/testing/timeout-scale` (условия `types` и `default`, граф — только `node:*`): `TEST_TIMEOUT_SCALE` и `readTimeoutScale(env = process.env)` для `vitest.config.ts`.
+- `/testing`: `workerScope().rabbitmq.adminUrl` — администратор vhost воркера; `declareEventsExchange()` — `verdeect.events` и topic-права пользователя воркера заново.
+- `/testing`: `expectOutbox({app, traceId}, Event, expected?)` — use-case со своей транзакцией, строка по `trace_id` после `COMMIT`; тип `KitOutboxTrace`.
+- `/testing`: `createTestDb({url, service})` → `KitTestDb` (`{db, close()}`) — `Db` на своих пулах как у модуля, вторая «реплика» тестов; `KIT_DB_CONNECTION_TIMEOUT_MS`; `messagingCleanupLockKey(schema)` — ключ блокировки очистки outbox/inbox.
+- CLI: `verdeect-kit --help`, `help`, `<команда> --help` — список команд и форм.
+
+### Как перейти
+
+- **Версии событий.** Подписчик: на время перехода подпишите обе версии (`on(EventV1, …)` и `on(EventV2, …)`) до того, как публикующий перестанет слать старую; пропуски видны в `verdeect_events_skipped_total`. Публикующий: обе версии в `outbox.events` на время перехода.
+- **Срок остановки.** `SHUTDOWN_TIMEOUT_MS` и `SHUTDOWN_DRAIN_MS` не меняются; при долгом шаге 2 обработчикам остаётся меньше времени — проверьте длительные обработчики (сообщение вернётся брокеру).
+- **Тип `tenant`.** Таблица outbox без `tenantNullable` — `tenant: string`: уберите проверки на `null` (в коде и тестах пакета таких правок не понадобилось — пример пуст).
+- **Таблица outbox без умолчания `version`.** Существующая таблица без колонки — `ADD COLUMN "version" integer NOT NULL DEFAULT 1`, затем `ALTER COLUMN "version" DROP DEFAULT` (README, «Сообщения»).
+- **Service-контейнер CI с PostgreSQL** — `POSTGRES_DB: postgres`, не имя сервиса: базу `<svc>` создаёт `startTestStack`, чужая база без метки — отказ запуска.
+- **Новые экспорты:** `deriveKeys`, `KitDerivedKey`, `declareEventsExchange`, `createTestDb`, `KitTestDb`, `KIT_DB_CONNECTION_TIMEOUT_MS`, `messagingCleanupLockKey`, `KitOutboxTrace`; `vitest.config.ts` — `TEST_TIMEOUT_SCALE` из `@verdeect/kit/testing/timeout-scale`.
+- **Тесты, удалявшие `verdeect.events`:** вместо своего помощника — `declareEventsExchange()` из `/testing`.
+
 ## [1.0.0-rc.6] - 2026-11-13
 
 Находки переходов сервисов (PRD v1.25): BFF-67, OR-145, PL-50; К23 Orchestrator (keyset); усиление тестов по аудиту KT-61.

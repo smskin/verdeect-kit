@@ -1,12 +1,14 @@
 // AC-5.13 (UC-14): expectOutbox видит строку события только текущей транзакции и пишет покрытие после успешной
 // проверки; publishTestEvent + waitForInbox проверяют обработчик без sleep (prd.md §3.8 E5; П16–П18). Каталог покрытия у
-// пакета не задан (globalSetup без outboxEvents) — setWorkerCoverageDir, сброс в afterAll (проект shared).
+// пакета не задан (globalSetup без outboxEvents) — setWorkerCoverageDir, сброс в afterAll (проект shared). v1.26: форма
+// expectOutbox({app, traceId}) — use-case со своей транзакцией, строка ищется после COMMIT по trace_id.
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Db } from '../../../src/database/db.js';
+import { newId } from '../../../src/internal/ids.js';
 import { EnvelopeSchema } from '../../../src/messaging/envelope.js';
 import { OutboxStore } from '../../../src/messaging/outbox-store.js';
 import { expectOutbox, setWorkerCoverageDir } from '../../../src/testing/outbox-coverage.js';
@@ -101,6 +103,66 @@ describe('UC-14: помощники outbox', () => {
         await app.get(Db).transaction(ctx('acme'), async (tx) => {
             await expect(expectOutbox(tx, TestNoteCreated, { subjectId: 'n2' })).rejects.toThrow();
         });
+        expect(keys()).toEqual([]);
+    });
+
+    it('AC-5.13: use-case со своей транзакцией — после COMMIT expectOutbox({app, traceId}) находит строку и засчитывает покрытие', async () => {
+        const traceId = newId('trc');
+        await app
+            .get(Db)
+            .transaction({ tenant: 'acme', traceId, actor: { channel: 'http' } }, (tx) =>
+                app.get(OutboxStore).add(tx, TestNoteCreated, {
+                    subjectId: 'n3',
+                    data: { noteId: 'n3', title: 'Свой' },
+                }),
+            );
+
+        await expectOutbox({ app, traceId }, TestNoteCreated, {
+            subjectId: 'n3',
+            data: { title: 'Свой' },
+        });
+        expect(keys()).toEqual(['kit.note.created.v1']);
+    });
+
+    it('AC-5.13: строка того же типа с другим traceId не засчитывается — без своей строки expectOutbox падает', async () => {
+        await app
+            .get(Db)
+            .transaction(
+                { tenant: 'acme', traceId: newId('trc'), actor: { channel: 'http' } },
+                (tx) =>
+                    app.get(OutboxStore).add(tx, TestNoteCreated, {
+                        subjectId: 'n4',
+                        data: { noteId: 'n4', title: 'Чужой' },
+                    }),
+            );
+
+        await expect(expectOutbox({ app, traceId: newId('trc') }, TestNoteCreated)).rejects.toThrow(
+            /нет строки kit\.note\.created\.v1/,
+        );
+        expect(keys()).toEqual([]);
+    });
+
+    it('AC-5.13: {app, traceId} — data не по ожиданию — падает, покрытие не записано', async () => {
+        const traceId = newId('trc');
+        await app
+            .get(Db)
+            .transaction({ tenant: 'acme', traceId, actor: { channel: 'http' } }, (tx) =>
+                app.get(OutboxStore).add(tx, TestNoteCreated, {
+                    subjectId: 'n5',
+                    data: { noteId: 'n5', title: 'T' },
+                }),
+            );
+
+        const error: unknown = await expectOutbox({ app, traceId }, TestNoteCreated, {
+            data: { title: 'другое' },
+        }).catch((reason: unknown) => reason);
+
+        // Падение — из-за расхождения data (строка найдена), а не из-за её отсутствия.
+        expect(error).toBeInstanceOf(Error);
+        const message = (error as Error).message;
+        expect(message).toContain('expectOutbox: data kit.note.created.v1 не совпала');
+        expect(message).toContain('title');
+        expect(message).not.toContain('нет строки');
         expect(keys()).toEqual([]);
     });
 

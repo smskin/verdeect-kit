@@ -31,17 +31,19 @@ describe('UC-14: workerScope', () => {
         );
     });
 
-    it('AC-5.18: rabbitmq — vhost и url записи воркера VITEST_POOL_ID', () => {
+    it('AC-5.18, AC-1.15: rabbitmq — vhost, url и adminUrl записи воркера VITEST_POOL_ID', () => {
         const pool = Number(process.env.VITEST_POOL_ID ?? '1');
         const workers = Array.from({ length: pool }, (_, index) => ({
             vhost: `kit-test-r-w${index + 1}`,
             url: `amqp://u@h/w${index + 1}`,
-            adminUrl: 'amqp://a@h/x',
+            adminUrl: `amqp://a@h/w${index + 1}`,
+            publishes: [],
         }));
 
         expect(workerScopeWith(() => workers).rabbitmq).toEqual({
             vhost: `kit-test-r-w${pool}`,
             url: `amqp://u@h/w${pool}`,
+            adminUrl: `amqp://a@h/w${pool}`,
         });
     });
 

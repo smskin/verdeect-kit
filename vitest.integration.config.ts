@@ -23,6 +23,8 @@ const ISOLATED: string[] = [
     'test/integration/messaging/ac-5-19-broker-down.spec.ts',
     // initFakeSentry — процесс-глобальный Sentry; vi.stubEnv — окружение createHttpApp.
     'test/integration/http/ac-3-14-exception-filter.spec.ts',
+    // vi.stubEnv — окружение createHttpApp; defineErrors — реестр кодов на процесс.
+    'test/integration/http/ac-3-12-configure-fastify.spec.ts',
     // vi.spyOn(GenericContainer.prototype, 'start') — патч прототипа testcontainers.
     'test/integration/testing/ac-1-14-external-stack.spec.ts',
 ];

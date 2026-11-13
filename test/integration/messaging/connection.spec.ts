@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { KIT_RABBIT_CONNECTION } from '../../../src/messaging/config.js';
 import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.js';
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
+import { declareEventsExchange } from '../../../src/testing/index.js';
 import { BrokerClient } from '../../support/broker.js';
 import { createMessagingApp, waitUntil } from '../../support/messaging.js';
 
@@ -24,7 +25,7 @@ describe('UC-6: соединение RabbitMQ', () => {
     afterEach(async () => {
         await app?.close();
         app = undefined;
-        await broker.declareEventsExchange();
+        await declareEventsExchange();
     });
 
     afterAll(async () => {

@@ -1,7 +1,8 @@
 // KitMessagingModule.forRoot (prd.md §3.4, AC-1.2, AC-5.15, AC-5.20; П1, П5, П11). Эталон — O messaging.module.ts
 // (проба rabbitmq некритичная, соединение — шаг 4). pg — requirePeer только при outbox или dedupe: 'inbox', значения
 // database — динамическим import() здесь же (/messaging грузится без pg). Остановка — хуки Nest: соединение —
-// onApplicationShutdown (шаг 4), relay, подписчик, очистка — beforeApplicationShutdown (шаг 3); KitLifecycle не нужен.
+// onApplicationShutdown (шаг 4), relay, подписчик, очистка — beforeApplicationShutdown (шаг 3); KitLifecycle — только
+// остаток срока от начала остановки для срока обработчиков (AC-5.11).
 import {
     Inject,
     Injectable,
@@ -21,8 +22,9 @@ import { assertServiceName } from '../internal/service-name.js';
 import { requireKitCore } from '../internal/kit-core-required.js';
 import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
+import { KitLifecycle, shutdownRemainingMs } from '../observability/lifecycle.js';
 import type { KitMetrics } from '../observability/metrics.js';
-import type { KitEvent } from './define-event.js';
+import { eventKey, type KitEvent } from './define-event.js';
 import { MessagingCleanup } from './cleanup.js';
 import { MessagingStartupError } from './errors.js';
 import { OutboxRelay } from './outbox-relay.js';
@@ -119,8 +121,12 @@ function eventsOf(
     }
     const nullable = outboxTenantNullable(outbox.table);
     for (const event of outbox.events) {
-        if (events.has(event.type)) {
-            throw new TypeError(`KitMessagingModule: событие ${event.type} указано дважды`);
+        // Пара (type, version): публикующий пишет обе версии на время перехода (AC-5.23).
+        const key = eventKey(event);
+        if (events.has(key)) {
+            throw new TypeError(
+                `KitMessagingModule: событие ${event.type} v${event.version} указано дважды`,
+            );
         }
         if (event.tenant === 'none' && !nullable) {
             throw new MessagingStartupError(
@@ -129,7 +135,7 @@ function eventsOf(
                 { event: event.type, table: `${schema ?? ''}.outbox` },
             );
         }
-        events.set(event.type, event);
+        events.set(key, event);
     }
 
     return events;
@@ -444,14 +450,35 @@ export class KitMessagingModule {
                 log,
                 {
                     provide: KIT_RABBIT_CONNECTION,
-                    useFactory: (env: KitMessagingRuntimeEnv, log: MessagingLog) =>
-                        new RabbitConnection({
+                    useFactory: (
+                        env: KitMessagingRuntimeEnv,
+                        log: MessagingLog,
+                        lifecycle: KitLifecycle | null,
+                    ) => {
+                        const core = requireKitCore(lifecycle, 'KitMessagingModule');
+
+                        return new RabbitConnection({
                             url: env.RABBITMQ_URL,
                             reconnectSeconds: env.RABBITMQ_RECONNECT_SECONDS,
-                            deadlineMs: handlersDeadlineMs(env),
+                            // Срок — от начала остановки KitLifecycle (AC-5.11): вычисляется на шаге 3.
+                            deadlineMs: () => {
+                                const remainingMs = shutdownRemainingMs(core);
+                                const deadlineMs = handlersDeadlineMs(env, remainingMs);
+                                log.debug(
+                                    { deadlineMs, remainingMs },
+                                    'messaging: срок обработчиков при остановке',
+                                );
+
+                                return deadlineMs;
+                            },
                             log,
-                        }),
-                    inject: [KIT_MESSAGING_ENV, KIT_MESSAGING_LOG],
+                        });
+                    },
+                    inject: [
+                        KIT_MESSAGING_ENV,
+                        KIT_MESSAGING_LOG,
+                        { token: KitLifecycle, optional: true },
+                    ],
                 },
                 MessagingLifecycle,
                 ...outbox,

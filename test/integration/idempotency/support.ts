@@ -1,6 +1,7 @@
 // Стенд уровня I для /idempotency (prd.md §3.3а v1.14, AC-4.14, AC-9.5): приложение kit с KitConfigModule,
 // VerdeectAuthModule (издатель createTestSigner), KitDatabaseModule и KitIdempotencyModule на фикстуре БД; маршруты
-// /echo (пользователь), /strict (required), /service и /service-plain (служба), /open (без guard'а).
+// /echo (пользователь), /strict (required), /service и /service-plain (служба), /open (без guard'а), /secret и
+// /secret-list, /secret-stamp (redact, AC-4.14 v1.26).
 import {
     Body,
     Controller,
@@ -11,6 +12,7 @@ import {
     UseGuards,
     type DynamicModule,
 } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { RequireService, VerdeectAuthGuard, VerdeectAuthModule } from '@verdeect/auth/nest';
 import { createTestSigner, TEST_RESOURCE, type TestSigner } from '@verdeect/auth/testing';
@@ -94,6 +96,18 @@ async function handle(body: unknown, reply: FastifyReply): Promise<unknown> {
     return { n, body };
 }
 
+/** Экземпляр класса с `toJSON`: клиент получает результат `toJSON`, а не свои поля (KT-79). */
+class Stamp {
+    constructor(readonly n: number) {}
+
+    toJSON(): { at: string; secret: string } {
+        return {
+            at: new Date(Date.UTC(2026, 10, 13, 12, 0, 0, this.n)).toISOString(),
+            secret: 'stamp',
+        };
+    }
+}
+
 @Controller()
 @UseGuards(VerdeectAuthGuard)
 class EchoController {
@@ -122,6 +136,31 @@ class EchoController {
         @Res({ passthrough: true }) reply: FastifyReply,
     ): Promise<unknown> {
         return handle(body, reply);
+    }
+
+    @Post('secret')
+    @Idempotent({ redact: ['secret'] })
+    secret(@Res({ passthrough: true }) reply: FastifyReply): { id: number; secret: string } {
+        handlers.calls += 1;
+        void reply.header('Location', `/secret/${handlers.calls}`);
+
+        return { id: handlers.calls, secret: `sk_${randomBytes(16).toString('hex')}` };
+    }
+
+    @Post('secret-stamp')
+    @Idempotent({ redact: ['secret'] })
+    secretStamp(): Stamp {
+        handlers.calls += 1;
+
+        return new Stamp(handlers.calls);
+    }
+
+    @Post('secret-list')
+    @Idempotent({ redact: ['secret'] })
+    secretList(): { secret: string }[] {
+        handlers.calls += 1;
+
+        return [{ secret: `sk_${randomBytes(16).toString('hex')}` }];
     }
 
     @Post('service-plain')

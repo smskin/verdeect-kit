@@ -298,6 +298,9 @@ describe('UC-16: архив пакета', () => {
         expect(specifiers.filter((specifier) => /^amqplib(\/.*)?$/.test(specifier))).toEqual([]);
         expect(files).not.toContain(join('messaging', 'index.js'));
         expect(files).not.toContain(join('messaging', 'peer.js'));
+        // KT-77: /testing не грузит модуль Nest БД; pg.js требует pg при импорте — только динамически (AC-4.19).
+        expect(files).not.toContain(join('database', 'kit-database.module.js'));
+        expect(files).not.toContain(join('database', 'pg.js'));
     });
 
     it('AC-1.2: в статическом графе dist/messaging/index.js нет top-level await', () => {

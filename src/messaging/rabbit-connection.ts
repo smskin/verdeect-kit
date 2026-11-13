@@ -72,8 +72,8 @@ export interface RabbitConnectionOptions {
     readonly url: string;
     /** Пауза переподключения и повтора настройки канала, с (RABBITMQ_RECONNECT_SECONDS). */
     readonly reconnectSeconds: number;
-    /** Общий срок обработчиков остановки, мс (handlersDeadlineMs). */
-    readonly deadlineMs: number;
+    /** Срок обработчиков остановки, мс (handlersDeadlineMs); вызывается при первом shutdownDeadline() — начало шага 3. */
+    readonly deadlineMs: () => number;
 }
 
 /** Первый исход настройки канала после createChannel. */
@@ -352,12 +352,22 @@ export class RabbitConnection {
 
     /**
      * Общий срок остановки обмена с брокером: отсчёт — с первого вызова в beforeApplicationShutdown (relay,
-     * подписчик), resolve(false) через `deadlineMs`. Nest вызывает хуки по очереди — у каждого свой срок сложился бы.
+     * подписчик), resolve(false) через `deadlineMs()`. Nest вызывает хуки по очереди — у каждого свой срок сложился бы.
+     * Срок 0 — ожидание завершается сразу.
      */
     shutdownDeadline(): Promise<false> {
-        this.stopDeadline ??= sleep(this.options.deadlineMs, false, { ref: false });
+        this.stopDeadline ??= this.armStopDeadline();
 
         return this.stopDeadline;
+    }
+
+    private armStopDeadline(): Promise<false> {
+        const deadlineMs = this.options.deadlineMs();
+        if (deadlineMs <= 0) {
+            return Promise.resolve(false);
+        }
+
+        return sleep(deadlineMs, false, { ref: false });
     }
 
     /** Первый исход настройки канала: готов, фатальная ошибка `setup` или прочая ошибка стадии. */

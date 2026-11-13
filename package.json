@@ -1,6 +1,6 @@
 {
   "name": "@verdeect/kit",
-  "version": "1.0.0-rc.6",
+  "version": "1.0.0-rc.7",
   "description": "Общий инфраструктурный пакет сервисов Вердикта 2.0: конфигурация, наблюдаемость, HTTP, БД с RLS, идемпотентность, сообщения, шифр, Redis, тестовый контур",
   "keywords": [
     "verdeect",
@@ -56,6 +56,10 @@
     "./redis": {
       "types": "./dist/redis/index.d.ts",
       "default": "./dist/redis/index.js"
+    },
+    "./testing/timeout-scale": {
+      "types": "./dist/testing/timeout-scale.d.ts",
+      "default": "./dist/testing/timeout-scale.js"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",

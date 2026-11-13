@@ -13,6 +13,9 @@ import { REPO_ROOT, runCommand } from './support/pack.js';
 const VMALERT_IMAGE = 'victoriametrics/vmalert:v1.156.0';
 const VMALERT_TOOL_IMAGE = 'victoriametrics/vmalert-tool:v1.156.0';
 
+// Пропуск неподписанной версии ожидаем на время перехода — prd.md §3.4, AC-5.22, AC-2.11 v1.27.
+const WITHOUT_RULE = ['verdeect_events_skipped_total'];
+
 const FIXTURES = join(REPO_ROOT, 'test', 'fixtures', 'alerts');
 const THRESHOLDS = [
     'verdeect_kit_threshold:outbox_pending',
@@ -75,17 +78,23 @@ describe('UC-13: шаблон алертов пакета', () => {
         expect(`${result.stdout}${result.stderr}`).toContain('SUCCESS');
     });
 
-    it('AC-2.11: правило на каждую метрику verdeect_* реестра kitMetrics', async () => {
+    it('AC-2.11: правило на каждую метрику verdeect_* реестра kitMetrics, кроме исключений', async () => {
         const names = (await kitMetrics({ service: 'kit-test' }).registry.getMetricsAsJSON())
             .map((metric) => metric.name)
             .filter((name) => name.startsWith('verdeect_'));
 
-        expect(names).toHaveLength(6);
-        for (const name of names) {
+        expect(names).toHaveLength(7);
+        for (const name of names.filter((metric) => !WITHOUT_RULE.includes(metric))) {
             expect(
                 rules.some((rule) => new RegExp(`\\b${name}\\b`).test(rule.expr)),
                 name,
             ).toBe(true);
+        }
+    });
+
+    it('AC-2.11: verdeect_events_skipped_total без правила алерта', () => {
+        for (const name of WITHOUT_RULE) {
+            expect(rules.some((rule) => new RegExp(`\\b${name}\\b`).test(rule.expr))).toBe(false);
         }
     });
 

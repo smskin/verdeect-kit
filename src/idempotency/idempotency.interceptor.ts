@@ -2,7 +2,7 @@
 // idempotency.store.ts (KEY_FORMAT, canonicalJson, отпечаток, begin с FOR UPDATE, брошенная in_progress через 5 мин,
 // mismatch до in_progress, release при ошибке, один повтор complete). По PRD: область user/agent → (tenant, sub),
 // service → client_id или (client_id, поле tenantFromBody); Location в ответе; без принципала — 500; коды — DomainError
-// словаря /http; сравнение области — IS NOT DISTINCT FROM (tenant nullable).
+// словаря /http; сравнение области — IS NOT DISTINCT FROM (tenant nullable); redact — копия тела в хранилище (v1.26).
 import { createHash, randomUUID } from 'node:crypto';
 import {
     Inject,
@@ -247,11 +247,36 @@ export class IdempotencyInterceptor implements NestInterceptor {
             scope,
             key,
             begin.attempt,
-            { status, body: body ?? null, location },
+            { status, body: this.redacted(body ?? null, options.redact, fields), location },
             fields,
         );
 
         return body;
+    }
+
+    /**
+     * Копия тела для хранилища: поля `redact` простого объекта → `null`. Не простой объект (`Date`, `Buffer`, экземпляр
+     * класса, в том числе с `toJSON`), массив и не объект — как есть (KT-79).
+     */
+    private redacted(
+        body: unknown,
+        redact: readonly string[] | undefined,
+        fields: Record<string, unknown>,
+    ): unknown {
+        if (redact === undefined || !isPlainObject(body)) {
+            return body;
+        }
+        const copy: Record<string, unknown> = { ...body };
+        const hidden = redact.filter((name) => Object.hasOwn(copy, name));
+        for (const name of hidden) {
+            copy[name] = null;
+        }
+        this.logger.debug(
+            { ...fields, fields: hidden.length },
+            'idempotency: поля ответа скрыты в хранилище',
+        );
+
+        return copy;
     }
 
     private where(scope: IdempotencyScope, key: string): SQL | undefined {
@@ -436,4 +461,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
             captureError(error);
         }
     }
+}
+
+/** Простой объект: прототип `Object.prototype` или `null`. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (value === null || typeof value !== 'object') {
+        return false;
+    }
+    const prototype: unknown = Object.getPrototypeOf(value);
+
+    return prototype === Object.prototype || prototype === null;
 }
