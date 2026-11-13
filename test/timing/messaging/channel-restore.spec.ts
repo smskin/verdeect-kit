@@ -12,6 +12,7 @@ import type { RabbitConnection } from '../../../src/messaging/rabbit-connection.
 import { HealthRegistry } from '../../../src/observability/health-registry.js';
 import { countQueries } from '../../../src/testing/count-queries.js';
 import { TEST_TIMEOUT_SCALE } from '../../../src/testing/timeout-scale.js';
+import { declareEventsExchange } from '../../../src/testing/index.js';
 import { BrokerClient } from '../../support/broker.js';
 import { ctx, truncateFixtures } from '../../support/database.js';
 import {
@@ -42,7 +43,7 @@ describe('UC-5: восстановление канала relay', () => {
     });
 
     afterEach(async () => {
-        await broker.declareEventsExchange();
+        await declareEventsExchange();
         await app.close();
         await broker.close();
         await truncateFixtures();
@@ -67,7 +68,7 @@ describe('UC-5: восстановление канала relay', () => {
         );
         expect(performance.now() - t0).toBeLessThan(2_000 * TEST_TIMEOUT_SCALE);
 
-        await broker.declareEventsExchange();
+        await declareEventsExchange();
         await waitUntil(
             async () => (await outboxRows())[0]?.published_at !== null,
             'строка опубликована',
@@ -101,7 +102,7 @@ describe('UC-5: восстановление канала relay', () => {
         claim.mockRestore();
 
         const t0 = performance.now();
-        await broker.declareEventsExchange();
+        await declareEventsExchange();
         await waitUntil(
             async () => (await outboxRows()).every((row) => row.published_at !== null),
             'все опубликованы',

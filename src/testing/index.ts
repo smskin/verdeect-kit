@@ -29,4 +29,14 @@ export type { KitCountablePool, KitCountQueriesOptions } from './count-queries.j
 export { assertAppRoleIsNotOwner, assertStrictTenantIsolation } from './tenant-isolation.js';
 export type { KitQueryable, KitTenantIsolationOptions } from './tenant-isolation.js';
 export { assertOutboxCoverage, expectOutbox } from './outbox-coverage.js';
-export { publishTestEvent, waitForBrokerReady, waitForInbox } from './test-events.js';
+export type { KitOutboxTrace } from './outbox-coverage.js';
+export {
+    declareEventsExchange,
+    publishTestEvent,
+    waitForBrokerReady,
+    waitForInbox,
+} from './test-events.js';
+export { createTestDb } from './create-test-db.js';
+export type { KitTestDb } from './create-test-db.js';
+export { CONNECTION_TIMEOUT_MS as KIT_DB_CONNECTION_TIMEOUT_MS } from '../database/timeouts.js';
+export { messagingCleanupLockKey } from '../internal/outbox-policy.js';

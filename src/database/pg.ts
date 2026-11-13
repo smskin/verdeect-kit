@@ -14,8 +14,7 @@ export type { Pool, PoolClient, PoolConfig } from 'pg';
 /** Модуль `pg` (значение по умолчанию: `Pool`, `Client`, `escapeLiteral`). */
 export type PgModule = typeof Pg;
 
-/** Срок установки соединения CLI, миграций и `prepareDatabase`, мс (эталон O pool-options.ts). */
-export const CONNECTION_TIMEOUT_MS = 5000;
+export { CONNECTION_TIMEOUT_MS } from './timeouts.js';
 
 /** Драйвер и migrator Drizzle для node-postgres. */
 export interface DrizzleDriver {

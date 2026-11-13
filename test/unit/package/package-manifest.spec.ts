@@ -50,7 +50,7 @@ const OPTIONAL_PEERS: Record<string, string> = {
 };
 
 describe('AC-1.1: точки входа пакета (E1–E8)', () => {
-    it('AC-1.1: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./redis, ./testing, ./package.json', () => {
+    it('AC-1.1, AC-9.6: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./redis, ./testing/timeout-scale, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
             [
                 './config',
@@ -63,6 +63,7 @@ describe('AC-1.1: точки входа пакета (E1–E8)', () => {
                 './package.json',
                 './redis',
                 './testing',
+                './testing/timeout-scale',
             ].sort(),
         );
     });
@@ -125,6 +126,15 @@ describe('AC-1.1: точки входа пакета (E1–E8)', () => {
 
     it('§3.2: files содержит alerts (шаблон alerts/verdeect-kit.rules.yml)', () => {
         expect(manifest.files).toContain('alerts');
+    });
+
+    it('AC-9.6: ./testing/timeout-scale — {types, default} перед ./testing', () => {
+        expect(manifest.exports['./testing/timeout-scale']).toEqual({
+            types: './dist/testing/timeout-scale.d.ts',
+            default: './dist/testing/timeout-scale.js',
+        });
+        const keys = Object.keys(manifest.exports);
+        expect(keys.indexOf('./testing/timeout-scale')).toBeLessThan(keys.indexOf('./testing'));
     });
 
     it("AC-1.1: ./testing — ключи ровно ['types', 'development'], без default (NFR-4)", () => {

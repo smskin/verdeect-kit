@@ -16,6 +16,8 @@ export interface KitRabbitWorker {
     readonly url: string;
     /** amqp://<администратор>@host:port/<vhost> — полные права (тесты, publishTestEvent). */
     readonly adminUrl: string;
+    /** Префиксы публикации пользователя воркера (`startTestStack({publishes})`); пусто — не публикует. */
+    readonly publishes: readonly string[];
 }
 
 /** Состояние очереди по management API. */
@@ -267,6 +269,7 @@ export async function prepareWorkerVhosts(
             vhost,
             url: amqpUrl(options.amqpAdminUrl, vhost, password, vhost),
             adminUrl: amqpUrl(options.amqpAdminUrl, admin.user, adminPassword, vhost),
+            publishes: options.publishes ?? [],
         });
     }
 

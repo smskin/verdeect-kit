@@ -1,6 +1,7 @@
 // AC-5.13 (UC-14): покрытие outbox — CompanyCreated покрыт успешным expectOutbox, упавший expectOutbox(CompanyArchived)
 // покрытия не даёт (prd.md §3.8; GAP-2). Строка — SQL под ролью приложения в транзакции Db: expectOutbox проверяет
-// строку, а не путь записи; брокера в этом прогоне нет.
+// строку, а не путь записи; брокера в этом прогоне нет. v1.26: use-case со своей транзакцией — expectOutbox({app, traceId})
+// после COMMIT тоже засчитывается.
 import 'reflect-metadata';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -49,6 +50,17 @@ describe('UC-14: покрытие outbox потребителя', () => {
                         '{"companyId":"cmp_c","name":"Covered"}')`);
             await expectOutbox(tx, CompanyCreated);
         });
+    });
+
+    it('AC-5.13: use-case со своей транзакцией засчитывается — expectOutbox({app, traceId}) после COMMIT', async () => {
+        const traceId = newId('trc');
+        await ctx.get(Db).transaction({ ...acme, traceId }, async (tx) => {
+            await tx.execute(sql`insert into consumer.outbox (id, tenant, type, version, subject_id, actor, trace_id, data)
+                values (${newId('evt')}, 'acme', 'consumer.company.created', 1, 'cmp_t', '{}', ${traceId},
+                        '{"companyId":"cmp_t","name":"Own"}')`);
+        });
+
+        await expectOutbox({ app: ctx, traceId }, CompanyCreated, { subjectId: 'cmp_t' });
     });
 
     it('AC-5.13: упавший expectOutbox(CompanyArchived) покрытия не даёт', async () => {

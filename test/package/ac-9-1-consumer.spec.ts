@@ -91,11 +91,11 @@ describe('UC-1: проекты-потребители', () => {
         expect(result.code, describeResult(result)).toBe(0);
     });
 
-    it('AC-1.1: /testing без условия development — ERR_PACKAGE_PATH_NOT_EXPORTED', async () => {
+    it('AC-1.1, AC-9.6: /testing без условия development — ERR_PACKAGE_PATH_NOT_EXPORTED, /testing/timeout-scale — ok', async () => {
         const result = await runInConsumer(dir(minimal), 'node', ['import-check.mjs']);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok redis:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED',
+            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok redis:ok testing:ERR_PACKAGE_PATH_NOT_EXPORTED timeout-scale:ok',
         );
     });
 
@@ -106,7 +106,7 @@ describe('UC-1: проекты-потребители', () => {
         ]);
 
         expect(result.stdout.trim(), describeResult(result)).toBe(
-            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok redis:ok testing:ok',
+            'config:ok crypto:ok database:ok http:ok idempotency:ok messaging:ok observability:ok redis:ok testing:ok timeout-scale:ok',
         );
     });
 

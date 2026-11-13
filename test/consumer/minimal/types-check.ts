@@ -96,7 +96,7 @@ export const headers: Readonly<Record<string, string>> = new DomainError(
 ).headers;
 export const multiStatus: KitErrorEntry = { status: [403, 429], message: 'Лимит тарифа' };
 
-// /database, /idempotency, /testing (E4, E5): типы контекста, опций @Idempotent и области воркера (rabbitmq — E5, redisPrefix — E8).
+// /database, /idempotency, /testing (E4, E5): типы контекста, опций @Idempotent и области воркера (rabbitmq — E5, adminUrl — AC-1.15, redisPrefix — E8).
 export const dbContext: DbContext = { tenant: null, traceId: 't', actor: { channel: 'system' } };
 export const idempotentOptions: KitIdempotentOptions = { required: true, tenantFromBody: 'tenant' };
 export const scope: KitWorkerScope = {
@@ -104,6 +104,7 @@ export const scope: KitWorkerScope = {
     rabbitmq: {
         vhost: 'svc-test-00000000-w1',
         url: 'amqp://u:p@localhost:5672/svc-test-00000000-w1',
+        adminUrl: 'amqp://a:p@localhost:5672/svc-test-00000000-w1',
     },
     redisPrefix: 'svc:w1:',
 };

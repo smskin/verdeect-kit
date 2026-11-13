@@ -1,5 +1,5 @@
 // workerScope (prd.md §3.8 v1.14, UC-14): E4 — tenant; E5 — rabbitmq (vhost воркера из startTestStack, AC-5.18);
-// E8 — redisPrefix <svc>:w<N>: (AC-8.5). Записей в таблицы не создаёт (N2, CE-4).
+// E8 — redisPrefix <svc>:w<N>: (AC-8.5); adminUrl воркера (AC-1.15, v1.26). Записей в таблицы не создаёт (N2, CE-4).
 import { randomBytes } from 'node:crypto';
 import { missingPeerMessage } from '../internal/peer.js';
 import type { KitRabbitWorker } from './rabbitmq-admin.js';
@@ -22,7 +22,14 @@ export interface KitWorkerScope {
      * `RABBITMQ_URL` тестов. Удаляется в teardown прогона (AC-5.18).
      * @throws {TypeError} стек без `rabbitmq: true` или нет записи для воркера (при обращении).
      */
-    readonly rabbitmq: { readonly vhost: string; readonly url: string };
+    readonly rabbitmq: {
+        /** Имя vhost воркера. */
+        readonly vhost: string;
+        /** Пользователь воркера с правами M3 сервиса — `RABBITMQ_URL` тестов. */
+        readonly url: string;
+        /** Администратор vhost воркера с полными правами (свои exchange и очереди теста, AC-1.15). */
+        readonly adminUrl: string;
+    };
     /**
      * Префикс ключей и каналов Redis воркера `<svc>:w<VITEST_POOL_ID>:` — лежит внутри прав ACL сервиса
      * (`startTestStack({redis: true})`, AC-8.5); подставляется в приложение через `redisWorkerOverride()`.
@@ -96,7 +103,7 @@ function rabbitmqOf(workers: readonly KitRabbitWorker[] | undefined): KitWorkerS
         );
     }
 
-    return { vhost: worker.vhost, url: worker.url };
+    return { vhost: worker.vhost, url: worker.url, adminUrl: worker.adminUrl };
 }
 
 function redisPrefixOf(service: string | undefined): string {
