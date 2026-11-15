@@ -3,6 +3,8 @@
 // O instance-shutdown.ts begin(). Остаток срока от начала остановки — shutdownRemainingMs (AC-5.11). Механизм шагов и сторож с exit(1) написаны по PRD: эталона нет.
 // Два режима (KT-11): сигнал ОС (listen) — сторож SHUTDOWN_TIMEOUT_MS от сигнала, по окончании шагов сторож unref и
 // выход 0 сам; программный close() — те же шаги без сторожа и exit, ошибки участников — отказ close().
+// v1.30 (BFF-77): шаг 2 в два этапа — 2a участники сервиса, 2b участник http пакета (registerHttpServer, server.close());
+// порядок не зависит от порядка регистрации.
 import * as Sentry from '@sentry/nestjs';
 import type { Logger } from 'pino';
 import type { KitBaseEnv } from '../config/fragments.js';
@@ -10,10 +12,17 @@ import type { HealthRegistry } from './health-registry.js';
 import { sanitizeError } from './sanitize-error.js';
 import { captureError } from './sentry.js';
 
-/** Шаг участника (§3.2): 2 — приём соединений, 3 — подписчики и фоновые задачи, 4 — пулы, 5 — сервер метрик. */
+/**
+ * Шаг участника (§3.2): 2 — приём соединений, 3 — подписчики и фоновые задачи, 4 — пулы, 5 — сервер метрик.
+ * Шаг 2 сервиса — «хук `onStopAccepting`»: закрытие долгих соединений (WebSocket — своим кодом, например 1001; SSE —
+ * концом ответа); выполняется до `server.close()` участника `http` пакета при любом порядке регистрации.
+ */
 export type KitShutdownStep = 2 | 3 | 4 | 5;
 
-/** Участник остановки: участники одного шага работают параллельно. */
+/**
+ * Участник остановки: участники одного шага работают параллельно; на шаге 2 участники сервиса завершаются до
+ * `server.close()` участника `http` пакета.
+ */
 export interface KitShutdownParticipant {
     /** Имя для логов и сторожа. */
     readonly name: string;
@@ -39,6 +48,24 @@ export function shutdownRemainingMs(lifecycle: KitLifecycle): number | undefined
     return deadline === undefined ? undefined : deadline - performance.now();
 }
 
+/** Этап шага 2 (§3.2 v1.30): 2a — участники сервиса, 2b — участник `http` пакета. */
+type ShutdownStage = '2a' | '2b';
+
+/** Участники `http` пакета (этап 2b): отличаются меткой, а не именем — сервис тоже может назвать участника 'http'. */
+const httpServers = new WeakSet<KitShutdownParticipant>();
+
+/**
+ * Регистрирует участника `http` пакета — этап 2b шага 2 (§3.2): вызывается после завершения участников шага 2 сервиса.
+ * @internal
+ */
+export function registerHttpServer(
+    lifecycle: KitLifecycle,
+    participant: KitShutdownParticipant,
+): void {
+    lifecycle.register(participant, { step: 2 });
+    httpServers.add(participant);
+}
+
 /** Остановка экземпляра приложения по шагам 1–5 (§3.2). Остановка одна на экземпляр. */
 export class KitLifecycle {
     private readonly logger: Logger;
@@ -51,6 +78,7 @@ export class KitLifecycle {
     private watchdog: NodeJS.Timeout | null = null;
     private finished = false;
     private currentStep: 1 | KitShutdownStep = 1;
+    private currentStage: ShutdownStage | null = null;
     private readonly pending = new Set<string>();
 
     constructor(options: {
@@ -64,7 +92,10 @@ export class KitLifecycle {
         this.drainMs = options.env.SHUTDOWN_DRAIN_MS;
     }
 
-    /** Регистрирует участника шага; после начала остановки — ошибка разработчика. */
+    /**
+     * Регистрирует участника шага; после начала остановки — ошибка разработчика. Участники шага 2 сервиса («хук
+     * `onStopAccepting`») вызываются одновременно и завершаются до `server.close()` участника `http` пакета.
+     */
     register(
         participant: KitShutdownParticipant,
         options: { readonly step: KitShutdownStep },
@@ -143,19 +174,47 @@ export class KitLifecycle {
 
     private async runStep(step: KitShutdownStep, failures: unknown[]): Promise<void> {
         const list = this.participants.get(step) ?? [];
-        const startedAt = performance.now();
         this.currentStep = step;
+        if (step !== 2) {
+            await this.runStage(step, null, list, failures);
+            return;
+        }
+        // Шаг 2a: участники сервиса закрывают долгие соединения; 2b: затем server.close() участника http.
+        await this.runStage(
+            step,
+            '2a',
+            list.filter((participant) => !httpServers.has(participant)),
+            failures,
+        );
+        await this.runStage(
+            step,
+            '2b',
+            list.filter((participant) => httpServers.has(participant)),
+            failures,
+        );
+    }
+
+    /** Этап: участники одновременно, pending — имена участников этапа. */
+    private async runStage(
+        step: KitShutdownStep,
+        stage: ShutdownStage | null,
+        list: readonly KitShutdownParticipant[],
+        failures: unknown[],
+    ): Promise<void> {
+        const startedAt = performance.now();
+        const fields = stage === null ? { step } : { step, stage };
+        this.currentStage = stage;
         for (const participant of list) {
             this.pending.add(participant.name);
         }
         this.logger.debug(
-            { step, participants: list.map((participant) => participant.name) },
+            { ...fields, participants: list.map((participant) => participant.name) },
             'остановка: шаг начат',
         );
         await Promise.allSettled(
             list.map((participant) => this.stopParticipant(step, participant, failures)),
         );
-        this.logger.debug({ step, durationMs: elapsed(startedAt) }, 'остановка: шаг завершён');
+        this.logger.debug({ ...fields, durationMs: elapsed(startedAt) }, 'остановка: шаг завершён');
     }
 
     private async stopParticipant(
@@ -199,6 +258,7 @@ export class KitLifecycle {
                 {
                     code: 'SHUTDOWN_TIMEOUT',
                     step: this.currentStep,
+                    ...(this.currentStage === null ? {} : { stage: this.currentStage }),
                     pending: [...this.pending],
                     timeoutMs: this.timeoutMs,
                 },

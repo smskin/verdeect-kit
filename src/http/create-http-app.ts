@@ -1,7 +1,7 @@
 // createHttpApp (prd.md §3.5, AC-3.4, AC-3.5, AC-3.12; §3.2 шаги 2–3; KT-11, KT-15 п. 1). Эталоны: O/P main.ts (NestFactory,
 // FastifyAdapter({genReqId}), bufferLogs, useLogger), P/O configure-http-server.ts + security-headers.ts (onRequest на
 // reply.raw: nosniff, no-referrer), регистрация фильтра — KitHttpCoreModule. По PRD: участники KitLifecycle вместо
-// enableShutdownHooks/InstanceShutdown — шаг 2 `http` (server.close Fastify), шаг 3 `nest` (исходный app.close Nest);
+// enableShutdownHooks/InstanceShutdown — шаг 2б `http` (server.close Fastify, после участников шага 2 сервиса), шаг 3 `nest` (исходный app.close Nest);
 // app.close() экземпляра = lifecycle.close(); своих парсеров тела нет (общий лимит — bodyLimit адаптера, лимит маршрута — onRoute в configureFastify).
 // v1.21 (BFF-58): securityHeaders 'api' | {referrerPolicy} | false (AC-3.5), exceptionFilter (AC-3.14), configureFastify
 // до app.init() (AC-3.12).
@@ -13,7 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Logger } from 'pino';
 import { assertServiceName } from '../internal/service-name.js';
 import { KIT_LOGGER } from '../internal/tokens.js';
-import { KitLifecycle } from '../observability/lifecycle.js';
+import { KitLifecycle, registerHttpServer } from '../observability/lifecycle.js';
 import { traceIdGenerator } from '../observability/logger-options.js';
 import type { KitRedaction } from '../observability/redaction.js';
 import { KitHttpCoreModule, type KitHttpLoggerOptions } from './kit-http-core.module.js';
@@ -186,21 +186,18 @@ function installLifecycle(
     logger: Logger,
 ): void {
     const lifecycle = app.get(KitLifecycle);
-    lifecycle.register(
-        {
-            name: 'http',
-            stop: async () => {
-                const startedAt = performance.now();
-                await closeServer();
-                logger.debug(
-                    { durationMs: Math.round(performance.now() - startedAt) },
-                    'http: приём соединений остановлен',
-                );
-            },
+    registerHttpServer(lifecycle, {
+        name: 'http',
+        stop: async () => {
+            const startedAt = performance.now();
+            await closeServer();
+            logger.debug(
+                { durationMs: Math.round(performance.now() - startedAt) },
+                'http: приём соединений остановлен',
+            );
         },
-        { step: 2 },
-    );
-    logger.debug({ participant: 'http' }, 'http: участник шага 2 зарегистрирован');
+    });
+    logger.debug({ participant: 'http', stage: '2b' }, 'http: участник шага 2 зарегистрирован');
     lifecycle.register(
         {
             name: 'nest',
