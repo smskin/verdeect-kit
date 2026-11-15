@@ -3,8 +3,11 @@
 // SHUTDOWN_TIMEOUT, событие GlitchTip, exit(1); в срок — exit до срока не вызывается, к сроку (дескрипторы Vitest
 // открыты) — SHUTDOWN_NOT_EXITED и exit(1) (prd.md §3.2, CE-7; KT-10, KT-11). Образец срока от сигнала — P
 // test/timing/observability/ac-6-6-shutdown-deadline.timing-spec.ts. Sentry — настоящий SDK с поддельным транспортом.
+// v1.30 (BFF-77): шаг 2 в два этапа — участники сервиса (2a) завершаются до server.close() участника http (2b) при
+// любом порядке регистрации; участник 2a сверх срока — общий сторож, http не вызывается. Порядок — на промисах.
 import * as Sentry from '@sentry/nestjs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerHttpServer } from '../../../src/observability/lifecycle.js';
 import { initFakeSentry, type DeliveredEvent } from '../../support/fake-sentry.js';
 import { lifecycleStand, signalSnapshot, sleep } from './support.js';
 
@@ -137,5 +140,88 @@ describe('UC-8: срок остановки', () => {
             expect.objectContaining({ level: 50, code: 'SHUTDOWN_NOT_EXITED' }),
         );
         expect(delivered.map((event) => event.tags.code)).toEqual(['SHUTDOWN_NOT_EXITED']);
+    });
+
+    it('AC-2.10: участник сервиса шага 2, зарегистрированный после участника http, вызывается и завершается до server.close()', async () => {
+        const { lifecycle, exit } = lifecycleStand({
+            SHUTDOWN_TIMEOUT_MS: 5000,
+            SHUTDOWN_DRAIN_MS: 0,
+        });
+        const journal: string[] = [];
+        const releases: (() => void)[] = [];
+        const participant = (name: string) => ({
+            name,
+            stop: async () => {
+                journal.push(`${name}:start`);
+                await new Promise<void>((resolve) => {
+                    releases.push(resolve);
+                    // Оба участника 2a стартовали — отпустить обоих: одновременный вызов без sleep.
+                    if (releases.length === 2) {
+                        releases.forEach((release) => release());
+                    }
+                });
+                journal.push(`${name}:end`);
+            },
+        });
+        registerHttpServer(lifecycle, {
+            name: 'http',
+            stop: () => {
+                journal.push('http:start');
+                journal.push('http:end');
+            },
+        });
+        lifecycle.register(participant('ws'), { step: 2 });
+        lifecycle.register(participant('sse'), { step: 2 });
+
+        await lifecycle.close();
+
+        const index = (event: string) => journal.indexOf(event);
+        expect(journal).toHaveLength(6);
+        expect(Math.max(index('ws:start'), index('sse:start'))).toBeLessThan(
+            Math.min(index('ws:end'), index('sse:end')),
+        );
+        expect(index('http:start')).toBeGreaterThan(Math.max(index('ws:end'), index('sse:end')));
+        expect(exit).not.toHaveBeenCalled();
+    });
+
+    it('AC-2.10: участник 2а сверх SHUTDOWN_TIMEOUT_MS — общий сторож, участник http не вызывается', async () => {
+        const { lifecycle, log, exit, exitedAt } = lifecycleStand({
+            SHUTDOWN_TIMEOUT_MS: 300,
+            SHUTDOWN_DRAIN_MS: 0,
+        });
+        const journal: string[] = [];
+        registerHttpServer(lifecycle, {
+            name: 'http',
+            stop: () => void journal.push('http:start'),
+        });
+        lifecycle.register(
+            {
+                name: 'ws',
+                stop: () =>
+                    new Promise<void>((resolve) => {
+                        releaseHanging = resolve;
+                    }),
+            },
+            { step: 2 },
+        );
+        lifecycle.listen(['SIGTERM']);
+
+        const signalledAt = performance.now();
+        process.emit('SIGTERM');
+        const elapsed = (await exitedAt) - signalledAt;
+
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(elapsed).toBeGreaterThanOrEqual(300);
+        expect(log.records()).toContainEqual(
+            expect.objectContaining({
+                level: 50,
+                code: 'SHUTDOWN_TIMEOUT',
+                step: 2,
+                stage: '2a',
+                pending: ['ws'],
+            }),
+        );
+        expect(delivered.map((event) => event.tags.code)).toEqual(['SHUTDOWN_TIMEOUT']);
+        expect(journal).toEqual([]);
     });
 });

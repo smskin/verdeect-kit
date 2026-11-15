@@ -18,7 +18,7 @@
 
 ## Структура проекта
 
-Состояние: последний опубликованный выпуск — `1.0.0-rc.7`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.8` (`docs/releasing.md`).
+Состояние: последний опубликованный выпуск — `1.0.0-rc.8`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.9` (`docs/releasing.md`).
 
 ```
 verdeect-kit/

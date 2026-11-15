@@ -1,7 +1,7 @@
 // §3.2 KitLifecycle (U, UC-8; NFR-8; KT-10, KT-11): программное закрытие close() — шаги 1–5 по порядку, /health 503,
 // без сторожа и exit, ошибки участников — отказ close(); режим сигнала — сторож от сигнала, после шагов unref, к сроку
 // SHUTDOWN_NOT_EXITED или SHUTDOWN_TIMEOUT и exit(1). Фейковые таймеры, поддельные участники; process.exit подменён.
-// Реальные сроки — test/timing/observability (AC-2.10, AC-2.13).
+// Реальные сроки — test/timing/observability (AC-2.10, AC-2.13). v1.30 (BFF-77): ошибка участника 2a не отменяет 2b.
 import * as Sentry from '@sentry/nestjs';
 import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +10,7 @@ import {
     KitLifecycle,
     type KitShutdownParticipant,
 } from '../../../src/observability/index.js';
-import { shutdownRemainingMs } from '../../../src/observability/lifecycle.js';
+import { registerHttpServer, shutdownRemainingMs } from '../../../src/observability/lifecycle.js';
 import { collector } from './support.js';
 
 vi.mock('@sentry/nestjs', () => ({ captureException: vi.fn(), flush: vi.fn(async () => true) }));
@@ -136,6 +136,29 @@ describe('UC-8: программное закрытие close()', () => {
             expect.objectContaining({ level: 50, step: 3, participant: 'relay' }),
         );
         expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('AC-2.10: участник сервиса шага 2 бросает ошибку — участник http (registerHttpServer) всё равно вызывается, шаги 3–5 выполняются', async () => {
+        const { lifecycle, journal, output } = setup();
+        const failure = new Error('ws failed');
+        registerHttpServer(lifecycle, participant('http', journal));
+        lifecycle.register(
+            participant('ws', journal, () => {
+                throw failure;
+            }),
+            { step: 2 },
+        );
+        lifecycle.register(participant('relay', journal), { step: 3 });
+
+        const closing = lifecycle.close();
+        const result = expect(closing).rejects.toBe(failure);
+        await vi.advanceTimersByTimeAsync(DRAIN_MS);
+        await result;
+
+        expect(journal).toEqual(['ws:start', 'http:start', 'http:end', 'relay:start', 'relay:end']);
+        expect(output.records()).toContainEqual(
+            expect.objectContaining({ level: 50, step: 2, participant: 'ws' }),
+        );
     });
 
     it('§3.2: close() — несколько ошибок → AggregateError', async () => {

@@ -2,7 +2,8 @@
 // шаги 1–5, §3.5): /health 503 раньше, чем HTTP перестаёт принимать соединения; начатый долгий запрос дорабатывает с 200;
 // новый после шага 2 — отказ соединения; выход 0 в срок; открытый поток SSE закрывает участник шага 2 сервиса. Перенос O
 // ac-10-8-shutdown.http-spec.ts и or-106-health-stopping-first.http-spec.ts. Ребёнок импортирует dist, собранный в
-// beforeAll в node_modules/.cache (dist/ не трогается).
+// beforeAll в node_modules/.cache (dist/ не трогается). v1.30 (BFF-77): участник шага 2 сервиса закрывает WebSocket кодом
+// 1001 раньше server.close() участника http — клиент получает 1001, а не 1005 подмены server.close (как @fastify/http-proxy).
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +26,7 @@ interface Started {
     readonly output: () => string;
 }
 
-function start(mode: 'plain' | 'sse'): Promise<Started> {
+function start(mode: 'plain' | 'sse' | 'ws'): Promise<Started> {
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [CHILD, mode, DIST], {
             cwd: ROOT,
@@ -65,6 +66,13 @@ function start(mode: 'plain' | 'sse'): Promise<Started> {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Тест упал до выхода ребёнка — остановить его, чтобы процесс не держал порты. */
+function stopChild(app: Started): void {
+    if (app.child.exitCode === null && app.child.signalCode === null) {
+        app.child.kill('SIGKILL');
+    }
+}
 
 /** Итог пробника: `code` — ошибка соединения (null — ответ получен); `handshake` — TCP-соединение было установлено. */
 interface Probe {
@@ -216,17 +224,54 @@ describe('UC-8: остановка HTTP под нагрузкой', () => {
 
     it('AC-3.9: открытый долгий поток SSE закрывает участник шага 2 сервиса, шаг 2 завершается до SHUTDOWN_TIMEOUT_MS, выход 0', async () => {
         const app = await start('sse');
-        const stream = await fetch(`http://127.0.0.1:${app.port}/stream`);
-        const body = stream.text();
-        await sleep(100);
-        const signalledAt = performance.now();
-        app.child.kill('SIGTERM');
-        await body;
-        const exit = await app.exited;
+        try {
+            const stream = await fetch(`http://127.0.0.1:${app.port}/stream`);
+            const body = stream.text();
+            await sleep(100);
+            const signalledAt = performance.now();
+            app.child.kill('SIGTERM');
+            await body;
+            const exit = await app.exited;
 
-        expect(stream.status).toBe(200);
-        expect(exit.code, app.output()).toBe(0);
-        expect(exit.at - signalledAt).toBeLessThan(TIMEOUT_MS / 2);
-        expect(app.output()).not.toContain('SHUTDOWN_TIMEOUT');
+            expect(stream.status).toBe(200);
+            expect(exit.code, app.output()).toBe(0);
+            expect(exit.at - signalledAt).toBeLessThan(TIMEOUT_MS / 2);
+            expect(app.output()).not.toContain('SHUTDOWN_TIMEOUT');
+        } finally {
+            stopChild(app);
+        }
+    });
+
+    it('AC-3.9: участник шага 2 закрывает WebSocket кодом 1001 — клиент получает 1001 (не 1005/1006) раньше, чем прекращается приём соединений', async () => {
+        const app = await start('ws');
+        try {
+            const socket = new WebSocket(`ws://127.0.0.1:${app.port}/ws`);
+            await new Promise((resolve, reject) => {
+                socket.addEventListener('open', resolve, { once: true });
+                socket.addEventListener('error', reject, { once: true });
+            });
+            const closed = new Promise<number>((resolve) => {
+                socket.addEventListener('close', (event) => resolve(event.code), { once: true });
+            });
+            const signalledAt = performance.now();
+            app.child.kill('SIGTERM');
+            const polled = await poll(app, app.exited);
+            const code = await closed;
+            const exit = await app.exited;
+            const sent = app
+                .output()
+                .split('\n')
+                .find((line) => line.includes('"ws: 1001 отправлен"'));
+
+            expect(code, app.output()).toBe(1001);
+            expect(sent, app.output()).toBeDefined();
+            expect((JSON.parse(sent ?? '{}') as { listening?: boolean }).listening).toBe(true);
+            expect(polled.okRefused, app.output()).not.toBeNull();
+            expect(exit.code, app.output()).toBe(0);
+            expect(exit.at - signalledAt).toBeLessThan(TIMEOUT_MS);
+            expect(app.output()).not.toContain('SHUTDOWN_TIMEOUT');
+        } finally {
+            stopChild(app);
+        }
     });
 });
