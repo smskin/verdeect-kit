@@ -74,6 +74,11 @@ export interface RabbitConnectionOptions {
     readonly reconnectSeconds: number;
     /** Срок обработчиков остановки, мс (handlersDeadlineMs); вызывается при первом shutdownDeadline() — начало шага 3. */
     readonly deadlineMs: () => number;
+    /**
+     * Остановка `KitLifecycle` началась (§3.8 v1.31): срок запоминается только после начала, до него каждый вызов
+     * `shutdownDeadline()` получает новый срок. Нет — срок запоминается при первом вызове.
+     */
+    readonly stopStarted?: () => boolean;
 }
 
 /** Первый исход настройки канала после createChannel. */
@@ -353,9 +358,13 @@ export class RabbitConnection {
     /**
      * Общий срок остановки обмена с брокером: отсчёт — с первого вызова в beforeApplicationShutdown (relay,
      * подписчик), resolve(false) через `deadlineMs()`. Nest вызывает хуки по очереди — у каждого свой срок сложился бы.
-     * Срок 0 — ожидание завершается сразу.
+     * Срок 0 — ожидание завершается сразу. Срок запоминается, только если остановка `KitLifecycle` началась
+     * (`stopStarted`); до неё каждый вызов получает новый срок без запоминания (v1.31).
      */
     shutdownDeadline(): Promise<false> {
+        if (this.options.stopStarted?.() === false) {
+            return this.armStopDeadline();
+        }
         this.stopDeadline ??= this.armStopDeadline();
 
         return this.stopDeadline;

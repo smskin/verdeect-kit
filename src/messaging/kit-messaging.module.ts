@@ -20,7 +20,7 @@ import type * as Database from '../database/index.js';
 import { requirePeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { requireKitCore } from '../internal/kit-core-required.js';
-import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
+import { KIT_BACKGROUND_LOOPS, KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { HealthRegistry } from '../observability/health-registry.js';
 import { KitLifecycle, shutdownRemainingMs } from '../observability/lifecycle.js';
 import type { KitMetrics } from '../observability/metrics.js';
@@ -194,6 +194,7 @@ function outboxProviders(config: KitMessagingConfig): Provider[] {
                 connection: RabbitConnection,
                 log: MessagingLog,
                 metrics?: KitMetrics,
+                backgroundLoops?: boolean,
             ): OutboxRelay => {
                 const store = new OutboxStore({
                     db,
@@ -211,6 +212,7 @@ function outboxProviders(config: KitMessagingConfig): Provider[] {
                     events: config.events,
                     metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
+                    ...(backgroundLoops === undefined ? {} : { backgroundLoops }),
                 });
                 relayStores.set(relay, store);
 
@@ -221,6 +223,7 @@ function outboxProviders(config: KitMessagingConfig): Provider[] {
                 KIT_RABBIT_CONNECTION,
                 KIT_MESSAGING_LOG,
                 { token: KIT_PACKAGE_METRICS, optional: true },
+                { token: KIT_BACKGROUND_LOOPS, optional: true },
             ],
         },
         {
@@ -292,7 +295,12 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
     return [
         {
             provide: MessagingCleanup,
-            useFactory: (db: Database.Db, log: MessagingLog, metrics?: KitMetrics) =>
+            useFactory: (
+                db: Database.Db,
+                log: MessagingLog,
+                metrics?: KitMetrics,
+                backgroundLoops?: boolean,
+            ) =>
                 new MessagingCleanup({
                     db,
                     database: {
@@ -306,11 +314,13 @@ function cleanupProviders(config: KitMessagingConfig): Provider[] {
                     },
                     metrics: requireKitCore(metrics, 'KitMessagingModule'),
                     log,
+                    ...(backgroundLoops === undefined ? {} : { backgroundLoops }),
                 }),
             inject: [
                 database.Db,
                 KIT_MESSAGING_LOG,
                 { token: KIT_PACKAGE_METRICS, optional: true },
+                { token: KIT_BACKGROUND_LOOPS, optional: true },
             ],
         },
     ];
@@ -465,12 +475,18 @@ export class KitMessagingModule {
                                 const remainingMs = shutdownRemainingMs(core);
                                 const deadlineMs = handlersDeadlineMs(env, remainingMs);
                                 log.debug(
-                                    { deadlineMs, remainingMs },
+                                    {
+                                        deadlineMs,
+                                        remainingMs,
+                                        remembered: remainingMs !== undefined,
+                                    },
                                     'messaging: срок обработчиков при остановке',
                                 );
 
                                 return deadlineMs;
                             },
+                            // Срок запоминается только после начала остановки KitLifecycle (§3.8 v1.31).
+                            stopStarted: () => shutdownRemainingMs(core) !== undefined,
                             log,
                         });
                     },

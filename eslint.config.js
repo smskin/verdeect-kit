@@ -175,6 +175,21 @@ export default [
                 group: ['@nestjs/*', '../config/*', '../testing/*', '../cli/*', 'shell-quote'],
                 message: 'internal зависит только от node:* и zod (ARCHITECTURE.md).',
             },
+            {
+                // Значения подпутей запрещены: через internal подпуть получил бы чужую зависимость (rc.10, KT-108).
+                group: [
+                    '../observability/*',
+                    '../http/*',
+                    '../database/*',
+                    '../idempotency/*',
+                    '../messaging/*',
+                    '../crypto/*',
+                    '../redis/*',
+                ],
+                allowTypeImports: true,
+                message:
+                    'internal зависит только от node:* и zod (ARCHITECTURE.md); import type разрешён.',
+            },
         ]),
     },
     {

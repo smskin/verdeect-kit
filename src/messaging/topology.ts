@@ -33,8 +33,8 @@ export const PUBLISH_CONFIRM_TIMEOUT_MS = 10_000;
 
 /** Хранение опубликованного outbox и inbox, дни (§3.4, AC-5.12). */
 export const RETENTION_DAYS = 7;
-/** Интервал очистки, мс. */
-export const CLEANUP_INTERVAL_MS = 3_600_000;
+/** Интервал очистки, мс (объявлен в internal/cleanup-schedule.ts: его же берёт очистка идемпотентности). */
+export { CLEANUP_INTERVAL_MS } from '../internal/cleanup-schedule.js';
 /** Пачка очистки. */
 export const CLEANUP_BATCH_SIZE = 1_000;
 /** Пачек за проход. */

@@ -5,7 +5,8 @@
 // subject.kind 'unknown' (П23). Пачка ≤ 100 по seq под FOR UPDATE SKIP LOCKED, публикация последовательно с
 // подтверждением; первая неудача прерывает пачку — порядок сохраняется. Без соединения или канала БД не опрашивается.
 // Остановка во время неподтверждённой публикации оставляет строку без attempts + 1: повтор после рестарта —
-// «не больше одного раза по смыслу» через inbox получателя (UC-6).
+// «не больше одного раза по смыслу» через inbox получателя (UC-6). v1.31 (§3.8): backgroundLoops: false — цикл и канал
+// не создаются; stopLoops() — остановка цикла без срока (stopBackgroundLoops), канал закрывает остановка приложения.
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import type { Db } from '../database/db.js';
 import { ulid } from '../internal/ids.js';
@@ -79,6 +80,8 @@ export interface OutboxRelayDeps {
     readonly log?: MessagingLog;
     /** Часы. */
     readonly timers?: RelayTimers;
+    /** Фоновый цикл (`createTestApp({backgroundLoops})`); `false` — relay не запускается. Умолчание `true`. */
+    readonly backgroundLoops?: boolean;
 }
 
 interface DrainResult {
@@ -94,6 +97,7 @@ export class OutboxRelay {
     private unsubscribe: (() => void) | null = null;
     private loop: Promise<void> | null = null;
     private running = false;
+    private shutDown = false;
     private backoffMs = 0;
     private wakeRequested = false;
     private sleepAbort = new AbortController();
@@ -112,6 +116,11 @@ export class OutboxRelay {
 
     /** Запуск цикла после старта приложения. */
     onApplicationBootstrap(): void {
+        if (this.deps.backgroundLoops === false) {
+            this.log.debug({}, 'outbox: relay — фоновые циклы отключены (backgroundLoops: false)');
+
+            return;
+        }
         if (this.running) {
             return;
         }
@@ -134,32 +143,52 @@ export class OutboxRelay {
 
     /** Будит цикл (после COMMIT `OutboxStore.add`, готовности канала, остановки). */
     wake(): void {
+        if (this.deps.backgroundLoops === false) {
+            return;
+        }
         this.wakeRequested = true;
         this.sleepAbort.abort();
     }
 
     /** Шаг 3 остановки: пачка дорабатывает в общем сроке, неподтверждённая публикация бросается. */
     async beforeApplicationShutdown(): Promise<void> {
-        if (!this.running) {
+        if (this.shutDown) {
             return;
         }
-        this.running = false;
-        this.requestStop();
-        this.wake();
+        this.shutDown = true;
         this.deps.metrics?.setOutboxSource(null);
-        const loop = this.loop ?? Promise.resolve();
-        const stopped = await Promise.race([
-            loop.then(() => true),
-            this.deps.connection.shutdownDeadline(),
-        ]);
-        if (!stopped) {
-            this.log.warn({}, 'outbox: срок остановки relay вышел, идём дальше');
+        // После stopLoops() цикл уже остановлен: ожидания и гонки со сроком нет, очистка — полностью.
+        if (this.running) {
+            this.running = false;
+            this.requestStop();
+            this.wake();
+            const loop = this.loop ?? Promise.resolve();
+            const stopped = await Promise.race([
+                loop.then(() => true),
+                this.deps.connection.shutdownDeadline(),
+            ]);
+            if (!stopped) {
+                this.log.warn({}, 'outbox: срок остановки relay вышел, идём дальше');
+            }
         }
         this.unsubscribe?.();
         this.unsubscribe = null;
         await this.channel?.close();
         this.channel = null;
         this.log.debug({}, 'outbox: relay остановлен');
+    }
+
+    /**
+     * @internal Остановка цикла для тестов (`stopBackgroundLoops`): текущий проход дорабатывает, ожидание без срока;
+     * канал, подписка и соединение не трогаются, `shutdownDeadline` не вызывается. Повтор — без действия.
+     */
+    async stopLoops(): Promise<void> {
+        if (this.running) {
+            this.running = false;
+            this.requestStop();
+            this.wake();
+        }
+        await this.loop;
     }
 
     private async run(): Promise<void> {

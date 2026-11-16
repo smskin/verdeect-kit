@@ -1,12 +1,15 @@
 // AC-5.12 (UC-9), AC-5.11, AC-9.5: очистка outbox и inbox — опубликованные и полученные старше 7 дней, пачки, одна
 // реплика (runExclusive), DB_POOL_MAX = 1, остановка во время прохода → interrupted, ошибка одной таблицы не мешает
 // другой (prd.md §3.4). Эквивалентность — O messaging-cleanup.int-spec; приёмы — E4 ac-4-14-cleanup.spec.ts.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+// v1.31: при занятом замке следующий проход через 5 мин + до 1 мин, после прохода — через час.
+import pg from 'pg';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
+import { cleanupClock } from '../../../src/internal/cleanup-schedule.js';
 import { runExclusive } from '../../../src/database/run-exclusive.js';
 import { messagingCleanupLockKey } from '../../../src/internal/outbox-policy.js';
 import { countQueries } from '../../../src/testing/count-queries.js';
-import { adminQuery, createTestDb, truncateFixtures } from '../../support/database.js';
+import { adminQuery, appUrl, createTestDb, truncateFixtures } from '../../support/database.js';
 import { barrier, createCleanupStand, messagingCleanupRuns } from '../../support/messaging.js';
 
 const LOCK_KEY = messagingCleanupLockKey('kit');
@@ -179,6 +182,35 @@ describe('UC-9: очистка сообщений', () => {
             expect(await messagingCleanupRuns(app, 'inbox', 'ok')).toBe(before.ok + 1);
             expect(await ids('inbox')).toEqual([]);
         } finally {
+            await app.close();
+        }
+    });
+
+    it('AC-5.12: при занятом замке следующая попытка — в окне [5, 6] мин, после выполненного прохода — через час (часы подменены)', async () => {
+        const { app, cleanup } = await createCleanupStand();
+        const holder = new pg.Client({ connectionString: appUrl() });
+        await holder.connect();
+        try {
+            const delays: number[] = [];
+            vi.spyOn(cleanupClock, 'setTimeout').mockImplementation((_fn, ms) => {
+                delays.push(ms);
+
+                return setTimeout(() => undefined, 0);
+            });
+            const random = vi.spyOn(cleanupClock, 'random');
+            await holder.query('select pg_advisory_lock(hashtextextended($1, 0))', [LOCK_KEY]);
+
+            random.mockReturnValue(0);
+            await cleanup.runScheduled();
+            random.mockReturnValue(0.999);
+            await cleanup.runScheduled();
+            await holder.query('select pg_advisory_unlock(hashtextextended($1, 0))', [LOCK_KEY]);
+            await cleanup.runScheduled();
+
+            expect(delays).toEqual([300_000, 359_940, 3_600_000]);
+        } finally {
+            vi.restoreAllMocks();
+            await holder.end();
             await app.close();
         }
     });

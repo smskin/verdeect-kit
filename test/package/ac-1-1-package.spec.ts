@@ -3,7 +3,7 @@
 // pg, testing и database, ajv — только из dist/testing (prd.md G1, NFR-3, NFR-4; KT-15 п. 4). Запуск — pnpm pack:check после
 // pnpm build.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { packTarball, REPO_ROOT, removeTarball, runCommand, runOrThrow } from './support/pack.js';
 
@@ -301,6 +301,18 @@ describe('UC-16: архив пакета', () => {
         // KT-77: /testing не грузит модуль Nest БД; pg.js требует pg при импорте — только динамически (AC-4.19).
         expect(files).not.toContain(join('database', 'kit-database.module.js'));
         expect(files).not.toContain(join('database', 'pg.js'));
+        // v1.31: deliverTestEvent, waitForDelivery, stopBackgroundLoops — классы /messaging и /idempotency динамически.
+        expect(files).not.toContain(join('messaging', 'subscriber.js'));
+        expect(files).not.toContain(join('messaging', 'outbox-relay.js'));
+        expect(files).not.toContain(join('idempotency', 'kit-idempotency.module.js'));
+    });
+
+    it('AC-1.1: dist/idempotency и dist/internal не импортируют messaging статически (ARCHITECTURE.md, rc.10 KT-108)', () => {
+        const { seen } = staticGraph(join(REPO_ROOT, 'dist', 'idempotency', 'index.js'));
+        const files = [...seen].map((file) => relative(join(REPO_ROOT, 'dist'), file));
+
+        expect(files.filter((file) => file.startsWith(`messaging${sep}`))).toEqual([]);
+        expect(files).toContain(join('internal', 'cleanup-schedule.js'));
     });
 
     it('AC-1.2: в статическом графе dist/messaging/index.js нет top-level await', () => {
