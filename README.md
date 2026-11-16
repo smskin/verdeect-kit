@@ -203,9 +203,42 @@ export class FilesMetrics {
     service: platform
 ```
 
-Пороги: `outbox_lag_seconds` (5 с за 1m), `outbox_pending` (1000 за 5m), `events_consumed` (DLQ за 15m > 0), `db_pool_wait_timeouts` (за 5m > 0), `rate_limit_unavailable` (за 5m > 0), `cleanup_runs` (`error` и `partial` за 2 ч > 0), `idempotency_late_completions` (за 15m > 0, правило `VerdeectIdempotencyLateCompletions`).
+Пороги: `outbox_lag_seconds` (5 с за 1m), `outbox_pending` (1000 за 5m), `events_consumed` (DLQ за 15m > 0), `db_pool_wait_timeouts` (за 5m > 0), `rate_limit_unavailable` (за 5m > 0), `cleanup_runs` (`error` и `partial` за 2 ч > 0), `idempotency_late_completions` (за 15m > 0, правило `VerdeectIdempotencyLateCompletions`), `background_failures` (за 15m > 0, правило `VerdeectBackgroundFailures` по `service` и `task`).
 
 **`captureError` и `captureThrottled`.** `captureError(err)` — для неожиданных ошибок: ровно одно событие на объект ошибки. `captureThrottled(key, err, {windowMs?})` — для ожидаемых повторяющихся (срок пула, недоступная зависимость): одно событие за окно (умолч. 60 с) на ключ в процессе. Уже отправленная ошибка повторно не уходит ни одной из функций.
+
+**Серия сбоев фоновой задачи.** `backgroundFailed(task, err, logger)` — проход фоновой задачи упал, `backgroundSucceeded(task, logger)` — проход выполнен. Вместо события GlitchTip на каждый проход — серия:
+
+| Событие                  | Серия   | Лог                                                       | GlitchTip                    | `verdeect_background_failures_total{task}` |
+| ------------------------ | ------- | --------------------------------------------------------- | ---------------------------- | ------------------------------------------ |
+| первый сбой              | 1       | `error` «фоновая задача: сбой»                            | одно (через `sanitizeError`) | +1                                         |
+| повторный сбой           | +1      | `warn` «фоновая задача: сбой повторяется» с `failures`    | нет                          | +1                                         |
+| успех при открытой серии | закрыта | `info` «фоновая задача: серия сбоев закрыта» с `failures` | нет                          | —                                          |
+| успех без серии          | —       | нет                                                       | нет                          | —                                          |
+| сбой после закрытия      | 1       | `error`                                                   | одно (новое)                 | +1                                         |
+
+- `task` — `^[a-z][a-z0-9_.-]{1,63}$`, иначе `TypeError`; закрытого списка нет. Задачи пакета: `outbox-relay`, `messaging-cleanup`, `idempotency-cleanup`.
+- Пропуск прохода (замок `runExclusive` у другой реплики, срок не наступил) — не вызывайте ни одну из функций: серия не меняется.
+- Метка — `task`, а не `job`: `job` при сборе ставят Prometheus и vmagent (имя задания сбора), метка приложения стала бы `exported_job`.
+- Серия и счётчик — в памяти процесса: при N репликах — до N событий на серию. Два приложения в одном процессе (тесты) показывают одно значение `verdeect_background_failures_total` — реестр каждого отдаёт счётчик процесса через `collect()`; в тестах сравнивайте прирост, а не абсолютные числа.
+- Алерт — `VerdeectBackgroundFailures` (порог `verdeect_kit_threshold:background_failures`, по умолчанию 0).
+- `logger` — `KitBackgroundLogger`: `{error, warn, info}` вида `(поля, сообщение)`, как у pino; логгер `nestjs-pino`/pino подходит как есть. Nest `Logger` — через адаптер:
+
+```ts
+const logger = new Logger('ReportsJob');
+const background: KitBackgroundLogger = {
+    error: (fields, message) => logger.error(fields, message),
+    warn: (fields, message) => logger.warn(fields, message),
+    info: (fields, message) => logger.log(fields, message),
+};
+
+try {
+    await this.buildReports();
+    backgroundSucceeded('reports-build', background);
+} catch (error) {
+    backgroundFailed('reports-build', error, background);
+}
+```
 
 **Отказ запуска.** `failStartup(err, logger)` — `fatal`-лог, событие GlitchTip, `exit(1)`. Код `DATABASE_UNAVAILABLE` даёт только отказ проверки соединения `KitDatabaseModule` при запуске (см. «База данных»): это `StartupFailure` — в логе `{code, cause}` (`cause` — `ECONNREFUSED`, SQLSTATE или `timeout`), без SQL, адреса и текста ошибки, одно событие с тегом `code`. Ошибка соединения другой зависимости при запуске — `STARTUP_FAILED`.
 
@@ -476,7 +509,7 @@ create(@Body(new ZodValidationPipe(CreateFile)) body: CreateFileDto) { … }
 - Область ключа: пользователь и агент — компания токена и `sub` (поле тела не учитывается); служба — `client_id` и, при `tenantFromBody: 'tenant'`, компания из поля тела (нет поля — без компании).
 - `redact: ['secret']` — одноразовые секреты в ответе (ключ API, пароль приложения): клиент получает ответ без изменений, в хранилище эти поля верхнего уровня — `null`, повтор с тем же ключом отдаёт `null`. Поля скрываются только у простого объекта (прототип `Object.prototype` или `null`): массив, строка, число, `Date`, `Buffer`, экземпляр класса (в том числе с `toJSON`) сохраняются как есть. Только поля верхнего уровня: пустое имя или имя с `.` или `[` (`'data.secret'`, `'items[0]'`) — `TypeError` при объявлении `@Idempotent`.
 - Ответы: нет ключа при `required` — 400 `IDEMPOTENCY_KEY_REQUIRED`; ключ не по формату `^[\x21-\x7E]{1,200}$` — 422 `VALIDATION_FAILED` (`path: Idempotency-Key`); другое тело — 422 `IDEMPOTENCY_KEY_REUSED`; запрос ещё идёт — 409 `IDEMPOTENCY_IN_PROGRESS`. Сохраняются только успешные ответы; брошенная `in_progress` переиспользуется через 5 минут, запись — 24 часа. Заголовки и коды попадают в OpenAPI по метаданным `@Idempotent`.
-- Очистка — при старте и раз в час, одной репликой (`runExclusive`), пачками функцией `idempotency_purge`; замок занят другой репликой — следующая попытка через 5 мин + случайно до 1 мин. Метрика `verdeect_cleanup_runs_total{table, result}`: `ok`, `partial` (упёрлась в предел пачек — очистка не успевает), `interrupted` (остановлена при выкате; алерт не срабатывает), `error`; алерт `VerdeectCleanupFailing` (`error` и `partial`) (порог `verdeect_kit_threshold:cleanup_runs`). Число удалённых строк — в `info`-логе прохода «очистка идемпотентности: проход» (`service`, `replica`, `table`, `deleted`).
+- Очистка — при старте и раз в час, одной репликой (`runExclusive`), пачками функцией `idempotency_purge`; замок занят другой репликой — следующая попытка через 5 мин + случайно до 1 мин. Метрика `verdeect_cleanup_runs_total{table, result}`: `ok`, `partial` (упёрлась в предел пачек — очистка не успевает), `interrupted` (остановлена при выкате; алерт не срабатывает), `error`; алерт `VerdeectCleanupFailing` (`error` и `partial`) (порог `verdeect_kit_threshold:cleanup_runs`). Число удалённых строк — в `info`-логе прохода «очистка идемпотентности: проход» (`service`, `replica`, `table`, `deleted`). Ошибка прохода — серия `idempotency-cleanup` (`backgroundFailed`, см. «Наблюдаемость»), выполненный проход её закрывает, занятый замок серию не меняет.
 
 ## Сообщения
 
@@ -505,7 +538,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON "platform"."outbox" TO "platform_app";
 GRANT SELECT, INSERT, DELETE ON "platform"."inbox" TO "platform_app";
 ```
 
-Outbox — единственное исключение строгой модели: пустой тенант видит все строки (relay, очистка); `assertStrictTenantIsolation` проверяет, что политика именно `createOutboxTable`. Inbox — без RLS. Роли приложения на inbox нужны `SELECT, INSERT, DELETE`: любая блокировка строк (`FOR UPDATE`/`SHARE`/`KEY SHARE`, `ON CONFLICT DO UPDATE`) требует `UPDATE` — пакет их на inbox не использует.
+Outbox — единственное исключение строгой модели: пустой тенант видит все строки (relay, очистка); `assertStrictTenantIsolation` проверяет, что политики именно `createOutboxTable`. При `tenantNullable: true` у outbox вторая политика — `outbox_tenantless_insert` (permissive, `FOR INSERT`, `WITH CHECK (tenant IS NULL)`): под тенантом транзакции вставка строки события `'none'` с `tenant = null` проходит (permissive-политики складываются по ИЛИ), но под этим тенантом строка не видна; строка чужого тенанта — 42501. Сервису с `tenantNullable: true` после обновления пакета — `drizzle-kit generate`: миграция добавит `CREATE POLICY "outbox_tenantless_insert"`. У таблицы `NOT NULL` политика одна, миграции не меняются. Inbox — без RLS. Роли приложения на inbox нужны `SELECT, INSERT, DELETE`: любая блокировка строк (`FOR UPDATE`/`SHARE`/`KEY SHARE`, `ON CONFLICT DO UPDATE`) требует `UPDATE` — пакет их на inbox не использует.
 
 Тип колонки `tenant` — по `tenantNullable`: `createOutboxTable(schema)` и `{tenantNullable: false}` — select даёт `tenant: string`, `{tenantNullable: true}` — `string | null`. Проверки `tenant` на `null` у таблицы по умолчанию теперь лишние (TypeScript укажет на них).
 
@@ -532,9 +565,21 @@ KitMessagingModule.forRoot({ service: 'bff-app', subscriber: { dedupe: 'none' } 
 
 `outbox.events` — все события, которые сервис публикует, уникальные по паре (`type`, `version`): на время перехода версии публикующий указывает обе (`[CompanyCreated, CompanyCreatedV2]`) и пишет обе строки; повтор пары — `TypeError`. `tenantNullable` берётся из таблицы: событие `'none'` при NOT NULL `tenant` — отказ запуска `MESSAGING_TENANT_NOT_NULLABLE`. `subscriber` не задан — подписчика нет; `dedupe` по умолчанию `'inbox'` (требует `inbox`). Окружение — `envBase` и `envMessaging`; outbox и inbox — вместе с `KitDatabaseModule`. Переподключение к брокеру и повтор настройки канала — раз в `RABBITMQ_RECONNECT_SECONDS` (умолч. 5), `RABBITMQ_RETRY_SECONDS` — только TTL `<svc>.retry`. Первое подключение и настройка канала укладываются в один срок `RABBITMQ_RECONNECT_SECONDS`: опоздал брокер — запуск продолжается (`/health` `rabbitmq` down), подписчик подключится сам. `listen: false` — режим CLI (см. «CLI сервиса»).
 
-**Запись** — `OutboxStore.add(tx, Event, {subjectId, data})` в `Db.transaction`: `tenant`, `actor`, `traceId` — из `DbContext`, id — `evt_` + ULID. `data` не по схеме, нарушение признака `tenant`, событие вне `outbox.events` или транзакция `Db.read` — исключение до записи, транзакция откатывается. Публикация мимо outbox невозможна, SQL-триггеров нет.
+**Запись** — `OutboxStore.add(tx, Event, {subjectId, data, tenant?})` в `Db.transaction`: `actor`, `traceId` — из `DbContext`, id — `evt_` + ULID. `actor` пишется как задан: `null` — `null` (в строке и конверте), незаданный ключ пропускается; пакет поля не удаляет и не дополняет. Тенант строки:
 
-**Relay** — после `COMMIT` сразу (без ожидания опроса), иначе опрос раз в 1 с; пачка ≤ 100 по `seq` (`FOR UPDATE SKIP LOCKED` — реплики не делят строку), публикация с подтверждением брокера, срок пачки 5 с; первая неудача прерывает пачку (порядок сохраняется), паузы 1 с → 2 → 4 … 5 мин; строка, не опубликованная 5 раз, — `error` и событие GlitchTip с `id` и `type` (без `data`). Без соединения outbox не опрашивается, `verdeect_outbox_lag_seconds` растёт. Определение события строки relay ищет по паре (`type`, `version`); пара вне `outbox.events` публикуется с `subject.kind = 'unknown'` и `warn` раз на пару. Метрики — `verdeect_outbox_pending`, `verdeect_outbox_lag_seconds`.
+| `Event.tenant` | тенант `DbContext` | `tenant` вызова          | Итог             |
+| -------------- | ------------------ | ------------------------ | ---------------- |
+| `'none'`       | любой              | не задан                 | `tenant: null`   |
+| `'none'`       | любой              | задан (в том числе `''`) | `TypeError`      |
+| `'required'`   | `acme`             | не задан или `acme`      | `tenant: 'acme'` |
+| `'required'`   | пусто              | `acme`                   | `tenant: 'acme'` |
+| `'required'`   | пусто              | не задан                 | `TypeError`      |
+| `'required'`   | любой              | `''`                     | `TypeError`      |
+| `'required'`   | `acme`             | `other`                  | `TypeError`      |
+
+`data` не по схеме, нарушение признака `tenant`, событие вне `outbox.events` или транзакция `Db.read` — исключение до записи, транзакция откатывается. Публикация мимо outbox невозможна, SQL-триггеров нет.
+
+**Relay** — после `COMMIT` сразу (без ожидания опроса), иначе опрос раз в 1 с; пачка ≤ 100 по `seq` (`FOR UPDATE SKIP LOCKED` — реплики не делят строку), публикация с подтверждением брокера, срок пачки 5 с; первая неудача прерывает пачку (порядок сохраняется), паузы 1 с → 2 → 4 … 5 мин; строка, не опубликованная 5 раз, — `error` и событие GlitchTip с `id` и `type` (без `data`). Без соединения outbox не опрашивается, `verdeect_outbox_lag_seconds` растёт. Определение события строки relay ищет по паре (`type`, `version`); пара вне `outbox.events` публикуется с `subject.kind = 'unknown'` и `warn` раз на пару. Метрики — `verdeect_outbox_pending`, `verdeect_outbox_lag_seconds`. Сбой прохода (ошибка БД при выборке или отметке) — серия `outbox-relay` (`backgroundFailed`, см. «Наблюдаемость»), проход без ошибки БД её закрывает; «5 неудач строки» — правило строки, отдельно от серии. При недоступной БД `verdeect_outbox_pending` и `verdeect_outbox_lag_seconds` замирают на последнем значении — сигнал аварии `verdeect_background_failures_total{task="outbox-relay"}`.
 
 **Подписчик** — `KitSubscriber` внедряется в провайдер сервиса, обработчики регистрируются в `onModuleInit`:
 
@@ -575,7 +620,7 @@ export class CompanyEvents implements OnModuleInit {
 
 Другой TTL уже объявленной `<svc>.retry` — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь» без цикла переподключений (порядок смены — «Развёртывание»). Exchange `verdeect.events` сервис только проверяет пассивно; нет exchange — `/health` `rabbitmq` down.
 
-**Очистка** — опубликованный outbox и inbox старше 7 дней, при старте и раз в час (замок занят другой репликой — следующая попытка через 5 мин + случайно до 1 мин), одной репликой (`runExclusive`), пачками по 1000, до 100 за проход, на соединении блокировки (работает при `DB_POOL_MAX = 1`). Метрика `verdeect_cleanup_runs_total{table: outbox|inbox, result}`, число строк — `info`-лог «очистка сообщений: проход».
+**Очистка** — опубликованный outbox и inbox старше 7 дней, при старте и раз в час (замок занят другой репликой — следующая попытка через 5 мин + случайно до 1 мин), одной репликой (`runExclusive`), пачками по 1000, до 100 за проход, на соединении блокировки (работает при `DB_POOL_MAX = 1`). Метрика `verdeect_cleanup_runs_total{table: outbox|inbox, result}`, число строк — `info`-лог «очистка сообщений: проход». Ошибка замка или любой таблицы — один сбой серии `messaging-cleanup` за проход (по первой ошибке; ошибка таблицы — ещё `debug` «очистка сообщений: ошибка таблицы», другая таблица чистится), серию закрывает проход, где обе таблицы без ошибок; занятый замок серию не меняет.
 
 **Остановка**: relay, подписчик (снять потребителей → дождаться доставок → закрыть канал) и очистка — шаг 3, соединение RabbitMQ — шаг 4, в общем сроке `SHUTDOWN_TIMEOUT_MS`. Срок обработчиков считается от начала остановки (сигнал или `close()`): `shutdownDeadline = min(max(1000, T − D − 3000), остаток − 3000)`, где T — `SHUTDOWN_TIMEOUT_MS`, D — `SHUTDOWN_DRAIN_MS`, 3000 — закрытие канала и соединения, остаток — `SHUTDOWN_TIMEOUT_MS` минус время до начала шага 3; остаток < 3000 — 0. Долгий шаг 2 (HTTP) сокращает срок обработчиков; не уложившийся обработчик — сообщение возвращается брокеру. Проба `/health` `rabbitmq` — некритичная.
 
@@ -718,7 +763,7 @@ export default startTestStack({
 - `workerScope().redisPrefix` — префикс Redis воркера `<svc>:w<VITEST_POOL_ID>:`; приложение теста получает его через `createTestApp({…, overrides: [redisWorkerOverride()]})`, `REDIS_URL` — `inject('kitRedisUrl')`.
 - `workerScope().tenant` — слаг компании воркера (`w<VITEST_POOL_ID>-<8 hex>`, формат claim `tenant`): то же значение в `DbContext.tenant` и в токене; `tenantId` и строку компании создаёт фабрика сервиса.
 - `countQueries(pool, fn, {onQuery?})` — `{result, count, queries}`: все запросы пула за время `fn` (транзакция `Db` с одним запросом — 4: `begin`, `set_config`, запрос, `commit`); `onQuery(text)` — синхронный сигнал на каждый запрос (например, «первая пачка началась») вместо паузы.
-- `assertStrictTenantIsolation(pool, {schema, except?})` — один тест сервиса под ролью приложения после вставки данных фабриками: каждая таблица с колонкой `tenant` — RLS, `FORCE`, строгая политика, 0 строк под пустым тенантом; `idempotency_key` и `outbox` (политика `createOutboxTable`) — исключения строгой модели; функция `idempotency_purge` — `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
+- `assertStrictTenantIsolation(pool, {schema, except?})` — один тест сервиса под ролью приложения после вставки данных фабриками: каждая таблица с колонкой `tenant` — RLS, `FORCE`, строгая политика, 0 строк под пустым тенантом; `idempotency_key` и `outbox` (политики `createOutboxTable`: при nullable `tenant` — ещё `outbox_tenantless_insert`; иная или лишняя политика — ошибка) — исключения строгой модели; функция `idempotency_purge` — `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
 - `assertAppRoleIsNotOwner(db)` — роль соединения не суперпользователь, без `BYPASSRLS`, не владеет схемами и таблицами, без `CREATE` на базе и схемах.
 - `expectOutbox(tx, Event, {subjectId?, data?})` — строка события в текущей транзакции use-case (строки других транзакций не считаются), `data` по схеме события; успешная проверка пишет покрытие `<type>.v<version>`. `startTestStack({outboxEvents})` + `KIT_OUTBOX_COVERAGE=1` (в `make test-integration` и CI) — teardown падает со списком событий без успешного `expectOutbox` (`assertOutboxCoverage`); без переменной проверка не выполняется. `KIT_OUTBOX_COVERAGE=1` ставьте только в полной цели `make` (весь набор файлов): при фильтре файлов события других файлов окажутся «непокрытыми».
 - `expectOutbox({app, traceId}, Event, {subjectId?, data?})` — use-case со своей транзакцией: после `COMMIT` строка события с `trace_id = traceId` читается основным пулом приложения; строки с другим `traceId` не учитываются; покрытие — как у формы с `tx`.
@@ -913,6 +958,9 @@ $ verdeect-kit --help
 - `registerErrorSanitizer` — `registerErrorSanitizer(match, sanitize)`: своя ветка сервиса, глобально на процесс.
 - `initSentry` — `initSentry({service, redaction?})` в `instrument.ts`; возвращает, включён ли GlitchTip.
 - `KitSentryOptions` — тип опций `initSentry`.
+- `backgroundFailed` — `backgroundFailed(task, err, logger)`: сбой прохода фоновой задачи — серия (первый сбой — `error` и событие GlitchTip, следующие — `warn`), `verdeect_background_failures_total{task}` +1.
+- `backgroundSucceeded` — `backgroundSucceeded(task, logger)`: проход выполнен — открытая серия закрывается (`info`).
+- `KitBackgroundLogger` — `{error, warn, info}` вида `(поля, сообщение)` в стиле pino.
 - `captureError` — `captureError(err, {tags?, extra?})`: ровно одно событие на ошибку.
 - `captureThrottled` — `captureThrottled(key, err, {windowMs = 60_000})`: одно событие за окно на ключ; возвращает, отправлено ли.
 - `HealthRegistry` — пробы `/health`: `register(name, probe, {critical})`, `markStopping()`, `evaluate()`; срок пробы 2 с.
@@ -969,7 +1017,7 @@ CLI: `verdeect-kit openapi --out <файл> [--module <файл>#<экспорт
 - `DRIZZLE` — токен Drizzle основного пула со схемой сервиса.
 - `DRIZZLE_READ` — токен Drizzle пула чтения со схемой сервиса.
 - `Db` — `transaction(ctx, fn)`, `read(ctx, fn)`, `readGlobal(fn)`, `afterCommit(tx, task)`, `setLocal(tx, name, value)`.
-- `DbContext` — `{tenant, traceId, actor: {clientId?, accountId?, memberId?, onBehalfOf?, channel}}`.
+- `DbContext` — `{tenant, traceId, actor: {clientId?, accountId?, memberId?, onBehalfOf?, channel}}`; поля `actor`, кроме `channel`, — `string | null`.
 - `DbTx` — тип транзакции `Db.transaction`/`Db.read`.
 - `DbReader` — тип дескриптора `Db.readGlobal`.
 - `AfterCommitTask` — тип задачи `() => void | Promise<void>`.
@@ -1014,14 +1062,14 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitEventTenant` — `'required' | 'none'`.
 - `EnvelopeSchema` — схема zod конверта `01` §7.1.
 - `Envelope` — `Envelope<E>`: конверт события, `tenant` по признаку, `data` — выход схемы.
-- `createOutboxTable` — `createOutboxTable(schema, {tenantNullable?})`: таблица outbox; тип `tenant` — `string` (по умолчанию, `false`) или `string | null` (`true`).
+- `createOutboxTable` — `createOutboxTable(schema, {tenantNullable?})`: таблица outbox; тип `tenant` — `string` (по умолчанию, `false`) или `string | null` (`true`, вторая политика `outbox_tenantless_insert`).
 - `createInboxTable` — `createInboxTable(schema)`: таблица inbox.
 - `KitOutboxTable` — тип таблицы outbox: объединение форм с `tenant` NOT NULL и nullable.
 - `KitInboxTable` — тип таблицы inbox.
 - `KitOutboxTableOptions` — `{tenantNullable?}`.
 - `KitMessagingModule` — `KitMessagingModule.forRoot({service, listen?, outbox?, subscriber?})`: соединение, relay, подписчик, очистка; `listen: false` — режим CLI без брокера.
 - `KitMessagingModuleOptions` — тип опций модуля.
-- `OutboxStore` — `add(tx, Event, {subjectId, data})`: запись события в транзакции; `awaitPublished(ids | {traceId}, {timeoutMs})` → `{published, pending}`.
+- `OutboxStore` — `add(tx, Event, {subjectId, data, tenant?})`: запись события в транзакции (`'none'` — `tenant: null`, `'required'` — `tenant` вызова или `DbContext`); `awaitPublished(ids | {traceId}, {timeoutMs})` → `{published, pending}`.
 - `KitSubscriber` — `on(Event, handler, {dedupe?})` (опция переопределяет `dedupe` модуля), `onReplica(Event, handler)`; обработчик — по паре (`type`, `version`), неподписанная версия — ack и `verdeect_events_skipped_total`.
 - `KitEventHandler` — `(event, tx) => Promise<void>`; `tx = null` при `dedupe: 'none'`.
 - `KitReplicaHandler` — `(event) => Promise<void>`.
@@ -1085,7 +1133,7 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 - `countQueries` — `countQueries(pool, fn, {onQuery?})`: `{result, count, queries}`.
 - `KitCountablePool` — тип пула с событием `acquire`.
 - `KitCountQueriesOptions` — `{onQuery?}`: колбэк на каждый запрос пула.
-- `assertStrictTenantIsolation` — `assertStrictTenantIsolation(db, {schema, except?})`: строгий RLS схемы под ролью приложения.
+- `assertStrictTenantIsolation` — `assertStrictTenantIsolation(db, {schema, except?})`: строгий RLS схемы под ролью приложения; у nullable `outbox` — две политики, иная или лишняя — ошибка.
 - `KitTenantIsolationOptions` — тип опций `assertStrictTenantIsolation`.
 - `assertAppRoleIsNotOwner` — `assertAppRoleIsNotOwner(db)`: роль приложения не владелец.
 - `KitQueryable` — тип соединения с `query` (`pg.Pool`, `pg.Client`).

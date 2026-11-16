@@ -1,7 +1,13 @@
 // assertAppRoleIsNotOwner, assertStrictTenantIsolation (prd.md §3.8, AC-4.6, AC-4.8). Проверки — по каталогу PostgreSQL
 // под ролью приложения; pg не импортируется: db — объект с query. E5: политика outbox по OUTBOX_POLICY_SQL
-// (createOutboxTable), имена — internal/outbox-policy (/testing не грузит /messaging).
-import { OUTBOX_POLICY, OUTBOX_TABLE } from '../internal/outbox-policy.js';
+// (createOutboxTable), имена — internal/outbox-policy (/testing не грузит /messaging). v1.33 (§3.8 стр. 197): у nullable
+// tenant outbox — ещё outbox_tenantless_insert, иная или лишняя политика — нарушение.
+import {
+    OUTBOX_POLICY,
+    OUTBOX_TABLE,
+    OUTBOX_TENANTLESS_INSERT_POLICY,
+    OUTBOX_TENANTLESS_INSERT_SQL,
+} from '../internal/outbox-policy.js';
 
 /** Соединение с методом `query` (`pg.Pool`, `pg.Client`, `PoolClient`). */
 export interface KitQueryable {
@@ -149,6 +155,7 @@ async function policyViolations(
     db: KitQueryable,
     schema: string,
     table: string,
+    tenantNotNull: boolean,
 ): Promise<string[]> {
     const policies = (
         await db.query(
@@ -160,7 +167,7 @@ async function policyViolations(
         return [`${table}: нет политики`];
     }
     if (table === OUTBOX_TABLE) {
-        return outboxPolicyViolations(policies);
+        return outboxPolicyViolations(policies, tenantNotNull);
     }
     const expected = normalize(table === IDEMPOTENCY_TABLE ? IDEMPOTENCY_POLICY : TENANT_POLICY);
 
@@ -175,23 +182,65 @@ async function policyViolations(
         .map((policy) => `${table}.${policy.policyname}: нестрогая политика`);
 }
 
-/** Исключение строгой модели — ровно политика `createOutboxTable`: другое выражение не проходит. */
-function outboxPolicyViolations(policies: readonly PolicyRow[]): string[] {
+function rolesOf(policy: PolicyRow): string {
+    const roles = Array.isArray(policy.roles) ? policy.roles.join(',') : String(policy.roles);
+
+    return roles.replace(/[{}]/g, '');
+}
+
+/** `outbox_tenant_isolation` — ровно политика `createOutboxTable`: другое выражение не проходит. */
+function isIsolationPolicy(policy: PolicyRow | undefined): boolean {
     const expected = normalize(OUTBOX_POLICY_PG);
-    const [policy] = policies;
-    const roles = Array.isArray(policy?.roles)
-        ? policy.roles.join(',')
-        : String(policy?.roles ?? '');
-    const valid =
-        policies.length === 1 &&
-        policy?.policyname === OUTBOX_POLICY &&
+
+    return (
+        policy !== undefined &&
         policy.permissive === 'PERMISSIVE' &&
         policy.cmd === 'ALL' &&
-        roles.replace(/[{}]/g, '') === 'public' &&
+        rolesOf(policy) === 'public' &&
         normalize(policy.qual) === expected &&
-        normalize(policy.with_check) === expected;
+        normalize(policy.with_check) === expected
+    );
+}
 
-    return valid ? [] : [`${OUTBOX_TABLE}: политика не по createOutboxTable (${OUTBOX_POLICY})`];
+/** `outbox_tenantless_insert` — permissive, `INSERT`, `public`, без `USING`, `WITH CHECK (tenant IS NULL)`. */
+function isTenantlessInsertPolicy(policy: PolicyRow | undefined): boolean {
+    return (
+        policy !== undefined &&
+        policy.permissive === 'PERMISSIVE' &&
+        policy.cmd === 'INSERT' &&
+        rolesOf(policy) === 'public' &&
+        normalize(policy.qual) === '' &&
+        normalize(policy.with_check) === normalize(OUTBOX_TENANTLESS_INSERT_SQL)
+    );
+}
+
+/**
+ * Исключение строгой модели (R3 плана rc.11): `NOT NULL` — одна `outbox_tenant_isolation`; nullable — ещё
+ * `outbox_tenantless_insert`. Каждое нарушение — своей строкой.
+ */
+function outboxPolicyViolations(policies: readonly PolicyRow[], tenantNotNull: boolean): string[] {
+    const byName = (name: string) => policies.find((policy) => policy.policyname === name);
+    const violations: string[] = [];
+    if (!isIsolationPolicy(byName(OUTBOX_POLICY))) {
+        violations.push(`${OUTBOX_TABLE}: политика не по createOutboxTable (${OUTBOX_POLICY})`);
+    }
+    const tenantless = byName(OUTBOX_TENANTLESS_INSERT_POLICY);
+    if (tenantNotNull && tenantless !== undefined) {
+        violations.push(
+            `${OUTBOX_TABLE}: лишняя политика ${OUTBOX_TENANTLESS_INSERT_POLICY} (tenant NOT NULL)`,
+        );
+    }
+    if (!tenantNotNull && !isTenantlessInsertPolicy(tenantless)) {
+        violations.push(
+            `${OUTBOX_TABLE}: политика не по createOutboxTable (${OUTBOX_TENANTLESS_INSERT_POLICY})`,
+        );
+    }
+    const known = new Set([OUTBOX_POLICY, OUTBOX_TENANTLESS_INSERT_POLICY]);
+    for (const policy of policies.filter((item) => !known.has(item.policyname))) {
+        violations.push(`${OUTBOX_TABLE}: лишняя политика ${policy.policyname}`);
+    }
+
+    return violations;
 }
 
 async function visibleRows(db: KitQueryable, schema: string, table: string): Promise<string[]> {
@@ -260,7 +309,8 @@ async function purgeViolations(db: KitQueryable, schema: string): Promise<string
 /**
  * Строгий RLS схемы сервиса (§3.8, AC-4.8) — соединение **роли приложения**: каждая таблица с колонкой `tenant` — RLS,
  * `FORCE`, строгая политика (`tenantPolicy`; `idempotency_key` — `createIdempotencyTable`); `outbox` — исключение строгой
- * модели: политика `createOutboxTable` (пустой тенант — все строки), RLS и FORCE обязательны; под пустым тенантом 0 строк (вызывать после вставки данных фабриками); при таблице идемпотентности —
+ * модели: политика `createOutboxTable` (пустой тенант — все строки), при nullable `tenant` — ещё `outbox_tenantless_insert`
+ * (вставка строки без компании под тенантом), иная или лишняя политика — ошибка; RLS и FORCE обязательны; под пустым тенантом 0 строк (вызывать после вставки данных фабриками); при таблице идемпотентности —
  * функция `idempotency_purge` `SECURITY DEFINER`, владелец `<svc>_directory`, `search_path`, без `EXECUTE` у `PUBLIC`.
  * @throws {Error} «assertStrictTenantIsolation(<схема>): <нарушения через «; »>».
  */
@@ -272,13 +322,18 @@ export async function assertStrictTenantIsolation(
     const except = new Set(options.except ?? []);
     const tables = (
         await db.query(
-            `select c.relname, c.relrowsecurity, c.relforcerowsecurity
+            `select c.relname, c.relrowsecurity, c.relforcerowsecurity, a.attnotnull
              from pg_class c join pg_namespace n on n.oid = c.relnamespace
              join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant' and not a.attisdropped
              where n.nspname = $1 and c.relkind in ('r', 'p') order by c.relname collate "C"`,
             [schema],
         )
-    ).rows as { relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }[];
+    ).rows as {
+        relname: string;
+        relrowsecurity: boolean;
+        relforcerowsecurity: boolean;
+        attnotnull: boolean;
+    }[];
     const violations: string[] = [];
     if (tables.length === 0) {
         violations.push('в схеме нет таблиц с колонкой tenant');
@@ -291,7 +346,7 @@ export async function assertStrictTenantIsolation(
         if (!table.relforcerowsecurity) {
             violations.push(`${name}: нет FORCE ROW LEVEL SECURITY`);
         }
-        violations.push(...(await policyViolations(db, schema, name)));
+        violations.push(...(await policyViolations(db, schema, name, table.attnotnull)));
         if (name !== OUTBOX_TABLE) {
             violations.push(...(await visibleRows(db, schema, name)));
         }

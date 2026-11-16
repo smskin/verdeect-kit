@@ -1,4 +1,4 @@
-// DbContext, tenantColumn, tenantPolicy (prd.md §3.3, AC-4.8, P0 — только строгий RLS). Эталон — O columns.ts
+// DbContext, tenantColumn, tenantPolicy (prd.md §3.3 v1.33, AC-4.8, AC-5.2, P0 — только строгий RLS). Эталон — O columns.ts
 // tenantIsolation; I (пустой тенант видит всё) не переносится. Файл не импортирует pg: его грузит drizzle-kit со схемой.
 import { sql } from 'drizzle-orm';
 import { pgPolicy, text } from 'drizzle-orm/pg-core';
@@ -13,16 +13,19 @@ export interface DbContext {
     readonly tenant: string | null;
     /** Идентификатор трассировки запроса. */
     readonly traceId: string;
-    /** Субъект операции. */
+    /**
+     * Субъект операции. `OutboxStore.add` пишет копию как задана (§3.3 v1.33): `null` — `null`, незаданный ключ —
+     * пропуск; пакет поля не удаляет и не дополняет.
+     */
     readonly actor: {
-        /** `client_id` служебного клиента. */
-        readonly clientId?: string;
-        /** Учётная запись пользователя. */
-        readonly accountId?: string;
-        /** Участник компании. */
-        readonly memberId?: string;
-        /** От чьего имени действует агент или служба. */
-        readonly onBehalfOf?: string;
+        /** `client_id` служебного клиента или `null`. */
+        readonly clientId?: string | null;
+        /** Учётная запись пользователя или `null`. */
+        readonly accountId?: string | null;
+        /** Участник компании или `null`. */
+        readonly memberId?: string | null;
+        /** От чьего имени действует агент или служба, или `null`. */
+        readonly onBehalfOf?: string | null;
         /** Канал: `http`, `system`, `agent` и т. п. */
         readonly channel: string;
     };

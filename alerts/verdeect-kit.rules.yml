@@ -11,7 +11,7 @@
 #       service: platform
 #
 # Имена порогов: verdeect_kit_threshold:outbox_pending, :outbox_lag_seconds, :events_consumed (result="dlq"),
-# :db_pool_wait_timeouts, :rate_limit_unavailable, :cleanup_runs, :idempotency_late_completions. Правая часть каждого правила агрегирована max by (service),
+# :db_pool_wait_timeouts, :rate_limit_unavailable, :cleanup_runs, :idempotency_late_completions, :background_failures. Правая часть каждого правила агрегирована max by (service),
 # чтобы сравнение on (service) group_left () не давало many-to-many.
 groups:
   - name: verdeect-kit
@@ -128,9 +128,11 @@ groups:
           summary: 'Очистка {{ $labels.table }} сервиса {{ $labels.service }}: {{ $labels.result }}'
           description: >-
             За 2 часа проход очистки таблицы {{ $labels.table }} сервиса {{ $labels.service }} завершился с итогом
-            {{ $labels.result }} (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса
-            («очистка … : ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка
-            не успевает за потоком записей.
+            {{ $labels.result }} (verdeect_cleanup_runs_total). error — проход упал; сбои идут серией: первый —
+            error-лог «фоновая задача: сбой» и событие GlitchTip, следующие — warn «фоновая задача: сбой
+            повторяется» с task и failures, счёт — verdeect_background_failures_total{task="messaging-cleanup"|"idempotency-cleanup"}.
+            partial — проход упёрся в предел пачек, записи старше срока остались: очистка не успевает за потоком
+            записей.
 
       - alert: VerdeectIdempotencyLateCompletions
         # Порог по умолчанию — 0: любая поздняя попытка идемпотентности за 15 минут.
@@ -151,3 +153,22 @@ groups:
             повтор перехватил их строку (verdeect_idempotency_late_completions_total): ответ повтора не
             перезаписан, но обработчик выполнился дважды. Проверьте долгие обработчики — строка in_progress
             считается брошенной через 5 минут.
+
+      - alert: VerdeectBackgroundFailures
+        # Порог по умолчанию — 0: любой сбой фоновой задачи за 15 минут (backgroundFailed, prd.md §3.2 v1.34).
+        expr: |
+          sum by (service, task) (increase(verdeect_background_failures_total[15m]))
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:background_failures)
+              or on (service)
+            (max by (service) (sum by (service, task) (increase(verdeect_background_failures_total[15m]))) * 0)
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Сбои фоновой задачи {{ $labels.task }} сервиса {{ $labels.service }}'
+          description: >-
+            За 15 минут фоновая задача {{ $labels.task }} сервиса {{ $labels.service }} завершалась сбоем
+            (verdeect_background_failures_total). Первый сбой серии — в журнале («фоновая задача: сбой») и
+            GlitchTip, повторные — warn «фоновая задача: сбой повторяется».

@@ -4,6 +4,8 @@
 // по образцу IdempotencyCleanup. Прямой DELETE под ролью приложения с пустым тенантом: outbox — исключение политики,
 // inbox без RLS (П15). Значения /database (runExclusive, deleteInBatches) передаёт forRoot: messaging их не импортирует.
 // v1.31 (AC-5.12): расписание — цепочка таймеров cleanupClock: замок занят — через 5–6 мин, иначе — через час.
+// v1.34 (§3.4 стр. 134, AC-5.24): серия backgroundFailed('messaging-cleanup') — один сбой за проход по первой ошибке
+// (замок или любая таблица), backgroundSucceeded — только если все таблицы без ошибки; занятый замок и остановка — ничего.
 import { sql, type SQL } from 'drizzle-orm';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import type * as Database from '../database/index.js';
@@ -16,9 +18,9 @@ import {
 } from '../internal/cleanup-schedule.js';
 import { messagingCleanupLockKey } from '../internal/outbox-policy.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
+import { backgroundFailed, backgroundSucceeded } from '../observability/background-failures.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
-import { captureError } from '../observability/sentry.js';
 import { nestLog, type MessagingLog } from './rabbit-connection.js';
 import type { KitInboxTable, KitOutboxTable } from './tables.js';
 import { CLEANUP_BATCH_SIZE, CLEANUP_MAX_BATCHES, RETENTION_DAYS } from './topology.js';
@@ -30,6 +32,9 @@ interface CleanupLimits {
 }
 
 type CleanupTable = 'outbox' | 'inbox';
+
+/** task серии сбоев прохода очистки сообщений (§3.4 v1.34). */
+const CLEANUP_TASK = 'messaging-cleanup';
 
 /** Зависимости очистки (внутренние). */
 export interface MessagingCleanupDeps {
@@ -139,7 +144,7 @@ export class MessagingCleanup {
 
     /**
      * Проход очистки; идущий проход не накладывается (параллельный вызов получает его промис). Ошибка не пробрасывается.
-     * Итог — `{ran}` `runExclusive`: `false` — блокировку держит другая реплика или идёт остановка.
+     * Итог — `{ran}`: `false` — замок у другой реплики, остановка или ошибка прохода (серия `messaging-cleanup`).
      */
     async run(
         limits: CleanupLimits = { batchSize: CLEANUP_BATCH_SIZE, maxBatches: CLEANUP_MAX_BATCHES },
@@ -187,6 +192,7 @@ export class MessagingCleanup {
     private async pass(limits: CleanupLimits): Promise<CleanupOutcome> {
         const { db, database, schema } = this.deps;
         const tables = this.tables.map(([name]) => name);
+        let failure: { readonly error: unknown } | undefined;
         try {
             const outcome = await database.runExclusive(
                 db,
@@ -196,7 +202,10 @@ export class MessagingCleanup {
                         if (this.stopped) {
                             break;
                         }
-                        await this.cleanTable(name, sqlOf, limits, connection);
+                        const error = await this.cleanTable(name, sqlOf, limits, connection);
+                        if (error !== undefined) {
+                            failure ??= { error };
+                        }
                     }
                 },
             );
@@ -205,26 +214,34 @@ export class MessagingCleanup {
 
                 return 'busy';
             }
-
-            return 'done';
         } catch (error) {
             // Блокировку взять не удалось (БД недоступна): ошибка обеих таблиц.
             for (const table of tables) {
                 this.deps.metrics?.cleanupRuns.inc({ table, result: 'error' });
             }
-            this.log.error({ tables, err: sanitizeError(error) }, 'очистка сообщений: ошибка');
-            captureError(error);
+            failure ??= { error };
+        }
+        if (this.stopped) {
+            // Остановка: серия не меняется (§3.4 v1.34).
+            return failure === undefined ? 'done' : 'error';
+        }
+        if (failure !== undefined) {
+            backgroundFailed(CLEANUP_TASK, failure.error, this.log);
 
             return 'error';
         }
+        backgroundSucceeded(CLEANUP_TASK, this.log);
+
+        return 'done';
     }
 
+    /** Ошибка таблицы возвращается в итог прохода (без своего error-лога и события); иначе `undefined`. */
     private async cleanTable(
         table: CleanupTable,
         sqlOf: (batch: number) => SQL,
         limits: CleanupLimits,
         connection: PoolClient,
-    ): Promise<void> {
+    ): Promise<unknown> {
         try {
             // Пачки — на соединении блокировки: второе соединение пула не берётся (KT-22 п. 4).
             const { deleted, batches, complete } = await this.deps.database.deleteInBatches({
@@ -237,10 +254,16 @@ export class MessagingCleanup {
             const result = resultOf(complete, batches, limits.maxBatches);
             this.deps.metrics?.cleanupRuns.inc({ table, result });
             this.log.info({ table, deleted, batches, result }, 'очистка сообщений: проход');
+
+            return undefined;
         } catch (error) {
             this.deps.metrics?.cleanupRuns.inc({ table, result: 'error' });
-            this.log.error({ table, err: sanitizeError(error) }, 'очистка сообщений: ошибка');
-            captureError(error);
+            this.log.debug(
+                { table, err: sanitizeError(error) },
+                'очистка сообщений: ошибка таблицы',
+            );
+
+            return error;
         }
     }
 }

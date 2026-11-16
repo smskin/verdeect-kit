@@ -1,0 +1,1 @@
+CREATE POLICY "outbox_tenantless_insert" ON "kit"."outbox" AS PERMISSIVE FOR INSERT TO public WITH CHECK (tenant IS NULL);

@@ -1,6 +1,6 @@
 // sanitizeError и registerErrorSanitizer (prd.md §3.2, AC-2.3, NFR-4). Эталон — O sanitize-error.ts (SanitizedDbError,
 // проверка pg по форме, «Failed query (<code>)», стек без первой строки, sanitizeLogObject, serializeError); ветка
-// ioredis — B sanitize-error.ts (SanitizedRedisError). По PRD: Drizzle распознаётся по форме, без импорта drizzle-orm;
+// ioredis — B sanitize-error.ts (SanitizedRedisError). По PRD: Drizzle распознаётся по форме (query + params, KT-124), без импорта drizzle-orm;
 // цепочка cause — не глубже 10 звеньев и без зацикливания; ветки сервисов — через registerErrorSanitizer (SMTP Identity).
 import { stdSerializers } from 'pino';
 
@@ -88,13 +88,24 @@ function isPgError(value: object): boolean {
 }
 
 /**
- * DrizzleQueryError по форме: `name` экземпляра или `type` сериализованной формы (pino-http сначала
- * применяет stdSerializers.err). Без импорта drizzle-orm (§3.2).
+ * DrizzleQueryError по форме (§3.2, KT-124): строковое `query` и массив `params` (у экземпляра drizzle-orm 0.45
+ * `name` = `'Error'`), имя класса `constructor.name`, или `type` сериализованной формы (pino-http сначала применяет
+ * stdSerializers.err). Без импорта drizzle-orm.
+ * Широкое распознавание — сознательно (NFR-4): ложная очистка чужой ошибки с `query`/`params` безопаснее утечки SQL.
  */
 function isDrizzleQueryError(value: object): boolean {
-    const { name, type } = value as { name?: unknown; type?: unknown };
+    const { query, params, type, constructor } = value as {
+        query?: unknown;
+        params?: unknown;
+        type?: unknown;
+        constructor?: { name?: unknown };
+    };
 
-    return name === DRIZZLE_QUERY_ERROR || type === DRIZZLE_QUERY_ERROR;
+    return (
+        (typeof query === 'string' && Array.isArray(params)) ||
+        constructor?.name === DRIZZLE_QUERY_ERROR ||
+        type === DRIZZLE_QUERY_ERROR
+    );
 }
 
 /** Ошибка ioredis: поле command `{name, args}` — без импорта ioredis. */

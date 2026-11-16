@@ -1,4 +1,6 @@
 // Публичная поверхность @verdeect/kit/observability (prd.md §3.2). Всё, что не перечислено, — не экспортируется.
+export { backgroundFailed, backgroundSucceeded } from './background-failures.js';
+export type { KitBackgroundLogger } from './background-failures.js';
 export { failStartup } from './fail-startup.js';
 export type { StartupFailure } from './fail-startup.js';
 export { HealthRegistry } from './health-registry.js';

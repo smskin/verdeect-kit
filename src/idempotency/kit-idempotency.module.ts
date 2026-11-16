@@ -2,7 +2,8 @@
 // idempotency-cleanup.job.ts (раз в час, пачка 1000, до 100 пачек, остановка); по PRD: очистка через runExclusive
 // функцией idempotency_purge пачками; нет функции — отказ запуска; расписание — таймер (без @nestjs/schedule); пулы и
 // шаги остановки — хуки Nest (KitLifecycle не используется). v1.31 (AC-5.12): расписание — цепочка таймеров
-// cleanupClock: замок занят — через 5–6 мин, иначе — через час.
+// cleanupClock: замок занят — через 5–6 мин, иначе — через час. v1.34 (§3.3а стр. 117, AC-5.24): ошибка прохода — серия
+// backgroundFailed('idempotency-cleanup'), выполненный проход — backgroundSucceeded, занятый замок и остановка — ничего.
 import {
     Inject,
     Injectable,
@@ -31,9 +32,8 @@ import { assertServiceName } from '../internal/service-name.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
 import { KIT_BACKGROUND_LOOPS, KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { requireKitCore } from '../internal/kit-core-required.js';
+import { backgroundFailed, backgroundSucceeded } from '../observability/background-failures.js';
 import type { KitMetrics } from '../observability/metrics.js';
-import { sanitizeError } from '../observability/sanitize-error.js';
-import { captureError } from '../observability/sentry.js';
 import { IdempotencyInterceptor, KIT_IDEMPOTENCY_TABLE } from './idempotency.interceptor.js';
 import { IDEMPOTENCY_TABLE, PURGE_FUNCTION, type KitIdempotencyTable } from './table.js';
 
@@ -49,10 +49,14 @@ export interface KitIdempotencyModuleOptions {
     readonly table: KitIdempotencyTable;
 }
 
+/** task серии сбоев прохода очистки идемпотентности (§3.3а v1.34). */
+const CLEANUP_TASK = 'idempotency-cleanup';
+
 /** Логгер прохода: pino экземпляра (`service`, `replica` в `base`) или логгер Nest. */
 interface CleanupLog {
     debug(fields: object, message: string): void;
     info(fields: object, message: string): void;
+    warn(fields: object, message: string): void;
     error(fields: object, message: string): void;
 }
 
@@ -62,6 +66,7 @@ function nestLog(): CleanupLog {
     return {
         debug: (fields, message) => logger.debug(fields, message),
         info: (fields, message) => logger.log(fields, message),
+        warn: (fields, message) => logger.warn(fields, message),
         error: (fields, message) => logger.error(fields, message),
     };
 }
@@ -221,12 +226,18 @@ export class IdempotencyCleanup
             const result = resultOf(complete, batches, limits.maxBatches);
             this.metrics.cleanupRuns.inc({ table, result });
             this.log.info({ table, deleted, batches, result }, 'очистка идемпотентности: проход');
+            // Остановка серию не меняет (R9), как у очистки сообщений.
+            if (!this.stopped) {
+                backgroundSucceeded(CLEANUP_TASK, this.log);
+            }
 
             return 'done';
         } catch (error) {
             this.metrics.cleanupRuns.inc({ table, result: 'error' });
-            this.log.error({ table, err: sanitizeError(error) }, 'очистка идемпотентности: ошибка');
-            captureError(error);
+            // Остановка серию не меняет (R9), как у очистки сообщений.
+            if (!this.stopped) {
+                backgroundFailed(CLEANUP_TASK, error, this.log);
+            }
 
             return 'error';
         }

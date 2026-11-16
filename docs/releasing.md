@@ -27,11 +27,13 @@
 4. **Коммит и тег:**
 
    ```bash
-   git commit -am "chore(release): vX.Y.Z"
-   git tag vX.Y.Z
+   git commit -am "chore(release): X.Y.Z"
+   git tag -a vX.Y.Z -m "X.Y.Z"
    git push origin main
    git push origin vX.Y.Z
    ```
+
+   Проверка: `git cat-file -t vX.Y.Z` выводит `tag` (аннотированный тег). Вывод `commit` — тег лёгкий: удалить его локально (`git tag -d vX.Y.Z`) и в origin (`git push origin :refs/tags/vX.Y.Z`), поставить заново `git tag -a vX.Y.Z -m "X.Y.Z"` и отправить.
 
 5. **CI** (`.github/workflows/ci.yml`): lint и test (Node 22 и 24: U + I) → timing и package (`make build pack-check`) → publish. Job `publish` запускается только на теге `v*` после зелёных проверок; `scripts/publish.mjs` принимает только `v<major>.<minor>.<patch>` и `v<major>.<minor>.<patch>-rc.<N>`, остальные теги — отказ без публикации.
 6. **Проверить публикацию:** `npm view @verdeect/kit@X.Y.Z version` и `npm view @verdeect/kit dist-tags` (`next` — последний `rc`, `latest` — с `1.0.0`).
@@ -83,7 +85,7 @@
 Trusted Publisher настраивается только для пакета, который уже есть в npm, поэтому `1.0.0-rc.1` мейнтейнер публикует вручную после E8, с 2FA и без токенов, с меткой `next`. У `1.0.0-rc.1` нет provenance — это единственная ручная публикация.
 
 1. Шаги 1–3 выше: проверки зелёные, `version` = `1.0.0-rc.1`, раздел `[1.0.0-rc.1]` в CHANGELOG с датой тега.
-2. Поставить тег локально, пока не пушить: `git tag v1.0.0-rc.1`.
+2. Поставить аннотированный тег локально, пока не пушить: `git tag -a v1.0.0-rc.1 -m "1.0.0-rc.1"`.
 3. Чистый клон этого тега, проверки и публикация:
 
    ```bash

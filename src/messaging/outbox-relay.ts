@@ -7,12 +7,15 @@
 // Остановка во время неподтверждённой публикации оставляет строку без attempts + 1: повтор после рестарта —
 // «не больше одного раза по смыслу» через inbox получателя (UC-6). v1.31 (§3.8): backgroundLoops: false — цикл и канал
 // не создаются; stopLoops() — остановка цикла без срока (stopBackgroundLoops), канал закрывает остановка приложения.
+// v1.34 (§3.4 стр. 131, AC-5.24): сбой прохода (ошибка БД) — серия backgroundFailed('outbox-relay'), проход без
+// исключения — backgroundSucceeded; «5 неудач строки» — правило строки, не прохода.
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import type { Db } from '../database/db.js';
 import { ulid } from '../internal/ids.js';
 import type { KitMetrics } from '../observability/metrics.js';
+import { backgroundFailed, backgroundSucceeded } from '../observability/background-failures.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
-import { captureError, captureThrottled } from '../observability/sentry.js';
+import { captureError } from '../observability/sentry.js';
 import { eventKey, type KitEvent } from './define-event.js';
 import { buildEnvelope } from './envelope.js';
 import type { OutboxClaimedRow, OutboxStore } from './outbox-store.js';
@@ -34,6 +37,8 @@ import {
 } from './topology.js';
 
 const CHANNEL_NAME = 'outbox-relay';
+/** task серии сбоев прохода relay (§3.4 v1.34). */
+const RELAY_TASK = 'outbox-relay';
 const CONFIRM_DEADLINE_ERROR = 'confirm deadline';
 const STOPPED = Symbol('stopped');
 /** Срок запроса метрик outbox при `/metrics`, мс (§3.4 v1.25). */
@@ -209,6 +214,8 @@ export class OutboxRelay {
         }
         try {
             const result = await this.drain();
+            // Проход выполнен; неудача публикации строки (failed) — правило строки, серию прохода не продлевает.
+            backgroundSucceeded(RELAY_TASK, this.log);
             if (result.failed) {
                 return this.nextBackoff();
             }
@@ -216,8 +223,7 @@ export class OutboxRelay {
 
             return result.claimed === RELAY_BATCH_SIZE ? 0 : RELAY_POLL_MS;
         } catch (error) {
-            this.log.error({ err: sanitizeError(error) }, 'outbox: ошибка БД relay');
-            captureThrottled('outbox-relay:db', error);
+            backgroundFailed(RELAY_TASK, error, this.log);
 
             return this.nextBackoff();
         }

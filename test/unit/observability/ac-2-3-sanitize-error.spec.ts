@@ -2,8 +2,10 @@
 // code, имя команды без аргументов; цепочка cause глубже 10 обрезается; зарегистрированная ветка сервиса применяется
 // (prd.md §3.2). Перенос (inventory §2): I sanitize-error.spec.ts (DrizzleQueryError с email и хэшем, pg без Drizzle,
 // обёрнутая дважды, стек без исходного сообщения, прочие ошибки не меняются, sanitizeLogObject), P/O sanitize-error.spec.ts;
-// ioredis — по B sanitize-error.ts. Ошибки Drizzle и pg — объекты по форме, без импорта drizzle-orm и pg.
+// ioredis — по B sanitize-error.ts. Ошибка Drizzle — настоящий DrizzleQueryError drizzle-orm (у экземпляра name = 'Error',
+// KT-124), pg — объект по форме, без импорта pg. Без pg-причины (тайм-аут, обрыв) — тоже без SQL и параметров.
 import { Writable } from 'node:stream';
+import { DrizzleQueryError } from 'drizzle-orm';
 import { pino, stdSerializers } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { registerErrorSanitizer, sanitizeError } from '../../../src/observability/index.js';
@@ -36,14 +38,16 @@ function pgError(): Error {
     );
 }
 
-/** Форма DrizzleQueryError drizzle-orm 0.45: message с SQL и params, поля query, params, cause. */
-function drizzleError(): Error {
-    const params = ['0192-uuid', EMAIL, HASH];
+const PARAMS = ['0192-uuid', EMAIL, HASH];
 
-    return Object.assign(
-        new Error(`Failed query: ${QUERY}\nparams: ${params.join(',')}`, { cause: pgError() }),
-        { name: 'DrizzleQueryError', query: QUERY, params },
-    );
+/** Настоящий DrizzleQueryError drizzle-orm: message с SQL и params, поля query, params, cause (pg-ошибка). */
+function drizzleError(): Error {
+    return new DrizzleQueryError(QUERY, PARAMS, pgError());
+}
+
+/** DrizzleQueryError без pg-причины: тайм-аут запроса или обрыв соединения — ошибка драйвера без SQLSTATE. */
+function drizzleErrorWithoutPg(cause: Error): Error {
+    return new DrizzleQueryError(QUERY, PARAMS, cause);
 }
 
 function redisError(): Error {
@@ -113,6 +117,31 @@ describe('UC-4: sanitizeError', () => {
         expect((sanitized as Error).message).toBe('Failed query (23505)');
         expectNoSecrets(JSON.stringify(sanitized) + String((sanitized as Error).stack));
     });
+
+    it.each([
+        ['тайм-аут запроса', new Error('Query read timeout')],
+        ['обрыв соединения', new Error('Connection terminated unexpectedly')],
+    ])(
+        'AC-2.3: настоящий DrizzleQueryError без pg-причины (%s) → «Failed query» без SQL и параметров, в логе pino — тоже',
+        (_case, cause) => {
+            const error = drizzleErrorWithoutPg(cause);
+
+            const sanitized = sanitizeError(error);
+
+            expect(error.name).toBe('Error');
+            expect(sanitized).toBeInstanceOf(SanitizedDbError);
+            expect((sanitized as Error).message).toBe('Failed query');
+            expectNoSecrets(JSON.stringify(sanitized) + String((sanitized as Error).stack));
+            for (const via of ['pino', 'pino-http'] as const) {
+                const output = pinoOutput(drizzleErrorWithoutPg(cause), via);
+
+                expectNoSecrets(output);
+                expect(JSON.parse(output)).toMatchObject({
+                    err: { type: 'SanitizedDbError', message: 'Failed query' },
+                });
+            }
+        },
+    );
 
     it('AC-2.3: ошибка pg с Key (…)=(…), обёрнутая дважды → без значений ключа', () => {
         const wrapped = new Error('outer', { cause: new Error('middle', { cause: pgError() }) });
