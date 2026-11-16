@@ -1,7 +1,8 @@
 // KitIdempotencyModule.forRoot({table}) (prd.md §3.3а v1.14, AC-4.14, AC-9.5, UC-9). Эталон — O idempotency.module.ts +
 // idempotency-cleanup.job.ts (раз в час, пачка 1000, до 100 пачек, остановка); по PRD: очистка через runExclusive
 // функцией idempotency_purge пачками; нет функции — отказ запуска; расписание — таймер (без @nestjs/schedule); пулы и
-// шаги остановки — хуки Nest (KitLifecycle не используется).
+// шаги остановки — хуки Nest (KitLifecycle не используется). v1.31 (AC-5.12): расписание — цепочка таймеров
+// cleanupClock: замок занят — через 5–6 мин, иначе — через час.
 import {
     Inject,
     Injectable,
@@ -21,18 +22,20 @@ import { deleteInBatches } from '../database/batches.js';
 import { Db } from '../database/db.js';
 import { runExclusive } from '../database/run-exclusive.js';
 import { resultOf } from '../internal/cleanup-result.js';
+import {
+    cleanupClock,
+    nextCleanupDelay,
+    type CleanupOutcome,
+} from '../internal/cleanup-schedule.js';
 import { assertServiceName } from '../internal/service-name.js';
 import { quoteIdentifier } from '../internal/sql-identifier.js';
-import { KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
+import { KIT_BACKGROUND_LOOPS, KIT_LOGGER, KIT_PACKAGE_METRICS } from '../internal/tokens.js';
 import { requireKitCore } from '../internal/kit-core-required.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError } from '../observability/sentry.js';
 import { IdempotencyInterceptor, KIT_IDEMPOTENCY_TABLE } from './idempotency.interceptor.js';
 import { IDEMPOTENCY_TABLE, PURGE_FUNCTION, type KitIdempotencyTable } from './table.js';
-
-/** Интервал очистки (эталон O — раз в час). */
-const CLEANUP_INTERVAL_MS = 3_600_000;
 
 /** Пределы прохода по умолчанию (эталон O). */
 const CLEANUP_LIMITS = { batchSize: 1000, maxBatches: 100 } as const;
@@ -71,8 +74,11 @@ export class IdempotencyCleanup
     private readonly log: CleanupLog;
     private readonly metrics: KitMetrics;
     private stopped = false;
-    private interval: NodeJS.Timeout | undefined;
-    private current: Promise<void> | undefined;
+    /** `stopLoops()`: расписание остановлено, `run()` по вызову работает. */
+    private loopsStopped = false;
+    private timer: NodeJS.Timeout | undefined;
+    private current: Promise<unknown> | undefined;
+    private pending: Promise<CleanupOutcome> | undefined;
     private running = false;
 
     constructor(
@@ -80,6 +86,7 @@ export class IdempotencyCleanup
         @Inject(KIT_IDEMPOTENCY_SCHEMA) private readonly schema: string,
         @Optional() @Inject(KIT_PACKAGE_METRICS) metrics?: KitMetrics,
         @Optional() @Inject(KIT_LOGGER) logger?: PinoLogger,
+        @Optional() @Inject(KIT_BACKGROUND_LOOPS) private readonly backgroundLoops?: boolean,
     ) {
         this.metrics = requireKitCore(metrics, 'KitIdempotencyModule');
         this.log = logger ?? nestLog();
@@ -100,50 +107,95 @@ export class IdempotencyCleanup
         }
     }
 
-    /** Первый проход сразу после старта, затем раз в час. */
+    /** Первый проход сразу после старта, дальше — по расписанию `runScheduled`. */
     onApplicationBootstrap(): void {
+        if (this.backgroundLoops === false) {
+            this.log.debug(
+                {},
+                'очистка идемпотентности: фоновые циклы отключены (backgroundLoops: false)',
+            );
+
+            return;
+        }
         this.current = new Promise<void>((resolve) => {
             setTimeout(resolve, 0).unref();
-        }).then(() => this.run());
-        this.interval = setInterval(() => void this.run(), CLEANUP_INTERVAL_MS);
-        this.interval.unref();
+        }).then(() => this.runScheduled());
+    }
+
+    /**
+     * @internal Проход и планирование следующего (§3.4 v1.31): выполнен или ошибка — через час, замок занят — через
+     * 5 мин + до 1 мин. После остановки следующий не планируется.
+     */
+    async runScheduled(): Promise<void> {
+        if (this.loopsStopped) {
+            return;
+        }
+        const outcome = await this.passOnce();
+        if (this.stopped || this.loopsStopped) {
+            return;
+        }
+        const delayMs = nextCleanupDelay(outcome);
+        cleanupClock.clearTimeout(this.timer);
+        this.timer = cleanupClock.setTimeout(() => void this.runScheduled(), delayMs);
+        this.log.debug(
+            { scope: 'idempotency', delayMs, outcome },
+            'очистка: следующий проход запланирован',
+        );
     }
 
     /** Текущий проход (включая ещё не начатый первый); нет — разрешённый промис. */
-    idle(): Promise<void> {
-        return this.current ?? Promise.resolve();
+    async idle(): Promise<void> {
+        await this.current;
     }
 
     /** Проход очистки; идущий проход не накладывается (пропуск). Ошибка не пробрасывается. */
-    run(
+    async run(
         limits: { readonly batchSize: number; readonly maxBatches: number } = CLEANUP_LIMITS,
     ): Promise<void> {
+        await this.passOnce(limits);
+    }
+
+    /** Один проход; параллельный вызов получает идущий. Остановлено — `busy` без прохода. */
+    private passOnce(
+        limits: { readonly batchSize: number; readonly maxBatches: number } = CLEANUP_LIMITS,
+    ): Promise<CleanupOutcome> {
         if (this.stopped) {
-            return Promise.resolve();
+            return Promise.resolve('busy');
         }
-        if (this.running && this.current !== undefined) {
-            return this.current;
+        if (this.running && this.pending !== undefined) {
+            return this.pending;
         }
         this.running = true;
         const pass = this.pass(limits).finally(() => {
             this.running = false;
         });
+        this.pending = pass;
         this.current = pass;
 
         return pass;
     }
 
+    /**
+     * @internal Остановка расписания для тестов (`stopBackgroundLoops`): следующий проход не планируется, текущий
+     * дорабатывает (ожидание без срока). Повтор — без действия, возобновления нет.
+     */
+    async stopLoops(): Promise<void> {
+        this.loopsStopped = true;
+        cleanupClock.clearTimeout(this.timer);
+        await this.current;
+    }
+
     /** Шаг 3 остановки: пачка дорабатывает, новая не начинается. */
     async beforeApplicationShutdown(): Promise<void> {
         this.stopped = true;
-        clearInterval(this.interval);
+        cleanupClock.clearTimeout(this.timer);
         await this.current;
     }
 
     private async pass(limits: {
         readonly batchSize: number;
         readonly maxBatches: number;
-    }): Promise<void> {
+    }): Promise<CleanupOutcome> {
         const table = IDEMPOTENCY_TABLE;
         const fn = sql.raw(`${quoteIdentifier(this.schema)}.${quoteIdentifier(PURGE_FUNCTION)}`);
         try {
@@ -163,16 +215,20 @@ export class IdempotencyCleanup
             if (!outcome.ran) {
                 this.log.debug({ table }, 'очистка идемпотентности: другая реплика');
 
-                return;
+                return 'busy';
             }
             const { deleted, batches, complete } = outcome.result;
             const result = resultOf(complete, batches, limits.maxBatches);
             this.metrics.cleanupRuns.inc({ table, result });
             this.log.info({ table, deleted, batches, result }, 'очистка идемпотентности: проход');
+
+            return 'done';
         } catch (error) {
             this.metrics.cleanupRuns.inc({ table, result: 'error' });
             this.log.error({ table, err: sanitizeError(error) }, 'очистка идемпотентности: ошибка');
             captureError(error);
+
+            return 'error';
         }
     }
 }

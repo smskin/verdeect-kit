@@ -29,6 +29,10 @@ const ISOLATED: string[] = [
     'test/integration/http/ac-3-12-configure-fastify.spec.ts',
     // vi.spyOn(GenericContainer.prototype, 'start') — патч прототипа testcontainers.
     'test/integration/testing/ac-1-14-external-stack.spec.ts',
+    // vi.stubEnv, подмена process.exit, initFakeSentry — стенд bootstrapService.
+    'test/integration/database/ac-4-20-database-unavailable.spec.ts',
+    // initFakeSentry — процесс-глобальный Sentry.
+    'test/integration/redis/ac-8-6-channel-kind.spec.ts',
 ];
 
 export default defineConfig({

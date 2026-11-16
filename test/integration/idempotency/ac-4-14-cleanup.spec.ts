@@ -1,12 +1,15 @@
 // AC-4.14, AC-9.5, AC-4.11 (UC-9): очистка идемпотентности под kit_app функцией idempotency_purge — записи старше 24 ч
 // всех компаний и без компании, одна реплика (runExclusive), метрика verdeect_cleanup_runs_total ok/partial/error,
 // остановка во время прохода → interrupted, DB_POOL_MAX=1 (prd.md §3.3а v1.14; KT-22 п. 4, 5). Перенос O idempotency-cleanup.int-spec.ts.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+// v1.31 (AC-5.12): при занятом замке следующий проход через 5 мин + до 1 мин, после прохода — через час.
+import pg from 'pg';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
+import { cleanupClock } from '../../../src/internal/cleanup-schedule.js';
 import { countQueries } from '../../../src/testing/count-queries.js';
 import { createScratchDatabase } from '../../../src/testing/scratch-database.js';
 import { adminQuery as adminAt } from '../../support/postgres.js';
-import { adminQuery } from '../../support/database.js';
+import { adminQuery, appUrl } from '../../support/database.js';
 import {
     OTHER_TENANT,
     cleanupRuns,
@@ -191,6 +194,33 @@ describe('UC-9: очистка идемпотентности', () => {
             expect(await keys()).toEqual([]);
         } finally {
             await stand.close();
+        }
+    });
+
+    it('AC-5.12: при занятом замке следующая попытка — в окне [5, 6] мин, после выполненного прохода — через час (часы подменены)', async () => {
+        const holder = new pg.Client({ connectionString: appUrl() });
+        await holder.connect();
+        try {
+            const delays: number[] = [];
+            vi.spyOn(cleanupClock, 'setTimeout').mockImplementation((_fn, ms) => {
+                delays.push(ms);
+
+                return setTimeout(() => undefined, 0);
+            });
+            const random = vi.spyOn(cleanupClock, 'random');
+            await holder.query('select pg_advisory_lock(hashtextextended($1, 0))', [LOCK_KEY]);
+
+            random.mockReturnValue(0);
+            await first.cleanup.runScheduled();
+            random.mockReturnValue(0.999);
+            await first.cleanup.runScheduled();
+            await holder.query('select pg_advisory_unlock(hashtextextended($1, 0))', [LOCK_KEY]);
+            await first.cleanup.runScheduled();
+
+            expect(delays).toEqual([300_000, 359_940, 3_600_000]);
+        } finally {
+            vi.restoreAllMocks();
+            await holder.end();
         }
     });
 });

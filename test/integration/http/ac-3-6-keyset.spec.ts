@@ -1,17 +1,20 @@
 // AC-3.6 (UC-4): keyset-пагинация на PostgreSQL (prd.md §3.5): обход страниц по (created_at, id) desc без дублей и
 // пропусков, вставка между страницами, неуникальный последний ключ, limit 201 и неверный курсор → 422. PostgreSQL —
 // globalSetup уровня I (startTestStack); своя временная схема на файл, удаляется в afterAll. Порядок — по уникальному id.
+// v1.31 (r26): значение ключа курсора проверяется по типу столбца до запроса (timestamptz, uuid) → 422 path: cursor.
 import { randomBytes } from 'node:crypto';
 import { asc, desc, sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { pgSchema, text, timestamp } from 'drizzle-orm/pg-core';
+import { pgSchema, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import { DomainError } from '../../../src/http/errors.js';
+import { countQueries } from '../../../src/testing/count-queries.js';
 import {
     afterCursor,
     cursorTimestamp,
     decodeCursor,
+    encodeCursor,
     pageOf,
     PageQuerySchema,
     type Page,
@@ -23,6 +26,7 @@ const items = schema.table('items', {
     id: text('id').primaryKey(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull(),
     title: text('title').notNull(),
+    ref: uuid('ref'),
 });
 type Row = typeof items.$inferSelect;
 /** Время в режиме date (JS Date, как у сервисов): микросекунды timestamptz в Date теряются (К23). */
@@ -40,7 +44,7 @@ beforeAll(async () => {
     await db.execute(sql.raw(`create schema "${SCHEMA}"`));
     await db.execute(
         sql.raw(
-            `create table "${SCHEMA}".items (id text primary key, created_at timestamptz not null, title text not null)`,
+            `create table "${SCHEMA}".items (id text primary key, created_at timestamptz not null, title text not null, ref uuid)`,
         ),
     );
     await db.execute(
@@ -69,16 +73,25 @@ async function seed(count: number): Promise<void> {
     );
 }
 
-async function page(cursor: string | undefined, limit: number): Promise<Page<Row>> {
+async function page(
+    cursor: string | undefined,
+    limit: number,
+): Promise<Page<Row & { cursorAt: string }>> {
     const keys = decodeCursor(cursor, 2);
     const rows = await db
-        .select()
+        .select({
+            id: items.id,
+            createdAt: items.createdAt,
+            title: items.title,
+            ref: items.ref,
+            cursorAt: cursorTimestamp(items.createdAt),
+        })
         .from(items)
         .where(afterCursor([items.createdAt, items.id], keys, 'desc'))
         .orderBy(desc(items.createdAt), desc(items.id))
         .limit(limit + 1);
 
-    return pageOf(rows, limit, (row) => [row.createdAt, row.id]);
+    return pageOf(rows, limit, (row) => [row.cursorAt, row.id]);
 }
 
 describe('UC-4: keyset на PostgreSQL', () => {
@@ -174,6 +187,37 @@ describe('UC-4: keyset на PostgreSQL', () => {
 
             const byTime = ['ev-0', 'ev-1', 'ev-2', 'ev-3', 'ev-4', 'ev-5'];
             expect(seen, dir).toEqual(dir === 'desc' ? byTime : [...byTime].reverse());
+        }
+    });
+
+    it('AC-3.6: курсор с ключом timestamptz = 42, "abc", "now" и ключом uuid = "x" → 422 path: cursor, без события GlitchTip и запроса к БД', async () => {
+        const cases = [
+            { cols: [items.createdAt, items.id], cursor: encodeCursor([42, 'id-1']) },
+            { cols: [items.createdAt, items.id], cursor: encodeCursor(['abc', 'id-1']) },
+            { cols: [items.createdAt, items.id], cursor: encodeCursor(['now', 'id-1']) },
+            { cols: [items.ref, items.id], cursor: encodeCursor(['x', 'id-1']) },
+        ];
+        for (const { cols, cursor } of cases) {
+            let error: unknown;
+            const { count } = await countQueries(pool, async () => {
+                try {
+                    await db
+                        .select()
+                        .from(items)
+                        .where(afterCursor(cols, decodeCursor(cursor, 2), 'desc'))
+                        .limit(2);
+                } catch (caught) {
+                    error = caught;
+                }
+            });
+
+            // DomainError: фильтр пишет warn без GlitchTip (ac-3-3-exception-filter.spec.ts).
+            expect(error, cursor).toBeInstanceOf(DomainError);
+            expect((error as DomainError).status).toBe(422);
+            expect((error as DomainError).details).toEqual({
+                issues: [{ path: 'cursor', code: 'invalid' }],
+            });
+            expect(count, cursor).toBe(0);
         }
     });
 });

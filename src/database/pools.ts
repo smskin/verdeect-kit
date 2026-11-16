@@ -1,6 +1,7 @@
 // Сборка пулов /database (prd.md §3.3, §3.8 v1.26, AC-4.5, AC-4.19; KT-77): основной пул и пул чтения с обработчиками
 // error/connect и учётом срока пула. Без @nestjs/*: общая для KitDatabaseModule и createTestDb (/testing не грузит
 // kit-database.module.ts). Перенесено из kit-database.module.ts (эталон O drizzle.provider.ts: READ_POOL_OPTIONS).
+// v1.31 (AC-4.20): checkConnection — select 1 при запуске в сроке пула; срок этой проверки не шлёт событие пула.
 import { isPoolTimeout, tagPoolTimeout, type KitPoolName } from '../internal/pg-errors.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
@@ -48,6 +49,15 @@ export interface BuildPoolsOptions {
 
 type ConnectCallback = (error: Error | undefined, ...rest: unknown[]) => void;
 
+/** Клиент пула для проверки соединения. */
+interface CheckClient {
+    query(text: string): Promise<unknown>;
+    release(destroy?: boolean): void;
+}
+
+/** `connect` без события GlitchTip при сроке: метрика и `warn` остаются (проверка при запуске, AC-4.20). */
+const quietConnects = new WeakMap<Pool, () => Promise<CheckClient>>();
+
 /**
  * Учёт срока пула (AC-4.5, KT-19 п. 3): обёртка `connect` экземпляра — через неё идут и транзакции `Db`, и
  * `pool.query` (`DRIZZLE`, `readGlobal`). Срок помечается именем пула один раз: метрика, `captureThrottled`, `warn`.
@@ -58,15 +68,24 @@ function instrumentPoolTimeouts(
     log: KitPoolsLog,
     metrics?: KitMetrics,
 ): void {
-    const report = (error: unknown): void => {
+    const report = (error: unknown, capture = true): void => {
         if (!isPoolTimeout(error) || !tagPoolTimeout(error, name)) {
             return;
         }
         metrics?.dbPoolWaitTimeouts.inc({ pool: name });
-        captureThrottled(`db-pool-timeout:${name}`, error);
+        if (capture) {
+            captureThrottled(`db-pool-timeout:${name}`, error);
+        }
         log.warn({ pool: name }, 'пул БД: истёк срок ожидания клиента');
     };
     const original = pool.connect.bind(pool) as (callback?: ConnectCallback) => unknown;
+    // Подавление привязано к вызову, а не к флагу: поздний отказ connect после проверки события тоже не даёт.
+    quietConnects.set(pool, () =>
+        (original() as Promise<CheckClient>).catch((error: unknown) => {
+            report(error, false);
+            throw error;
+        }),
+    );
     const connect = (callback?: ConnectCallback): unknown => {
         if (typeof callback === 'function') {
             return original((error, ...rest) => {
@@ -112,4 +131,47 @@ export async function buildPools(options: BuildPoolsOptions): Promise<KitPools> 
     };
 
     return { main: create('main'), read: create('read') };
+}
+
+/** Текст срока pg-pool: его распознаёт `isPoolTimeout` (`failStartup` → `DATABASE_UNAVAILABLE`). */
+const CHECK_TIMEOUT_MESSAGE = 'timeout exceeded when trying to connect';
+
+/**
+ * Проверка соединения при запуске (§3.3 v1.31, AC-4.20): `select 1` на пуле в общем сроке `timeoutMs` на подключение
+ * и запрос. По сроку — ошибка `timeout exceeded when trying to connect`, клиент (если успел появиться) уничтожается.
+ * Срок пула этой проверки события GlitchTip не шлёт: метрика и `warn` остаются, событие — одно, от `failStartup`.
+ */
+export async function checkConnection(pool: Pool, timeoutMs: number): Promise<void> {
+    const connect = quietConnects.get(pool) ?? (() => pool.connect() as Promise<CheckClient>);
+    let client: CheckClient | undefined;
+    let released = false;
+    const release = (destroy: boolean): void => {
+        if (client !== undefined && !released) {
+            released = true;
+            client.release(destroy);
+        }
+    };
+    const work = (async () => {
+        client = await connect();
+        try {
+            await client.query('select 1');
+        } finally {
+            release(false);
+        }
+    })();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(CHECK_TIMEOUT_MESSAGE)), timeoutMs);
+        timer.unref();
+    });
+    try {
+        await Promise.race([work, timeout]);
+    } catch (error) {
+        release(true);
+        // Поздний отказ работы после срока не всплывает необработанным.
+        work.catch(() => undefined);
+        throw error;
+    } finally {
+        clearTimeout(timer);
+    }
 }

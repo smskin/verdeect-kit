@@ -1,7 +1,7 @@
 // kitMetrics и alertRulesTemplate (prd.md §3.2, AC-2.8, AC-2.11). Эталон — O metrics-server.ts (реестр на экземпляр) и
 // O orch-metrics.ts (метрики на реестре экземпляра). По PRD v1.12: @prometheus-io/client, как у O; метка service по
 // умолчанию, метрики процесса Node, имена verdeect_*. Глобального реестра нет: два приложения в процессе не смешиваются.
-// AC-9.5 (E4): метрика очистки verdeect_cleanup_runs_total.
+// AC-9.5 (E4): метрика очистки verdeect_cleanup_runs_total. v1.31: verdeect_idempotency_late_completions_total.
 import { fileURLToPath } from 'node:url';
 import { collectDefaultMetrics, Counter, Gauge, Registry } from '@prometheus-io/client';
 import { assertServiceName } from '../internal/service-name.js';
@@ -33,6 +33,12 @@ export interface KitMetrics {
      * подтверждённые без обработки (§3.4 v1.26, AC-5.22). Ожидаемы на время перехода версии; правила алерта нет.
      */
     readonly eventsSkipped: Counter<'type' | 'version'>;
+    /**
+     * `verdeect_idempotency_late_completions_total{scope}` — попытки `@Idempotent`, завершившиеся после того, как повтор
+     * перехватил их строку (обработчик дольше 5 мин): ответ повтора не перезаписан (§3.3а v1.31). `scope` — шаблон
+     * маршрута Fastify (`/items/:id`) без значений параметров.
+     */
+    readonly idempotencyLateCompletions: Counter<'scope'>;
     /**
      * @internal Источник `verdeect_outbox_*` при запросе `/metrics` (`collect()`, §3.4 v1.25): регистрирует relay, `null` —
      * снять. Источник сам ставит значения и не отклоняется; запрос в полёте общий для обеих метрик.
@@ -102,6 +108,12 @@ export function kitMetrics(options: { readonly service: string }): KitMetrics {
             name: 'verdeect_events_skipped_total',
             help: 'События с неподписанной версией подписанного типа, подтверждённые без обработки',
             labelNames: ['type', 'version'] as const,
+            registers,
+        }),
+        idempotencyLateCompletions: new Counter({
+            name: 'verdeect_idempotency_late_completions_total',
+            help: 'Поздние попытки идемпотентности: строку перехватил повтор, ответ не сохранён',
+            labelNames: ['scope'] as const,
             registers,
         }),
         setOutboxSource: (source) => {

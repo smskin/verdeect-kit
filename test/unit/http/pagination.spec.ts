@@ -1,6 +1,7 @@
 // AC-3.6 (UC-4): keyset-пагинация — курсор, limit, pageOf, afterCursor (prd.md §3.5); src/http/pagination.ts.
 // Перенос I pagination.spec.ts с правками PRD: limit 100/200, 422 VALIDATION_FAILED path: cursor, ключи — JSON-скаляры.
-import { PgDialect, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+// v1.31: значение ключа проверяется по типу столбца (timestamptz — строгий ISO с зоной, uuid, целое, boolean, строка).
+import { boolean, integer, PgDialect, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { DomainError } from '../../../src/http/errors.js';
 import {
@@ -16,6 +17,12 @@ const items = pgTable('items', {
     id: text('id').primaryKey(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull(),
     title: text('title').notNull(),
+});
+const typed = pgTable('typed', {
+    id: text('id').primaryKey(),
+    flag: boolean('flag').notNull(),
+    rank: integer('rank').notNull(),
+    ref: uuid('ref').notNull(),
 });
 
 function invalidCursor(cursor: string, arity: number): DomainError {
@@ -72,7 +79,11 @@ describe('UC-4: keyset-пагинация', () => {
 
     it('AC-3.6: afterCursor строит ИЛИ-цепочку; без курсора — undefined', () => {
         const dialect = new PgDialect();
-        const condition = afterCursor([items.createdAt, items.id], ['2026-11-10', 'b'], 'desc');
+        const condition = afterCursor(
+            [items.createdAt, items.id],
+            ['2026-11-10T00:00:00Z', 'b'],
+            'desc',
+        );
         if (condition === undefined) {
             throw new Error('ожидалось условие');
         }
@@ -81,7 +92,7 @@ describe('UC-4: keyset-пагинация', () => {
         expect(query.sql).toBe(
             '("items"."created_at" < $1::timestamptz or ("items"."created_at" = $2::timestamptz and "items"."id" < $3))',
         );
-        expect(query.params).toEqual(['2026-11-10', '2026-11-10', 'b']);
+        expect(query.params).toEqual(['2026-11-10T00:00:00Z', '2026-11-10T00:00:00Z', 'b']);
         expect(afterCursor([items.id], null, 'asc')).toBeUndefined();
     });
 
@@ -103,5 +114,86 @@ describe('UC-4: keyset-пагинация', () => {
             `to_char("items"."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
         );
         expect(() => cursorTimestamp(items.id)).toThrow(TypeError);
+    });
+
+    it('AC-3.6: afterCursor — значение по типу столбца: верный тип проходит, неверный → 422 path: cursor', () => {
+        const dialect = new PgDialect();
+        const pass: [Parameters<typeof afterCursor>[0], (string | number | boolean)[]][] = [
+            [
+                [typed.flag, typed.id],
+                [true, 'a'],
+            ],
+            [
+                [typed.rank, typed.id],
+                [42, 'a'],
+            ],
+            [
+                [typed.ref, typed.id],
+                ['0193a5b2-7c1d-7e4f-8a9b-0c1d2e3f4a5b', 'a'],
+            ],
+            [
+                [items.title, items.id],
+                ['x', 'a'],
+            ],
+            [
+                [items.createdAt, items.id],
+                ['2026-11-10T00:00:00Z', 'a'],
+            ],
+            [
+                [items.createdAt, items.id],
+                ['2026-11-10T00:00:00.123456+03:00', 'a'],
+            ],
+        ];
+        for (const [cols, cursor] of pass) {
+            const condition = afterCursor(cols, cursor, 'asc');
+            if (condition === undefined) {
+                throw new Error('ожидалось условие');
+            }
+            expect(dialect.sqlToQuery(condition).params).toEqual([cursor[0], cursor[0], cursor[1]]);
+        }
+        const fail: [Parameters<typeof afterCursor>[0], (string | number | boolean)[]][] = [
+            [
+                [typed.flag, typed.id],
+                ['true', 'a'],
+            ],
+            [
+                [typed.rank, typed.id],
+                [1.5, 'a'],
+            ],
+            [
+                [typed.rank, typed.id],
+                ['42', 'a'],
+            ],
+            [
+                [typed.ref, typed.id],
+                ['x', 'a'],
+            ],
+            [
+                [items.title, items.id],
+                [42, 'a'],
+            ],
+            [
+                [items.createdAt, items.id],
+                ['2026-11-10', 'a'],
+            ],
+            [
+                [items.createdAt, items.id],
+                ['infinity', 'a'],
+            ],
+            [
+                [items.createdAt, items.id],
+                ['now', 'a'],
+            ],
+            [
+                [items.createdAt, items.id],
+                [42, 'a'],
+            ],
+            [[typed.id], [1]],
+        ];
+        for (const [cols, cursor] of fail) {
+            expect(() => afterCursor(cols, cursor, 'asc'), JSON.stringify(cursor)).toThrow(
+                DomainError,
+            );
+        }
     });
 });

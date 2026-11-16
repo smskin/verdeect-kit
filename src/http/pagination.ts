@@ -40,7 +40,10 @@ export function encodeCursor(keys: readonly CursorValue[]): string {
     return Buffer.from(JSON.stringify(keys), 'utf8').toString('base64url');
 }
 
-/** `undefined` → `null`; неразборчивый курсор или другое число ключей → 422 `VALIDATION_FAILED` `path: cursor`. */
+/**
+ * `undefined` → `null`; неразборчивый курсор или другое число ключей → 422 `VALIDATION_FAILED` `path: cursor`.
+ * Тип значений по столбцам проверяет `afterCursor`.
+ */
 export function decodeCursor(cursor: string | undefined, arity: number): CursorValue[] | null {
     if (cursor === undefined) {
         return null;
@@ -83,6 +86,47 @@ function timestampColumn(col: AnyColumn): { readonly withTimezone: boolean } | n
     return { withTimezone: withTimezone === true };
 }
 
+const ISO_WITH_ZONE = z.iso.datetime({ offset: true });
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INTEGER_COLUMNS = new Set([
+    'PgInteger',
+    'PgSmallInt',
+    'PgSerial',
+    'PgSmallSerial',
+    'PgBigInt53',
+    'PgBigSerial53',
+]);
+const STRING_COLUMNS = new Set(['PgText', 'PgVarchar', 'PgChar']);
+
+/** Значение подходит столбцу; типы вне списка (например, `timestamp` без зоны) не проверяются (§3.5). */
+function fitsColumn(col: AnyColumn, value: CursorValue): boolean {
+    if (timestampColumn(col)?.withTimezone === true) {
+        return typeof value === 'string' && ISO_WITH_ZONE.safeParse(value).success;
+    }
+    const { columnType } = col;
+    if (columnType === 'PgUUID') {
+        return typeof value === 'string' && UUID_PATTERN.test(value);
+    }
+    if (INTEGER_COLUMNS.has(columnType)) {
+        return typeof value === 'number' && Number.isSafeInteger(value);
+    }
+    if (columnType === 'PgBoolean') {
+        return typeof value === 'boolean';
+    }
+    if (STRING_COLUMNS.has(columnType)) {
+        return typeof value === 'string';
+    }
+
+    return true;
+}
+
+/** Каждое значение курсора — по типу своего столбца, иначе 422 `path: cursor` (до запроса к БД). */
+function assertCursorTypes(cols: readonly AnyColumn[], cursor: readonly CursorValue[]): void {
+    if (!cols.every((col, index) => fitsColumn(col, cursor[index] ?? null))) {
+        throw invalidCursor();
+    }
+}
+
 /**
  * Ключ курсора по столбцу `timestamptz` без потери точности (§3.5, К23): строка ISO UTC с микросекундами
  * (`2026-11-13T10:00:00.123456Z`) — выбирается вместе со строками и передаётся в `pageOf(…, keyOf)`. JS `Date` хранит
@@ -104,8 +148,11 @@ export function cursorTimestamp(col: AnyColumn): SQL<string> {
  * Условие «после курсора» для `where`: `(c1, …, cn) > (v1, …, vn)` (`desc` — `<`) как ИЛИ-цепочка
  * `c1 > v1 OR (c1 = v1 AND c2 > v2) OR …`. `cursor = null` → `undefined` (первая страница). Последний столбец обязан
  * быть `primaryKey()` или `unique()` — иначе `Error` (ошибка разработчика). Длина курсора ≠ числу столбцов или `null`
- * в ключе → 422 `VALIDATION_FAILED` `path: cursor`. Значения передаются параметрами без кодировщика столбца; у столбца
- * timestamp значение приводится к `timestamptz`/`timestamp` и сравнивается полностью — ключ с микросекундами даёт
+ * в ключе → 422 `VALIDATION_FAILED` `path: cursor`. Значение ключа проверяется по типу столбца до построения SQL:
+ * `timestamptz` — строка ISO 8601 с зоной (`now`, `infinity`, дата без времени — 422), `uuid` — строка UUID, целые —
+ * безопасное целое, `boolean` — логическое, `text`/`varchar`/`char` — строка; прочие типы не проверяются. Ключ столбца
+ * `timestamptz` в `mode: 'string'` берите через `cursorTimestamp` (текст PostgreSQL — не строгий ISO). Значения
+ * передаются параметрами без кодировщика столбца; у столбца timestamp значение приводится к `timestamptz`/`timestamp` и сравнивается полностью — ключ с микросекундами даёт
  * `cursorTimestamp` (строка ISO с миллисекундами из `Date.toISOString()` теряет микросекунды, К23).
  */
 export function afterCursor(
@@ -124,6 +171,7 @@ export function afterCursor(
     if (cursor.length !== cols.length || cursor.includes(null)) {
         throw invalidCursor();
     }
+    assertCursorTypes(cols, cursor);
     const op = dir === 'asc' ? sql.raw('>') : sql.raw('<');
     const value = (col: AnyColumn, raw: CursorValue): SQL => {
         const timestamp = timestampColumn(col);

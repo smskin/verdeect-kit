@@ -1,6 +1,7 @@
 // AC-2.15 (UC-13, prd.md §3.2 v1.25): KitCoreModule — ядро пакета вне HTTP: контекст CLI получает KitLifecycle,
 // HealthRegistry, KIT_METRICS и логгер (entry 'cli'); без KitConfigModule — ошибка; модуль пакета без ядра — ошибка при
-// сборке контекста с текстом про KitCoreModule. Соединений нет: пул pg ленивый.
+// сборке контекста с текстом про KitCoreModule. Соединений нет: модуль пакета без ядра падает до пулов. Сборка модуля
+// БД с ядром проверяет соединение (v1.31, AC-4.20) — она на уровне I: test/integration/observability/ac-2-15-kit-core.spec.ts.
 import 'reflect-metadata';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -73,17 +74,5 @@ describe('UC-13: ядро пакета вне HTTP', () => {
         ).rejects.toThrow(
             /KitDatabaseModule: нет ядра пакета — подключите KitCoreModule\.forRoot или запускайте через bootstrapService\/createHttpApp/,
         );
-    });
-
-    it('AC-2.15: модуль пакета с ядром собирается — пробы database и database-read зарегистрированы', async () => {
-        const ctx = await context([
-            KitConfigModule.forRoot({ schema: env }),
-            KitCoreModule.forRoot({ service: 'probe', entry: 'cli' }),
-            KitDatabaseModule.forRoot({ schema: {} }),
-        ]);
-        await ctx.init();
-        const checks = Object.keys((await ctx.get(HealthRegistry).evaluate()).checks);
-
-        expect(checks).toEqual(expect.arrayContaining(['database', 'database-read']));
     });
 });

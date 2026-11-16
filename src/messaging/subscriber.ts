@@ -7,6 +7,7 @@
 // v1.28 — опция unknownVersion у on: 'dlq' отправляет неподписанную версию в <svc>.dlq с x-dlq-reason: version.
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 import type { Db, DbTx } from '../database/db.js';
+import { KIT_DELIVERY_LOG_FLAG } from '../internal/tokens.js';
 import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError, captureThrottled } from '../observability/sentry.js';
@@ -48,6 +49,40 @@ export type KitReplicaHandler<E extends KitEvent> = (event: Envelope<E>) => Prom
 
 /** Итог доставки — значение метки `result` метрики `verdeect_events_consumed_total`. */
 type DeliveryResult = 'handled' | 'duplicate' | 'retry' | 'dlq';
+
+/** Итог `deliverForTest` (`deliverTestEvent`, §3.8 v1.31): результат и причина DLQ (`x-dlq-reason`). @internal */
+export interface KitDeliveryOutcome {
+    /** Итог доставки. */
+    readonly result: DeliveryResult | 'skipped';
+    /** Причина DLQ — только при `dlq`. */
+    readonly reason?: string;
+}
+
+/** Решение по доставке без канала (`decide`): действие, тип для метрики, id; `invoked` — обработчик вызывался. */
+type Decision =
+    | { readonly action: 'skip'; readonly envelope: Envelope }
+    | {
+          readonly action: 'ack';
+          readonly result: 'handled' | 'duplicate';
+          readonly metricType: string;
+          readonly id: string;
+          readonly invoked: true;
+      }
+    | {
+          readonly action: 'retry';
+          readonly metricType: string;
+          readonly id: string;
+          readonly invoked: true;
+      }
+    | {
+          readonly action: 'dlq';
+          readonly reason: string;
+          readonly metricType: string;
+          readonly dlqType: string;
+          readonly id: string | null;
+          readonly options: DlqOptions;
+          readonly invoked: boolean;
+      };
 
 /** Поведение при неподписанной версии подписанного `type` (§3.4 v1.28). */
 type UnknownVersion = 'skip' | 'dlq';
@@ -121,12 +156,27 @@ function is406TtlMismatch(error: unknown): boolean {
     return code === 406 && typeof message === 'string' && message.includes('x-message-ttl');
 }
 
+/** Решение «в DLQ» без вызова обработчика. */
+function dlqDecision(
+    metricType: string,
+    id: string | null,
+    reason: string,
+    dlqType: string,
+    options: DlqOptions = {},
+): Extract<Decision, { readonly action: 'dlq' }> {
+    return { action: 'dlq', reason, metricType, dlqType, id, options, invoked: false };
+}
+
 /**
  * Подписчик сервиса (§3.4): `on(Event, handler)` — очередь `<svc>` с inbox, повторами через `<svc>.retry` и DLQ
  * `<svc>.dlq`; `onReplica(Event, handler)` — очередь реплики `<svc>.replica.<REPLICA_ID>`. Сервис внедряет
  * `KitSubscriber` и регистрирует обработчики в `onModuleInit` своего провайдера.
  */
 export class KitSubscriber {
+    /** Журнал первых итогов доставки брокера по `id` (`waitForDelivery`, только при загруженном `/testing`). */
+    private readonly outcomes = new Map<string, KitDeliveryOutcome>();
+    /** Ожидающие итога `id`. */
+    private readonly outcomeWaiters = new Map<string, Set<(outcome: KitDeliveryOutcome) => void>>();
     private readonly log: MessagingLog;
     private readonly queues: KitQueues;
     private readonly handlers = new Map<string, Registered>();
@@ -429,81 +479,184 @@ export class KitSubscriber {
         const headers = msg.properties.headers;
         // UC-6 шаг 1: номер доставки по x-death.
         const delivery = retryCount(headers, this.queues.main) + 1;
-        // Шаг 2: разбор конверта, тип, признак tenant, data.
-        const parsed = parseEnvelope(msg.content);
-        if (!parsed.ok) {
-            await this.finish(UNKNOWN_TYPE, null, delivery, () =>
-                this.toDlq(msg, parsed.reason, null, UNKNOWN_TYPE, delivery, {
-                    fields: parsed.fields,
-                }),
-            );
-
-            return;
-        }
-        const { envelope } = parsed;
-        const lookup = lookupHandler(this.handlers, envelope);
-        if (lookup.kind === 'unsubscribed') {
-            await this.finish(UNKNOWN_TYPE, envelope.id, delivery, () =>
-                this.toDlq(msg, 'unsubscribed', envelope.id, envelope.type, delivery),
-            );
-
-            return;
-        }
-        if (lookup.kind === 'version' && lookup.unknownVersion === 'dlq') {
-            // UC-6 А8, unknownVersion: 'dlq' (v1.28): сразу в DLQ без inbox, проверки data и обработчика.
-            await this.finish(envelope.type, envelope.id, delivery, () =>
-                this.toDlq(msg, 'version', envelope.id, envelope.type, delivery, {
-                    version: envelope.version,
-                }),
-            );
-
-            return;
-        }
-        if (lookup.kind === 'version') {
+        // Шаги 2–3: разбор, выбор обработчика, data, inbox и обработчик — общий путь с deliverForTest.
+        const decision = await this.decide(msg.content, delivery, headers);
+        if (decision.action === 'skip') {
             // UC-6 А8: версия не подписана — ack без inbox, проверки data и обработчика.
             if (this.isCurrent(msg)) {
                 this.main?.ack(msg);
-                this.skip(envelope);
+                this.skip(decision.envelope);
+                this.recordOutcome(decision.envelope.id, { result: 'skipped' });
             }
 
             return;
         }
-        const { registered } = lookup;
-        const typed = this.typedEnvelope(registered.event, envelope);
-        if (!typed.ok) {
-            await this.finish(envelope.type, envelope.id, delivery, () =>
-                this.toDlq(msg, typed.reason, envelope.id, envelope.type, delivery, {
-                    fields: typed.fields,
-                }),
-            );
-
-            return;
-        }
-        // Шаг 3: inbox и обработчик в одной транзакции (dedupe 'inbox') или без БД (dedupe 'none').
-        let outcome:
-            | { readonly ok: true; readonly duplicate: boolean }
-            | { readonly ok: false; readonly error: unknown };
-        try {
-            outcome = { ok: true, duplicate: await this.invoke(registered, typed.envelope) };
-        } catch (error) {
-            outcome = { ok: false, error };
-        }
         // Канал мог смениться, пока шёл обработчик: по доставке прошлого канала итога нет (брокер вернёт её).
-        if (!this.isCurrent(msg)) {
-            this.log.debug({ id: envelope.id }, 'messaging: устаревшая доставка, итог пропущен');
+        if (decision.invoked && !this.isCurrent(msg)) {
+            this.log.debug({ id: decision.id }, 'messaging: устаревшая доставка, итог пропущен');
 
             return;
         }
         // Шаг 4: подтверждение, повтор или DLQ.
-        await this.finish(envelope.type, envelope.id, delivery, async () => {
-            if (outcome.ok) {
+        const result = await this.finish(decision.metricType, decision.id, delivery, () =>
+            this.act(msg, decision, delivery),
+        );
+        // Причина — только при итоговом dlq (сбой копии в DLQ даёт retry без причины); duplicate в журнал не пишется.
+        if (decision.id !== null && result !== null && result !== 'duplicate') {
+            this.recordOutcome(
+                decision.id,
+                result === 'dlq' && decision.action === 'dlq'
+                    ? { result, reason: decision.reason }
+                    : { result },
+            );
+        }
+    }
+
+    /** Первый итог `id` в журнал и ожидающим — только если `/testing` загружен (флаг `globalThis`). */
+    private recordOutcome(id: string, outcome: KitDeliveryOutcome): void {
+        if ((globalThis as Record<symbol, unknown>)[KIT_DELIVERY_LOG_FLAG] !== true) {
+            return;
+        }
+        if (this.outcomes.has(id)) {
+            return;
+        }
+        this.outcomes.set(id, outcome);
+        for (const notify of this.outcomeWaiters.get(id) ?? []) {
+            notify(outcome);
+        }
+        this.outcomeWaiters.delete(id);
+    }
+
+    /**
+     * @internal Первый итог доставки брокера `id` в этом экземпляре (`waitForDelivery`): сразу, если записан, иначе
+     * ожидание до `timeoutMs`; по сроку — `Error` с `id`.
+     */
+    awaitOutcome(id: string, timeoutMs: number): Promise<KitDeliveryOutcome> {
+        const known = this.outcomes.get(id);
+        if (known !== undefined) {
+            return Promise.resolve(known);
+        }
+
+        return new Promise((resolve, reject) => {
+            const waiters = this.outcomeWaiters.get(id) ?? new Set();
+            this.outcomeWaiters.set(id, waiters);
+            const notify = (outcome: KitDeliveryOutcome): void => {
+                clearTimeout(timer);
+                resolve(outcome);
+            };
+            const timer = setTimeout(() => {
+                waiters.delete(notify);
+                reject(
+                    new Error(`waitForDelivery: доставка ${id} не завершилась за ${timeoutMs} мс`),
+                );
+            }, timeoutMs);
+            timer.unref();
+            waiters.add(notify);
+        });
+    }
+
+    /** Выполняет решение `decide` на канале: ack, повтор или копия в DLQ. */
+    private async act(
+        msg: ConsumeMessage,
+        decision: Exclude<Decision, { readonly action: 'skip' }>,
+        delivery: number,
+    ): Promise<DeliveryResult | null> {
+        switch (decision.action) {
+            case 'ack':
                 this.main?.ack(msg);
 
-                return outcome.duplicate ? 'duplicate' : 'handled';
-            }
+                return decision.result;
+            case 'retry':
+                return this.toRetry(msg);
+            case 'dlq':
+                return this.toDlq(
+                    msg,
+                    decision.reason,
+                    decision.id,
+                    decision.dlqType,
+                    delivery,
+                    decision.options,
+                );
+        }
+    }
 
-            return this.onHandlerError(msg, envelope, delivery, outcome.error);
-        });
+    /**
+     * Классификация доставки без канала (§3.4, UC-6 шаги 2–3): разбор конверта, выбор по (`type`, `version`), проверка
+     * `data`, inbox и обработчик в транзакции `Db`, классификация ошибки обработчика. Общая для `handle()` и
+     * `deliverForTest()`; `headers` — для числа повторов (нет — первая доставка).
+     */
+    private async decide(
+        content: Buffer,
+        delivery: number,
+        headers: Record<string, unknown> | undefined,
+    ): Promise<Decision> {
+        const parsed = parseEnvelope(content);
+        if (!parsed.ok) {
+            return dlqDecision(UNKNOWN_TYPE, null, parsed.reason, UNKNOWN_TYPE, {
+                fields: parsed.fields,
+            });
+        }
+        const { envelope } = parsed;
+        const lookup = lookupHandler(this.handlers, envelope);
+        if (lookup.kind === 'unsubscribed') {
+            return dlqDecision(UNKNOWN_TYPE, envelope.id, 'unsubscribed', envelope.type);
+        }
+        if (lookup.kind === 'version' && lookup.unknownVersion === 'dlq') {
+            // UC-6 А8, unknownVersion: 'dlq' (v1.28): сразу в DLQ без inbox, проверки data и обработчика.
+            return dlqDecision(envelope.type, envelope.id, 'version', envelope.type, {
+                version: envelope.version,
+            });
+        }
+        if (lookup.kind === 'version') {
+            return { action: 'skip', envelope };
+        }
+        const { registered } = lookup;
+        const typed = this.typedEnvelope(registered.event, envelope);
+        if (!typed.ok) {
+            return dlqDecision(envelope.type, envelope.id, typed.reason, envelope.type, {
+                fields: typed.fields,
+            });
+        }
+        // Шаг 3: inbox и обработчик в одной транзакции (dedupe 'inbox') или без БД (dedupe 'none').
+        try {
+            const duplicate = await this.invoke(registered, typed.envelope);
+
+            return {
+                action: 'ack',
+                result: duplicate ? 'duplicate' : 'handled',
+                metricType: envelope.type,
+                id: envelope.id,
+                invoked: true,
+            };
+        } catch (error) {
+            return this.onHandlerError(envelope, delivery, headers, error);
+        }
+    }
+
+    /**
+     * @internal Доставка конверта для тестов (`deliverTestEvent`, §3.8 v1.31): тот же путь, что `handle()`, без канала —
+     * без ack/nack и копии в DLQ; номер доставки 1. Метрика `verdeect_events_consumed_total` и `debug`-лог — как у
+     * доставки; итог — `handled | duplicate | skipped | retry | dlq` (`reason` — значение `x-dlq-reason`).
+     */
+    async deliverForTest(content: Buffer): Promise<KitDeliveryOutcome> {
+        const decision = await this.decide(content, 1, undefined);
+        if (decision.action === 'skip') {
+            this.skip(decision.envelope);
+            this.log.debug(
+                { id: decision.envelope.id, type: decision.envelope.type, result: 'skipped' },
+                'messaging: доставка (deliverTestEvent)',
+            );
+
+            return { result: 'skipped' };
+        }
+        const result = decision.action === 'ack' ? decision.result : decision.action;
+        this.deps.metrics?.eventsConsumed.inc({ type: decision.metricType, result });
+        this.log.debug(
+            { id: decision.id, type: decision.metricType, result },
+            'messaging: доставка (deliverTestEvent)',
+        );
+
+        return decision.action === 'dlq' ? { result, reason: decision.reason } : { result };
     }
 
     /** true — повтор `id` (inbox занят), обработчик не вызван. */
@@ -555,43 +708,52 @@ export class KitSubscriber {
         return { ok: true, envelope: { ...envelope, data: data.data as Record<string, unknown> } };
     }
 
-    private async onHandlerError(
-        msg: ConsumeMessage,
+    private onHandlerError(
         envelope: Envelope,
         delivery: number,
+        headers: Record<string, unknown> | undefined,
         error: unknown,
-    ): Promise<DeliveryResult | null> {
-        const headers = msg.properties.headers;
+    ): Decision {
+        const base = { metricType: envelope.type, id: envelope.id, invoked: true } as const;
         if (error instanceof InvalidMessageError) {
-            return this.toDlq(msg, error.reason, envelope.id, envelope.type, delivery, {
-                invalid: true,
-            });
+            return {
+                ...dlqDecision(envelope.type, envelope.id, error.reason, envelope.type, {
+                    invalid: true,
+                }),
+                invoked: true,
+            };
         }
         const exhausted = decideRedelivery(headers, this.queues.main) === 'dlq';
         if (error instanceof ExpectedMessageError) {
             if (exhausted) {
-                return this.toDlq(msg, error.code, envelope.id, envelope.type, delivery, {
-                    report: false,
-                });
+                return {
+                    ...dlqDecision(envelope.type, envelope.id, error.code, envelope.type, {
+                        report: false,
+                    }),
+                    invoked: true,
+                };
             }
             this.log.warn(
                 { id: envelope.id, type: envelope.type, code: error.code, delivery },
                 'messaging: ожидаемый отказ, повтор',
             );
 
-            return this.toRetry(msg);
+            return { action: 'retry', ...base };
         }
         if (exhausted) {
-            return this.toDlq(msg, 'retries-exhausted', envelope.id, envelope.type, delivery, {
-                error,
-            });
+            return {
+                ...dlqDecision(envelope.type, envelope.id, 'retries-exhausted', envelope.type, {
+                    error,
+                }),
+                invoked: true,
+            };
         }
         this.log.warn(
             { id: envelope.id, type: envelope.type, delivery, err: sanitizeError(error) },
             'messaging: ошибка обработчика, повтор',
         );
 
-        return this.toRetry(msg);
+        return { action: 'retry', ...base };
     }
 
     /** Итог доставки: метрика и debug-строка; null — доставка прошлого канала (итога нет). */
@@ -600,13 +762,15 @@ export class KitSubscriber {
         id: string | null,
         delivery: number,
         decide: () => Promise<DeliveryResult | null>,
-    ): Promise<void> {
+    ): Promise<DeliveryResult | null> {
         const result = await decide();
         if (result === null) {
-            return;
+            return null;
         }
         this.deps.metrics?.eventsConsumed.inc({ type, result });
         this.log.debug({ id, type, delivery, result }, 'messaging: доставка');
+
+        return result;
     }
 
     /** Отказ без возврата: dead-letter → `.retry` → через TTL снова в `<svc>`. */

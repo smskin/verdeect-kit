@@ -3,7 +3,8 @@
 // mismatch до in_progress, release при ошибке, один повтор complete). По PRD: область user/agent → (tenant, sub),
 // service → client_id или (client_id, поле tenantFromBody); Location в ответе; без принципала — 500; коды — DomainError
 // словаря /http; сравнение области — IS NOT DISTINCT FROM (tenant nullable); redact — копия тела в хранилище (v1.26);
-// повтор — в той же сериализации и с тем же Content-Type, что первый ответ (колонка content_type, v1.28).
+// повтор — в той же сериализации и с тем же Content-Type, что первый ответ (колонка content_type, v1.28); поздняя
+// попытка — warn и verdeect_idempotency_late_completions_total{scope} по шаблону маршрута (v1.31).
 import { createHash, randomUUID } from 'node:crypto';
 import {
     Inject,
@@ -24,6 +25,8 @@ import { Db } from '../database/db.js';
 import type { DbContext } from '../database/tenant.js';
 import { DomainError } from '../http/errors.js';
 import { IDEMPOTENT_METADATA, type KitIdempotentOptions } from '../internal/metadata.js';
+import { KIT_PACKAGE_METRICS } from '../internal/tokens.js';
+import type { KitMetrics } from '../observability/metrics.js';
 import { sanitizeError } from '../observability/sanitize-error.js';
 import { captureError } from '../observability/sentry.js';
 import type { KitIdempotencyTable } from './table.js';
@@ -161,6 +164,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         private readonly reflector: Reflector,
         private readonly db: Db,
         @Inject(KIT_IDEMPOTENCY_TABLE) private readonly table: KitIdempotencyTable,
+        @Inject(KIT_PACKAGE_METRICS) private readonly metrics: KitMetrics,
     ) {}
 
     /** Оборачивает обработчик маршрута с `@Idempotent`. */
@@ -259,11 +263,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
             (request.method === 'POST' ? 201 : 200);
         const header = reply.getHeader('location');
         const location = typeof header === 'string' ? header : null;
+        // Шаблон маршрута с префиксами, без значений параметров — метка поздней попытки (§3.3а v1.31).
+        const route = request.routeOptions.url ?? 'unknown';
         await this.completeWithRetry(
             ctx,
             scope,
             key,
             begin.attempt,
+            route,
             {
                 status,
                 body: this.redacted(body ?? null, options.redact, fields),
@@ -427,13 +434,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
     /**
      * Один повтор `complete` сразу после сбоя (эталон O). После двух сбоев ответ клиенту не меняется: строка остаётся
      * `in_progress` и через 5 минут переиспользуется. Ответ пишется только своей попытки: строку перехватил повторный
-     * запрос (обработчик дольше 5 минут) — ответ не сохраняется, `warn` без ключа и тела (KT-22 п. 3).
+     * запрос (обработчик дольше 5 минут) — ответ не сохраняется, `warn` без ключа и тела (KT-22 п. 3) с шаблоном маршрута
+     * `scope` и `verdeect_idempotency_late_completions_total{scope}` +1 (v1.31).
      */
     private async completeWithRetry(
         ctx: DbContext,
         scope: IdempotencyScope,
         key: string,
         attempt: string,
+        route: string,
         response: {
             readonly status: number;
             readonly body: unknown;
@@ -461,9 +470,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
                 return false;
             }
             this.logger.warn(
-                { subjectKind: fields.subjectKind, traceId: fields.traceId },
+                { subjectKind: fields.subjectKind, traceId: fields.traceId, scope: route },
                 'идемпотентность: строку перехватила другая попытка — ответ не сохранён',
             );
+            this.metrics.idempotencyLateCompletions.inc({ scope: route });
 
             return true;
         };

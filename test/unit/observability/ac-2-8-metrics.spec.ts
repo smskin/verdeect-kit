@@ -14,6 +14,7 @@ const KIT_PACKAGE_METRICS = [
     'verdeect_rate_limit_unavailable_total',
     'verdeect_cleanup_runs_total',
     'verdeect_events_skipped_total',
+    'verdeect_idempotency_late_completions_total',
 ];
 
 describe('UC-13: метрики пакета', () => {

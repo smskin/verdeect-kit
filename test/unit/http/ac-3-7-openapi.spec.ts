@@ -1,12 +1,22 @@
 // AC-3.7 (UC-14): OpenAPI 3.1 по метаданным без запуска приложения и expectMatchesApi (prd.md §3.5, §3.8). Перенос I
 // test/http/api/openapi.http-spec.ts: документ проходит валидатор, схемы компилируются, безопасность по маршрутам,
-// ответы соответствуют схеме.
-import { HttpException, Logger, type ExecutionContext } from '@nestjs/common';
+// ответы соответствуют схеме. v1.31: путь Fastify посегментно (::, regex, :from-:to, file.:ext, *) и параметры пути.
+import {
+    Controller,
+    Get,
+    HttpException,
+    Logger,
+    Module,
+    Post,
+    Redirect,
+    type ExecutionContext,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Validator } from '@seriousme/openapi-schema-validator';
 import { VerdeectAuthGuard } from '@verdeect/auth/nest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it, vi } from 'vitest';
+import { Api } from '../../../src/http/api/api.decorator.js';
 import { buildOpenApiDocument } from '../../../src/http/api/openapi-document.js';
 import { expectMatchesApi } from '../../../src/testing/index.js';
 import {
@@ -18,6 +28,58 @@ import {
 } from '../../fixtures/http/api-app.module.js';
 
 const INFO = { title: 'api-app', version: '1.0.0' };
+
+@Controller()
+class FastifyPathsController {
+    @Get('items::batch')
+    @Api({ summary: 'пакет' })
+    batch(): void {}
+
+    @Get(':id(^\\d+)')
+    @Api({ summary: 'по числу' })
+    byNumber(): void {}
+
+    @Get(':from-:to')
+    @Api({ summary: 'диапазон' })
+    range(): void {}
+
+    @Get('file.:ext')
+    @Api({ summary: 'файл' })
+    file(): void {}
+
+    @Get('*')
+    @Api({ summary: 'остальное' })
+    rest(): void {}
+}
+
+@Controller('v1')
+class PrefixedPathsController {
+    @Get('items::batch')
+    @Api({ summary: 'пакет v1' })
+    batch(): void {}
+}
+
+@Module({ controllers: [FastifyPathsController, PrefixedPathsController] })
+class FastifyPathsModule {}
+
+@Controller('status')
+class StatusController {
+    @Post('ok')
+    @Api({ summary: 'POST с 200', status: 200 })
+    ok(): void {}
+
+    @Get('errors-only')
+    @Api({ summary: 'только ошибки', status: null, errors: ['RATE_LIMITED'] })
+    errorsOnly(): void {}
+
+    @Get('moved')
+    @Redirect('/elsewhere', 302)
+    @Api({ summary: 'редирект' })
+    moved(): void {}
+}
+
+@Module({ controllers: [StatusController] })
+class StatusModule {}
 
 type Operation = {
     security?: Record<string, string[]>[];
@@ -246,5 +308,65 @@ describe('UC-14: OpenAPI из кода', () => {
             operations_.filter((item) => String(item.summary).startsWith('Каталог: число')),
         ).toHaveLength(1);
         expectMatchesApi(response(200, { items: [] }), [CatalogController, 'list']);
+    });
+
+    it('AC-3.7: маршруты items::batch, :id(^\\d+), :from-:to, file.:ext, * → пути /items:batch, /{id}, /{from}-{to}, /file.{ext}, /{wildcard} с параметрами пути, документ проходит валидатор', async () => {
+        const document = await buildOpenApiDocument(FastifyPathsModule, INFO);
+        const pathParams = (path: string) =>
+            ((document.paths[path]?.get as unknown as Operation | undefined)?.parameters ?? []).map(
+                (item) => [item.name, item.in, item.required],
+            );
+
+        expect(Object.keys(document.paths)).toEqual([
+            '/{from}-{to}',
+            '/{id}',
+            '/{wildcard}',
+            '/file.{ext}',
+            '/items:batch',
+            '/v1/items:batch',
+        ]);
+        expect(pathParams('/items:batch')).toEqual([]);
+        expect(pathParams('/v1/items:batch')).toEqual([]);
+        expect(pathParams('/{id}')).toEqual([['id', 'path', true]]);
+        expect(pathParams('/{from}-{to}')).toEqual([
+            ['from', 'path', true],
+            ['to', 'path', true],
+        ]);
+        expect(pathParams('/file.{ext}')).toEqual([['ext', 'path', true]]);
+        expect(pathParams('/{wildcard}')).toEqual([['wildcard', 'path', true]]);
+        const result = await new Validator().validate(document as never);
+        expect(result.errors).toBeUndefined();
+        expect(result.valid).toBe(true);
+    });
+
+    it('AC-3.7: @Api({status: 200}) у POST → 200, а не 201', async () => {
+        const document = await buildOpenApiDocument(StatusModule, INFO);
+        const ok = document.paths['/status/ok']?.post as unknown as Operation;
+
+        expect(Object.keys(ok.responses)).toEqual(['200']);
+        expectMatchesApi(response(200, undefined), [StatusController, 'ok']);
+    });
+
+    it('AC-3.7: @Api({status: null}) → только ошибки; expectMatchesApi на ответе 200 падает', async () => {
+        const document = await buildOpenApiDocument(StatusModule, INFO);
+        const errorsOnly = document.paths['/status/errors-only']?.get as unknown as Operation;
+        const limited = { error: { code: 'RATE_LIMITED', message: 'x', details: {} } };
+
+        expect(Object.keys(errorsOnly.responses)).toEqual(['429']);
+        expect(() => expectMatchesApi(response(200, {}), [StatusController, 'errorsOnly'])).toThrow(
+            /статус 200 не описан/,
+        );
+        expectMatchesApi(response(429, limited), [StatusController, 'errorsOnly']);
+    });
+
+    it('AC-3.7: @Redirect(url, 302) → ответ 302 без тела; expectMatchesApi на 302 проходит', async () => {
+        const document = await buildOpenApiDocument(StatusModule, INFO);
+        const moved = document.paths['/status/moved']?.get as unknown as Operation;
+
+        expect(Object.keys(moved.responses)).toEqual(['302']);
+        expect(moved.responses['302']?.content).toBeUndefined();
+        expectMatchesApi(response(302, undefined), [StatusController, 'moved']);
+        const result = await new Validator().validate(document as never);
+        expect(result.valid).toBe(true);
     });
 });

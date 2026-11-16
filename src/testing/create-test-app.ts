@@ -4,7 +4,8 @@
 // init → ready). @nestjs/testing — опциональный peer: грузится при вызове, /testing импортируется и без него (NFR-3).
 // v1.22: http — тот же объект опций, что bootstrapService({http}) (KitHttpOptions из /http, AC-3.14). v1.25: logger и
 // redaction — типы bootstrapService; overrides — useValue | useClass | useFactory(+inject); extraProviders; env объектом —
-// подмена провайдера разобранного окружения KitConfigModule (process.env не читается и не меняется).
+// подмена провайдера разобранного окружения KitConfigModule (process.env не читается и не меняется). v1.31:
+// backgroundLoops: false — relay и очистки не запускаются (KIT_BACKGROUND_LOOPS в KitTestExtrasModule).
 import type { DynamicModule, Provider, Type } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type * as NestTesting from '@nestjs/testing';
@@ -17,7 +18,7 @@ import type { KitCoreLoggerOptions } from '../observability/kit-core.module.js';
 import type { KitRedaction } from '../observability/redaction.js';
 import { loadPeer } from '../internal/peer.js';
 import { assertServiceName } from '../internal/service-name.js';
-import { KIT_LOGGER } from '../internal/tokens.js';
+import { KIT_BACKGROUND_LOOPS, KIT_LOGGER } from '../internal/tokens.js';
 
 /** Модуль `extraProviders` теста (глобальный). */
 class KitTestExtrasModule {}
@@ -64,6 +65,11 @@ export interface KitTestAppOptions {
      * `process.env` не читается и не меняется — приложения с разным `env` работают параллельно в одном процессе.
      */
     readonly env?: Readonly<Record<string, string | undefined>>;
+    /**
+     * Фоновые циклы пакета (§3.8 v1.31), умолчание `true`. `false` — relay outbox не публикует (цикл и канал не
+     * создаются), очистки outbox/inbox и идемпотентности не планируются; `OutboxStore.add` и подписчик работают.
+     */
+    readonly backgroundLoops?: boolean;
 }
 
 /**
@@ -82,7 +88,12 @@ export async function createTestApp(options: KitTestAppOptions): Promise<NestFas
         ...(options.redaction === undefined ? {} : { redaction: options.redaction }),
         caller: 'createTestApp',
         compile: async (root, adapter) => {
-            const extra = options.extraProviders ?? [];
+            const extra = [
+                ...(options.extraProviders ?? []),
+                ...(options.backgroundLoops === false
+                    ? [{ provide: KIT_BACKGROUND_LOOPS, useValue: false }]
+                    : []),
+            ];
             const builder = Test.createTestingModule({
                 // Глобальный модуль: провайдеры теста видны модулям сервиса (подмена useFactory с inject их внедряет).
                 imports: [
@@ -126,7 +137,11 @@ export async function createTestApp(options: KitTestAppOptions): Promise<NestFas
         },
     });
     app.get<Logger>(KIT_LOGGER).debug(
-        { service: options.service, overrides: options.overrides?.length ?? 0 },
+        {
+            service: options.service,
+            overrides: options.overrides?.length ?? 0,
+            backgroundLoops: options.backgroundLoops !== false,
+        },
         'testing: приложение собрано',
     );
 

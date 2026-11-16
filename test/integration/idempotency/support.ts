@@ -2,7 +2,7 @@
 // VerdeectAuthModule (издатель createTestSigner), KitDatabaseModule и KitIdempotencyModule на фикстуре БД; маршруты
 // /echo (пользователь), /strict (required), /service и /service-plain (служба), /open (без guard'а), /secret и
 // /secret-list, /secret-stamp (redact, AC-4.14 v1.26); /text, /abc, /number, /stamp, /csv, /empty — Content-Type повтора
-// (§3.3а v1.28).
+// (§3.3а v1.28); /items/:id — шаблон маршрута в метке поздней попытки (v1.31).
 import {
     Body,
     Controller,
@@ -212,6 +212,13 @@ class EchoController {
         handlers.calls += 1;
 
         return undefined;
+    }
+
+    /** Маршрут с параметром пути: метка scope поздней попытки — шаблон `/items/:id` (AC-4.14 v1.31). */
+    @Post('items/:id')
+    @Idempotent()
+    item(@Body() body: unknown, @Res({ passthrough: true }) reply: FastifyReply): Promise<unknown> {
+        return handle(body, reply);
     }
 
     @Post('service-plain')

@@ -132,25 +132,12 @@ export async function publishTestEvent<E extends KitEvent>(
     data: z.input<E['data']>,
     opts: KitPublishTestEventOptions = {},
 ): Promise<Envelope<E>> {
-    const parsed = event.data.parse(data) as Record<string, unknown>;
-    const tenant =
-        opts.tenant !== undefined
-            ? opts.tenant
-            : event.tenant === 'required'
-              ? workerScope().tenant
-              : null;
-    const occurredAt = opts.occurredAt ?? new Date();
-    const envelope = EnvelopeSchema.parse({
-        id: opts.id ?? newId('evt'),
-        type: event.type,
-        version: event.version,
-        occurredAt: occurredAt.toISOString(),
-        tenant,
-        actor: opts.actor === undefined ? { channel: 'system' } : opts.actor,
-        subject: { kind: event.subject, id: opts.subjectId ?? newId('tst') },
-        data: parsed,
-        traceId: opts.traceId ?? null,
-    });
+    const envelope = buildTestEnvelope(
+        event,
+        event.data.parse(data) as Record<string, unknown>,
+        opts,
+    );
+    const occurredAt = new Date(envelope.occurredAt);
     const confirm = await workerChannel();
     confirm.publish(EVENTS_EXCHANGE, event.type, Buffer.from(JSON.stringify(envelope)), {
         persistent: true,
@@ -162,6 +149,62 @@ export async function publishTestEvent<E extends KitEvent>(
     await confirm.waitForConfirms();
 
     return envelope as Envelope<E>;
+}
+
+/** Конверт теста по событию и опциям (`publishTestEvent`, `deliverTestEvent`); `data` — как передано. */
+function buildTestEnvelope(
+    event: KitEvent,
+    data: Record<string, unknown>,
+    opts: KitPublishTestEventOptions,
+): Envelope {
+    const tenant =
+        opts.tenant !== undefined
+            ? opts.tenant
+            : event.tenant === 'required'
+              ? workerScope().tenant
+              : null;
+
+    return EnvelopeSchema.parse({
+        id: opts.id ?? newId('evt'),
+        type: event.type,
+        version: event.version,
+        occurredAt: (opts.occurredAt ?? new Date()).toISOString(),
+        tenant,
+        actor: opts.actor === undefined ? { channel: 'system' } : opts.actor,
+        subject: { kind: event.subject, id: opts.subjectId ?? newId('tst') },
+        data,
+        traceId: opts.traceId ?? null,
+    });
+}
+
+/** Итог `deliverTestEvent` (§3.8 v1.31). */
+export interface KitTestDelivery {
+    /** `handled` — обработан, `duplicate` — повтор `id` (inbox), `skipped` — версия не подписана, `retry` — повтор
+     * (ошибка обработчика вне `InvalidMessageError`), `dlq` — в DLQ. */
+    readonly result: 'handled' | 'duplicate' | 'skipped' | 'retry' | 'dlq';
+    /** Причина DLQ (`x-dlq-reason`) — только при `dlq`. */
+    readonly reason?: string;
+}
+
+/**
+ * Доставляет событие подписчику приложения `app` тем же путём, что доставка брокера (§3.8 v1.31, AC-5.13): разбор,
+ * выбор обработчика по (`type`, `version`), проверка `data`, inbox и транзакция `Db`, классификация ошибки, лог и
+ * `verdeect_events_consumed_total`. Брокер не участвует: ack/nack и копии в DLQ нет, повторы не моделируются (ошибка
+ * обработчика вне `InvalidMessageError` — `retry`). Конверт — как у `publishTestEvent`; `data` не проверяется до
+ * доставки (вне схемы — `dlq` с причиной `data`). Только этот экземпляр: другие приложения на той же очереди не
+ * участвуют.
+ */
+export async function deliverTestEvent<E extends KitEvent>(
+    app: Pick<INestApplicationContext, 'get'>,
+    event: E,
+    data: z.input<E['data']>,
+    opts: KitPublishTestEventOptions = {},
+): Promise<KitTestDelivery> {
+    // Динамический импорт: статический потянул бы @sentry/nestjs и соединение брокера в /testing (AC-1.2).
+    const { KitSubscriber } = await import('../messaging/subscriber.js');
+    const envelope = buildTestEnvelope(event, data as Record<string, unknown>, opts);
+
+    return app.get(KitSubscriber).deliverForTest(Buffer.from(JSON.stringify(envelope)));
 }
 
 /**
