@@ -210,7 +210,8 @@ describe('UC-16: документация пакета', () => {
     it('NFR-6: docs/releasing.md — чек-лист, ручной 1.0.0-rc.1 с меткой next, npm trust, запрет токенов, 1.0.0 после Identity', () => {
         for (const fragment of [
             'pnpm pack:check',
-            'git tag v',
+            'git tag -a v',
+            'git cat-file -t',
             'npm login',
             'npm publish --access public --tag next',
             '1.0.0-rc.1',

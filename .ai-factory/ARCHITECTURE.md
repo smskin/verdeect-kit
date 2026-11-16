@@ -69,6 +69,7 @@ verdeect-kit/
 │   │   ├── sanitize-error.ts          #   sanitizeError, registerErrorSanitizer (эталон O)
 │   │   ├── logger-options.ts          #   createLoggerOptions
 │   │   ├── sentry.ts                  #   initSentry, scrubEvent/scrubBreadcrumb, captureError, captureThrottled
+│   │   ├── background-failures.ts     #   backgroundFailed/backgroundSucceeded — серия сбоев фоновой задачи (rc.11)
 │   │   ├── fail-startup.ts            #   failStartup, StartupFailure
 │   │   ├── health-registry.ts         #   HealthRegistry
 │   │   ├── metrics.ts                 #   kitMetrics (реестр на экземпляр приложения)
