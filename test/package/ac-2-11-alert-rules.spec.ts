@@ -25,6 +25,7 @@ const THRESHOLDS = [
     'verdeect_kit_threshold:rate_limit_unavailable',
     'verdeect_kit_threshold:cleanup_runs',
     'verdeect_kit_threshold:idempotency_late_completions',
+    'verdeect_kit_threshold:background_failures',
 ];
 
 interface AlertRule {
@@ -84,7 +85,7 @@ describe('UC-13: шаблон алертов пакета', () => {
             .map((metric) => metric.name)
             .filter((name) => name.startsWith('verdeect_'));
 
-        expect(names).toHaveLength(8);
+        expect(names).toHaveLength(9);
         for (const name of names.filter((metric) => !WITHOUT_RULE.includes(metric))) {
             expect(
                 rules.some((rule) => new RegExp(`\\b${name}\\b`).test(rule.expr)),

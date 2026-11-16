@@ -93,9 +93,11 @@ tests:
               summary: 'Очистка idempotency_key сервиса d: error'
               description: >-
                 За 2 часа проход очистки таблицы idempotency_key сервиса d завершился с итогом error
-                (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса («очистка … :
-                ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка не
-                успевает за потоком записей.
+                (verdeect_cleanup_runs_total). error — проход упал; сбои идут серией: первый — error-лог
+                «фоновая задача: сбой» и событие GlitchTip, следующие — warn «фоновая задача: сбой повторяется»
+                с task и failures, счёт — verdeect_background_failures_total{task="messaging-cleanup"|"idempotency-cleanup"}.
+                partial — проход упёрся в предел пачек, записи старше срока остались: очистка не успевает за
+                потоком записей.
           - exp_labels:
               service: e
               table: idempotency_key
@@ -105,9 +107,11 @@ tests:
               summary: 'Очистка idempotency_key сервиса e: partial'
               description: >-
                 За 2 часа проход очистки таблицы idempotency_key сервиса e завершился с итогом partial
-                (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса («очистка … :
-                ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка не
-                успевает за потоком записей.
+                (verdeect_cleanup_runs_total). error — проход упал; сбои идут серией: первый — error-лог
+                «фоновая задача: сбой» и событие GlitchTip, следующие — warn «фоновая задача: сбой повторяется»
+                с task и failures, счёт — verdeect_background_failures_total{task="messaging-cleanup"|"idempotency-cleanup"}.
+                partial — проход упёрся в предел пачек, записи старше срока остались: очистка не успевает за
+                потоком записей.
   - interval: 1m
     input_series:
       # Поздние попытки: h — порог по умолчанию 0, алерт есть; i — свой порог 100, 4 < 100, алерта нет.
@@ -132,3 +136,27 @@ tests:
                 их строку (verdeect_idempotency_late_completions_total): ответ повтора не перезаписан, но
                 обработчик выполнился дважды. Проверьте долгие обработчики — строка in_progress считается
                 брошенной через 5 минут.
+  - interval: 1m
+    input_series:
+      # Сбои фоновой задачи: j — порог по умолчанию 0, алерт с меткой task; k — свой порог 100, 4 < 100, алерта нет.
+      - series: 'verdeect_background_failures_total{service="j",task="outbox-relay"}'
+        values: '0+1x10'
+      - series: 'verdeect_background_failures_total{service="k",task="outbox-relay"}'
+        values: '0+1x10'
+      - series: 'verdeect_kit_threshold:background_failures{service="k"}'
+        values: '100x10'
+    alert_rule_test:
+      - eval_time: 5m
+        groupname: verdeect-kit
+        alertname: VerdeectBackgroundFailures
+        exp_alerts:
+          - exp_labels:
+              service: j
+              task: outbox-relay
+              severity: warning
+            exp_annotations:
+              summary: 'Сбои фоновой задачи outbox-relay сервиса j'
+              description: >-
+                За 15 минут фоновая задача outbox-relay сервиса j завершалась сбоем
+                (verdeect_background_failures_total). Первый сбой серии — в журнале («фоновая задача: сбой») и
+                GlitchTip, повторные — warn «фоновая задача: сбой повторяется».

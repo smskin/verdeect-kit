@@ -11,3 +11,7 @@ groups:
         expr: vector(3)
         labels:
           service: platform
+      - record: verdeect_kit_threshold:background_failures
+        expr: vector(5)
+        labels:
+          service: platform

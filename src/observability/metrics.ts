@@ -1,10 +1,12 @@
 // kitMetrics и alertRulesTemplate (prd.md §3.2, AC-2.8, AC-2.11). Эталон — O metrics-server.ts (реестр на экземпляр) и
 // O orch-metrics.ts (метрики на реестре экземпляра). По PRD v1.12: @prometheus-io/client, как у O; метка service по
-// умолчанию, метрики процесса Node, имена verdeect_*. Глобального реестра нет: два приложения в процессе не смешиваются.
+// умолчанию, метрики процесса Node, имена verdeect_*. Глобального реестра нет: у метрик экземпляра свой реестр, кроме
+// verdeect_background_failures_total — там итоги процесса (collect(), v1.34): два приложения в процессе видят одно значение.
 // AC-9.5 (E4): метрика очистки verdeect_cleanup_runs_total. v1.31: verdeect_idempotency_late_completions_total.
 import { fileURLToPath } from 'node:url';
 import { collectDefaultMetrics, Counter, Gauge, Registry } from '@prometheus-io/client';
 import { assertServiceName } from '../internal/service-name.js';
+import { backgroundFailureTotals } from './background-failures.js';
 
 /** Реестр и метрики пакета одного экземпляра приложения (§3.2). Метрики домена — `<service>_*`, вне пакета. */
 export interface KitMetrics {
@@ -46,13 +48,29 @@ export interface KitMetrics {
     setOutboxSource(source: (() => Promise<void>) | null): void;
 }
 
-/** Создаёт реестр экземпляра с меткой `service`, метриками процесса Node и метриками пакета (§3.2, AC-2.8). */
+/**
+ * Создаёт реестр экземпляра с меткой `service`, метриками процесса Node и метриками пакета (§3.2, AC-2.8). Кроме полей
+ * `KitMetrics` — `verdeect_background_failures_total{task}`: значения задаёт только `backgroundFailed`, счётчик общий на
+ * процесс (два приложения в одном процессе показывают одно значение, §3.2 v1.34).
+ */
 export function kitMetrics(options: { readonly service: string }): KitMetrics {
     assertServiceName(options.service, 'kitMetrics');
     const registry = new Registry();
     registry.setDefaultLabels({ service: options.service });
     collectDefaultMetrics({ register: registry });
     const registers = [registry];
+    new Counter({
+        name: 'verdeect_background_failures_total',
+        help: 'Сбои фоновых задач (backgroundFailed) по task',
+        labelNames: ['task'] as const,
+        registers,
+        collect() {
+            this.reset();
+            for (const [task, total] of backgroundFailureTotals()) {
+                this.inc({ task }, total);
+            }
+        },
+    });
     let outboxSource: (() => Promise<void>) | null = null;
     let outboxInFlight: Promise<void> | null = null;
     // registry.metrics() вызывает get() метрик параллельно: обе метрики outbox ждут один запрос.
