@@ -7,3 +7,7 @@ groups:
         expr: vector(30)
         labels:
           service: platform
+      - record: verdeect_kit_threshold:idempotency_late_completions
+        expr: vector(3)
+        labels:
+          service: platform

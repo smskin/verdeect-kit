@@ -11,7 +11,7 @@
 #       service: platform
 #
 # Имена порогов: verdeect_kit_threshold:outbox_pending, :outbox_lag_seconds, :events_consumed (result="dlq"),
-# :db_pool_wait_timeouts, :rate_limit_unavailable, :cleanup_runs. Правая часть каждого правила агрегирована max by (service),
+# :db_pool_wait_timeouts, :rate_limit_unavailable, :cleanup_runs, :idempotency_late_completions. Правая часть каждого правила агрегирована max by (service),
 # чтобы сравнение on (service) group_left () не давало many-to-many.
 groups:
   - name: verdeect-kit
@@ -131,3 +131,23 @@ groups:
             {{ $labels.result }} (verdeect_cleanup_runs_total). error — проход упал: ошибка в журнале сервиса
             («очистка … : ошибка»). partial — проход упёрся в предел пачек, записи старше срока остались: очистка
             не успевает за потоком записей.
+
+      - alert: VerdeectIdempotencyLateCompletions
+        # Порог по умолчанию — 0: любая поздняя попытка идемпотентности за 15 минут.
+        expr: |
+          sum by (service) (increase(verdeect_idempotency_late_completions_total[15m]))
+            > on (service) group_left ()
+          (
+            max by (service) (verdeect_kit_threshold:idempotency_late_completions)
+              or on (service)
+            (max by (service) (sum by (service) (increase(verdeect_idempotency_late_completions_total[15m]))) * 0)
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Поздние попытки идемпотентности {{ $labels.service }}'
+          description: >-
+            За 15 минут обработчики сервиса {{ $labels.service }} с @Idempotent завершились после того, как
+            повтор перехватил их строку (verdeect_idempotency_late_completions_total): ответ повтора не
+            перезаписан, но обработчик выполнился дважды. Проверьте долгие обработчики — строка in_progress
+            считается брошенной через 5 минут.
