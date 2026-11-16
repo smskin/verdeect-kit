@@ -1,7 +1,8 @@
 // KitRedisChannels (prd.md §3.7 «префикс к каналам ставит обёртка», AC-8.1, AC-8.6): keyPrefix ioredis не действует на
 // каналы. Механика Set обработчиков — O RedisBus, без JSON и повторов SUBSCRIBE (повторная подписка после
 // переподключения — autoResubscribe ioredis). KT-31: одно обещание SUBSCRIBE на канал — одновременные subscribe ждут его,
-// отказ SUBSCRIBE снимает запись канала (повторный subscribe шлёт SUBSCRIBE заново).
+// отказ SUBSCRIBE снимает запись канала (повторный subscribe шлёт SUBSCRIBE заново). NFR-4 v1.31 (AC-8.6): в логах
+// только вид канала (channelKind — сегмент до первого «:»), полное имя с идентификаторами не пишется.
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import { KIT_REDIS_LOG, KIT_REDIS_PREFIX, KIT_REDIS_SUBSCRIBER } from '../internal/tokens.js';
@@ -15,6 +16,23 @@ type ChannelHandler = (message: string) => void | Promise<void>;
 interface ChannelState {
     readonly handlers: Set<ChannelHandler>;
     ready: Promise<void>;
+}
+
+/** Вид канала для логов: сегмент до первого `:` (канал без `:` — весь канал). */
+function channelKindOf(channel: string): string {
+    const index = channel.indexOf(':');
+
+    return index === -1 ? channel : channel.slice(0, index);
+}
+
+/** Ошибка для лога: текст с полным именем канала заменяется кодом (`NOPERM`). */
+function errorFields(error: unknown, full: string): unknown {
+    const sanitized = sanitizeError(error);
+    if (!JSON.stringify(sanitized).includes(full)) {
+        return sanitized;
+    }
+
+    return { code: (error as { code?: unknown } | null)?.code ?? null };
 }
 
 /**
@@ -83,14 +101,14 @@ export class KitRedisChannels {
         const state: ChannelState = { handlers: new Set(), ready: Promise.resolve() };
         state.ready = subscriber.subscribe(full).then(
             () => {
-                this.log.debug({ channel }, 'redis: подписка на канал');
+                this.log.debug({ channelKind: channelKindOf(channel) }, 'redis: подписка на канал');
             },
             (error: unknown) => {
                 if (this.channels.get(full) === state) {
                     this.channels.delete(full);
                 }
                 this.log.debug(
-                    { channel, err: sanitizeError(error) },
+                    { channelKind: channelKindOf(channel), err: errorFields(error, full) },
                     'redis: подписка на канал не удалась',
                 );
                 throw error;
@@ -114,7 +132,7 @@ export class KitRedisChannels {
         }
         this.channels.delete(full);
         await subscriber.unsubscribe(full);
-        this.log.debug({ channel }, 'redis: отписка от канала');
+        this.log.debug({ channelKind: channelKindOf(channel) }, 'redis: отписка от канала');
     }
 
     private dispatch(full: string, message: string): void {
@@ -128,7 +146,7 @@ export class KitRedisChannels {
                 .then(() => handler(message))
                 .catch((error: unknown) => {
                     this.log.error(
-                        { channel, err: sanitizeError(error) },
+                        { channelKind: channelKindOf(channel), err: errorFields(error, full) },
                         'redis: ошибка обработчика сообщения канала',
                     );
                     // Лёгкий импорт /redis: @sentry/nestjs грузится только при ошибке обработчика (как CLI, KT-31).
