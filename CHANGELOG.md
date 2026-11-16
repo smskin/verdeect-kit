@@ -4,6 +4,42 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.11] - 2026-11-16
+
+Находки Identity ID-68, ID-69 и Orchestrator OR-214, К35, сверка KT-120 (PRD v1.33–v1.34, r28–r29).
+
+### Added
+
+- `/observability`: `backgroundFailed(task, err, logger)` и `backgroundSucceeded(task, logger)` — серия сбоев фоновой задачи: первый сбой — `error` и одно событие GlitchTip, следующие — `warn` с `failures`, успех закрывает серию (`info`); `task` — `^[a-z][a-z0-9_.-]{1,63}$`, закрытого списка нет.
+- `/observability`: тип `KitBackgroundLogger` — `{error, warn, info}` вида `(поля, сообщение)` в стиле pino.
+- `/observability`: метрика `verdeect_background_failures_total{task}` в `kitMetrics` (счётчик процесса через `collect()`) и правило `VerdeectBackgroundFailures` шаблона алертов (порог `verdeect_kit_threshold:background_failures`).
+- `/messaging`: `OutboxStore.add(tx, Event, {subjectId, data, tenant?})` — тенант строки события `'required'` на вызов.
+- `/messaging`: политика `outbox_tenantless_insert` (permissive, `FOR INSERT`, `WITH CHECK (tenant IS NULL)`) у `createOutboxTable(schema, {tenantNullable: true})`.
+
+### Changed
+
+- **`'none'` — всегда `null`:** событие без компании пишется с `tenant: null` при любом тенанте транзакции (раньше — `TypeError` при тенанте); явный `tenant` вызова у `'none'` — `TypeError`.
+- **`'required'` — `tenant` вызова:** задан — пишется он (в транзакции без тенанта или с тем же тенантом); пуст или не совпадает с непустым тенантом транзакции — `TypeError` до записи.
+- `/database`: поля `actor` в `DbContext` (`clientId`, `accountId`, `memberId`, `onBehalfOf`) — `string | null`; `null` пишется в строку outbox и конверт как `null`.
+- `/testing`: `assertStrictTenantIsolation` у nullable `outbox` требует две политики (`outbox_tenant_isolation`, `outbox_tenantless_insert`), у `NOT NULL` — одну; иная или лишняя политика — ошибка.
+- **Relay и очистки — серия сбоев:** ошибка БД прохода relay (`outbox-relay`), очистки сообщений (`messaging-cleanup`) и идемпотентности (`idempotency-cleanup`) — `backgroundFailed` вместо `captureThrottled`/`captureError` на каждом проходе; выполненный проход закрывает серию, занятый замок её не меняет.
+- **Ошибка таблицы очистки сообщений** — `debug` «очистка сообщений: ошибка таблицы» и один сбой прохода серии (раньше — `error` и событие на каждую таблицу); `run()` такого прохода — `{ran: false}`.
+
+### Fixed
+
+- Тест AC-3.9 (WebSocket): ожидание строки `server.close` событием вместо опроса с паузой (CI №37).
+- `docs/releasing.md`: аннотированный тег (`git tag -a`) и проверка `git cat-file -t`.
+- `/observability`: ошибка Drizzle без кода PostgreSQL (тайм-аут, обрыв соединения) попадала в лог и GlitchTip с текстом SQL и параметрами — `sanitizeError` распознаёт `DrizzleQueryError` по форме (`query` и `params`, имя класса), а не только по `name` (у экземпляра drizzle-orm 0.45 `name` = `'Error'`).
+- Шаблон алертов: описание `VerdeectCleanupFailing` — под серию сбоев очистки (`verdeect_background_failures_total{task}`).
+
+### Как перейти
+
+- **Outbox с `tenantNullable: true`.** После обновления выполните `drizzle-kit generate`: миграция добавит политику `outbox_tenantless_insert`. У `NOT NULL` outbox миграций нет.
+- **События `'none'` в транзакции с тенантом** теперь пишут строку с `tenant: null` — уберите обходы (отдельная транзакция без тенанта ради события).
+- **Orchestrator:** `orchestrator_background_failures_total` → `verdeect_background_failures_total`, метка `job` → `task` — обновите свои запросы и панели; правило алерта берите из шаблона пакета, своё снимите; класс `BackgroundFailures` → функции `backgroundFailed`/`backgroundSucceeded` пакета (Nest `Logger` — через адаптер, пример в README).
+- **`registerErrorSanitizer` для `DrizzleQueryError`.** Обход дефекта (своя ветка очистки ошибки Drizzle) можно убрать: пакет очищает такие ошибки сам, в том числе без pg-причины.
+- **Авария relay при недоступной БД:** `verdeect_outbox_pending` и `verdeect_outbox_lag_seconds` замирают на последнем значении — сигнал аварии `verdeect_background_failures_total{task="outbox-relay"}`.
+
 ## [1.0.0-rc.10] - 2026-11-16
 
 Находки перехода Orchestrator OR-199, OR-205, OR-207, сверка KT-103 (PRD v1.31, r26).
