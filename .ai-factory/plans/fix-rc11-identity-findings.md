@@ -108,7 +108,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
 
 ### Фаза 1: `/messaging` — тенант outbox и RLS
 
-- [ ] **Task 1: политика `outbox_tenantless_insert` и миграция фикстуры** — §3.4 стр. 128, §6 стр. 529, R1, R2
+- [x] **Task 1: политика `outbox_tenantless_insert` и миграция фикстуры** — §3.4 стр. 128, §6 стр. 529, R1, R2
   - **Skill:** nestjs-code generic src/internal/outbox-policy.ts (MODIFY); nestjs-code generic src/messaging/tables.ts (MODIFY); nestjs-code test unit messaging tables (MODIFY) → `test/unit/messaging/tables.spec.ts`; миграция — команда `pnpm db:fixtures` (без Skill)
   - Тест (сначала, на rc.10), `tables.spec.ts`:
     - `AC-4.8: createOutboxTable({tenantNullable: true}) — две политики: outbox_tenant_isolation (ALL) и outbox_tenantless_insert (permissive, INSERT, public, WITH CHECK tenant IS NULL)`;
@@ -123,7 +123,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - Потребитель `test/consumer/minimal` — `createOutboxTable(consumer)` без опции, его миграции не меняются (R1).
   - Логи: нет.
 
-- [ ] **Task 2: `assertStrictTenantIsolation` — две политики при nullable** — §3.8 стр. 197, AC-4.8, R3 (depends on 1)
+- [x] **Task 2: `assertStrictTenantIsolation` — две политики при nullable** — §3.8 стр. 197, AC-4.8, R3 (depends on 1)
   - **Skill:** nestjs-code test integration testing ac-4-8-strict-isolation (MODIFY) → `test/integration/testing/ac-4-8-strict-isolation.spec.ts`; nestjs-code generic src/testing/tenant-isolation.ts (MODIFY)
   - Тесты (сначала, на rc.10; scratch-БД через существующий `withScratch`, DDL — администратором, проверка — под `kit_app`):
     - `AC-4.8: outbox createOutboxTable({tenantNullable: true}) с двумя политиками проходит` — фикстура `kit` после миграции 0009. Существующий тест стр. 196 «outbox из createOutboxTable (схема kit) — проходит» и есть эта проверка: переименовать, добавив «две политики при nullable tenant», в отчёт. На rc.10 (код проверки rc.10 и миграции задачи 1) он падает: у nullable `outbox` две политики, rc.10 требует одну;
@@ -145,7 +145,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - Проверка потребителя: `test/consumer/minimal/src/database.spec.ts` вызывает `assertStrictTenantIsolation` на `NOT NULL` outbox — по R3 проходит без изменений (`make test-package`).
   - Логи: нет.
 
-- [ ] **Task 3: `OutboxStore.add` — тенант на вызов** — §3.4 стр. 129, AC-5.15, R4 (depends on 1)
+- [x] **Task 3: `OutboxStore.add` — тенант на вызов** — §3.4 стр. 129, AC-5.15, R4 (depends on 1)
   - **Skill:** nestjs-code test integration messaging ac-5-15-outbox-tenant (MODIFY) → `test/integration/messaging/ac-5-15-outbox-tenant.spec.ts`; nestjs-code generic src/messaging/outbox-store.ts (MODIFY)
   - Тесты (сначала, на rc.10), по строкам таблицы R4. Стенд и проверки строки и конверта — как в файле сейчас (`createOutboxApp`, `outboxRows`, `BrokerClient`):
     - `AC-5.15: 'none' в транзакции с тенантом acme → строка и конверт tenant: null` — заменяет существующий тест стр. 50 «'none' с тенантом — TypeError, откат». Поведение изменено PRD v1.33, в отчёт «было → стало, основание §3.4 стр. 129». На rc.10 — `TypeError`;
@@ -164,7 +164,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
     - TSDoc `add` и класса — тенант строки по R4, `@throws`. Шапка — v1.33.
   - Логи: `debug({type, id}, 'outbox: строка добавлена')` — как сейчас.
 
-- [ ] **Task 4: `DbContext.actor` — поля `string | null`** — §3.3 стр. 95, AC-5.2, R5
+- [x] **Task 4: `DbContext.actor` — поля `string | null`** — §3.3 стр. 95, AC-5.2, R5
   - **Skill:** nestjs-code generic src/database/tenant.ts (MODIFY); nestjs-code test unit database ac-5-2-db-context (CREATE) → `test/unit/database/ac-5-2-db-context.test-d.ts`; nestjs-code test integration messaging ac-5-2-outbox-row (MODIFY) → `test/integration/messaging/ac-5-2-outbox-row.spec.ts`
   - Тесты (сначала, на rc.10):
     - `ac-5-2-db-context.test-d.ts`: `AC-5.2: DbContext принимает actor {clientId: null, channel: 'system'}` и все четыре поля `null`; `channel: null` — `@ts-expect-error`. На rc.10 — ошибка компиляции (`pnpm typecheck` / typecheck Vitest);
@@ -174,7 +174,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
 
 ### Фаза 2: серия сбоев фоновых задач
 
-- [ ] **Task 5: `backgroundFailed`, `backgroundSucceeded`, `KitBackgroundLogger`, метрика** — §3.2 стр. 81, 84, AC-2.16, R6, R7
+- [x] **Task 5: `backgroundFailed`, `backgroundSucceeded`, `KitBackgroundLogger`, метрика** — §3.2 стр. 81, 84, AC-2.16, R6, R7
   - **Skill:** nestjs-code test unit observability ac-2-16-background-failures (CREATE) → `test/unit/observability/ac-2-16-background-failures.spec.ts`; nestjs-code generic src/observability/background-failures.ts (CREATE); nestjs-code generic src/observability/metrics.ts (MODIFY); nestjs-code generic src/observability/index.ts (MODIFY); nestjs-code test unit observability ac-2-8-metrics (MODIFY) → `test/unit/observability/ac-2-8-metrics.spec.ts`
   - Тест (сначала, на rc.10 — ошибка импорта). `@sentry/nestjs` — `vi.mock`, как в `ac-2-6-capture-throttled.spec.ts` (unit-файлы изолированы по умолчанию). Логгер — запись вызовов `error`/`warn`/`info` в массив. Метрика — `kitMetrics({service: 'kit-test'}).registry.getSingleMetricAsString` / `getMetricsAsJSON`, прирост от значения до теста. У каждого теста свой `task` (счётчик процесса общий). Каждый вызов `backgroundFailed` — новый `new Error(...)`: `captureError` не шлёт уже отправленный объект, и с одной ошибкой тест «одно событие» прошёл бы на реализации, которая зовёт `captureError` на каждом сбое:
     - `AC-2.16: три сбоя подряд → одно событие GlitchTip, verdeect_background_failures_total{task} = 3, логи error, warn, warn (warn с failures 2 и 3)`;
@@ -189,7 +189,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - `ac-2-8-metrics.spec.ts`: в `KIT_PACKAGE_METRICS` — `verdeect_background_failures_total`.
   - Логи: строки R6 — в коде функций.
 
-- [ ] **Task 6: правило алерта `VerdeectBackgroundFailures`** — §3.2 стр. 84, AC-2.11, R10 (depends on 5)
+- [x] **Task 6: правило алерта `VerdeectBackgroundFailures`** — §3.2 стр. 84, AC-2.11, R10 (depends on 5)
   - **Skill:** none (YAML) → `alerts/verdeect-kit.rules.yml`, `test/fixtures/alerts/verdeect-kit.test.yml`, `test/fixtures/alerts/service-override.rules.yml`; nestjs-code test unit package ac-2-11-alert-rules (MODIFY) → `test/package/ac-2-11-alert-rules.spec.ts`
   - Тест (сначала): в `ac-2-11-alert-rules.spec.ts` — `expect(names).toHaveLength(9)`, в `THRESHOLDS` — `verdeect_kit_threshold:background_failures`. На rc.10 тест «правило на каждую метрику» падает после задачи 5 (метрика без правила). Длина 8 на коде rc.10 тоже: 9 ≠ 8.
   - **Решено PRD v1.34 (r29, KT-122): метка `task`, не `job`.** `job` при сборе ставят Prometheus и vmagent (имя задания сбора), метка приложения переименовалась бы в `exported_job` (§3.2 стр. 81). Правило и фикстуры — по `task`.
@@ -199,7 +199,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - Проверка: `pnpm vitest run -c vitest.package.config.ts test/package/ac-2-11-alert-rules.spec.ts` (нужен Docker vmalert, как сейчас).
   - Логи: нет.
 
-- [ ] **Task 7: relay — серия `outbox-relay`** — §3.4 стр. 131, AC-5.24, R8 (depends on 5)
+- [x] **Task 7: relay — серия `outbox-relay`** — §3.4 стр. 131, AC-5.24, R8 (depends on 5)
   - **Skill:** nestjs-code test integration messaging ac-5-24-background-failures (CREATE) → `test/integration/messaging/ac-5-24-background-failures.spec.ts`; nestjs-code generic src/messaging/outbox-relay.ts (MODIFY); nestjs-code generic vitest.integration.config.ts (MODIFY)
   - Тест (сначала, на rc.10). Файл изолирован: `initFakeSentry` — в список `ISOLATED` с причиной «initFakeSentry — process-global Sentry». Стенд:
     - `tcpProxy(appUrl())` и `createTestDb({url: proxy.url, poolMax: 2})` из `test/support/database.ts` — как в `test/integration/database/ac-4-4-connection-lost.spec.ts` стр. 39–40. `acquireTimeoutMs` не уменьшать: при закрытом порте отказ — `ECONNREFUSED` сразу, срок не наступает;
@@ -210,7 +210,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - Код `iterate()` — по R8: в `catch` — `backgroundFailed('outbox-relay', error, this.log)`. После `drain()` без исключения — `backgroundSucceeded('outbox-relay', this.log)`. Импорт `captureThrottled` убрать, если больше не нужен (`captureError` для «5 неудач строки» остаётся). Импорт — из `../observability/background-failures.js`. Шапка — v1.34.
   - Логи: из `backgroundFailed`/`backgroundSucceeded`. Прежняя строка `error` «outbox: ошибка БД relay» удаляется (заменена серией).
 
-- [ ] **Task 8: очистка сообщений — серия `messaging-cleanup`** — §3.4 стр. 134, AC-5.24, R9 (depends on 5, 7)
+- [x] **Task 8: очистка сообщений — серия `messaging-cleanup`** — §3.4 стр. 134, AC-5.24, R9 (depends on 5, 7)
   - **Skill:** nestjs-code test integration messaging ac-5-24-background-failures (MODIFY) → `test/integration/messaging/ac-5-24-background-failures.spec.ts`; nestjs-code generic src/messaging/cleanup.ts (MODIFY)
   - Тесты (сначала, в файле задачи 7). `MessagingCleanup` создаётся напрямую по `MessagingCleanupDeps`: `db` — через прокси, `database` — `{runExclusive, deleteInBatches}` из `src/database/index.ts`, схема `kit`, таблицы фикстуры, `backgroundLoops: false`, вызовы — `cleanup.run()`:
     - `AC-5.24: проход очистки с ошибкой БД → серия messaging-cleanup (одно событие, error); повторный сбой — без события, warn`. БД — закрытый порт (`proxy.break()`, `ECONNREFUSED` сразу);
@@ -220,7 +220,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - Код `cleanup.ts` — по R9. `cleanTable` возвращает ошибку таблицы (или `undefined`), без `error`-лога и `captureError`. Вместо них — `debug({table, err: sanitizeError(error)}, 'очистка сообщений: ошибка таблицы')`. `pass()`: `catch` `runExclusive` и первая ошибка таблиц — `backgroundFailed('messaging-cleanup', …)`. Итог прохода для расписания: ошибка — `'error'`, как сейчас для исключения. Расписание после ошибки таблицы — как после ошибки (час), раньше было `'done'` (тоже час) — без изменения интервала. Выполненный проход без ошибок — `backgroundSucceeded`. `'busy'` и `stopped` — ни одной функции. Метрика по таблицам — как сейчас. Импорт `captureError` убрать. Шапка — v1.34. `run()` возвращает `{ran: outcome === 'done'}` (стр. 147), поэтому ошибка таблицы теперь даёт `{ran: false}`. TSDoc `run()`: «`false` — замок у другой реплики, остановка или ошибка прохода». В тестах задачи занятый замок отличать от сбоя по логам: `debug` «очистка сообщений: другая реплика», нет `error`/`warn` серии. Одного `ran` для этого мало.
   - Логи: `debug` ошибки таблицы. Серия — `backgroundFailed`. `info` прохода таблицы — как сейчас.
 
-- [ ] **Task 9: очистка идемпотентности — серия `idempotency-cleanup`** — §3.3а стр. 117, R9 (depends on 5)
+- [x] **Task 9: очистка идемпотентности — серия `idempotency-cleanup`** — §3.3а стр. 117, R9 (depends on 5)
   - **Skill:** nestjs-code generic src/idempotency/kit-idempotency.module.ts (MODIFY); nestjs-code test integration idempotency ac-4-14-cleanup (MODIFY) → `test/integration/idempotency/ac-4-14-cleanup.spec.ts`
   - Тест (сначала, на rc.10): `AC-5.24: ошибка прохода очистки идемпотентности → серия idempotency-cleanup: error, затем warn с failures 2; выполненный проход закрывает серию (info); verdeect_background_failures_total{task="idempotency-cleanup"} +2`.
     - Общую БД `kit` не трогать (проект `shared`, параллельные файлы). Ошибка — scratch-БД и функция с `RAISE EXCEPTION`, как существующий тест стр. 111–129 (`createScratchDatabase`, `createStand({url: scratch.url})`, `adminAt`).
@@ -235,7 +235,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
 
 ### Фаза 3: тест AC-3.9
 
-- [ ] **Task 10: AC-3.9 ws — ожидание `server.close` событием, мутация** — R11
+- [x] **Task 10: AC-3.9 ws — ожидание `server.close` событием, мутация** — R11
   - **Skill:** nestjs-code generic test/fixtures/http/shutdown-app.mjs (MODIFY); nestjs-code test timing http ac-3-9-shutdown (MODIFY) → `test/timing/http/ac-3-9-shutdown.spec.ts`
   - Фикстура: в переопределённом `httpServer.close` (стр. 44–52) первой строкой — запись в stdout `{"msg":"http: server.close","listening":…}` с переводом строки, затем прежнее. Шапку фикстуры дополнить (R11).
   - Тест ws (стр. 245–276):
@@ -249,7 +249,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
 
 ### Фаза 4: документация и выпуск
 
-- [ ] **Task 11: README и AGENTS.md** — §3.2–§3.8 v1.33, AC-9.3 (depends on 1–9)
+- [x] **Task 11: README и AGENTS.md** — §3.2–§3.8 v1.33, AC-9.3 (depends on 1–9)
   - **Skill:** none (Markdown)
   - `README.md`:
     1. «Наблюдаемость» (стр. 125–210, рядом с абзацем `captureError`/`captureThrottled` стр. 208): `backgroundFailed(task, err, logger)` / `backgroundSucceeded(task, logger)`:
@@ -280,7 +280,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
   - Проверка: `pnpm vitest run -c vitest.package.config.ts test/package/ac-9-3-docs.spec.ts` (после задачи 13 — и CHANGELOG).
   - Логи: нет.
 
-- [ ] **Task 12: `docs/releasing.md` — аннотированный тег** — R12
+- [x] **Task 12: `docs/releasing.md` — аннотированный тег** — R12
   - **Skill:** none (Markdown); nestjs-code test unit package ac-9-3-docs (MODIFY) → `test/package/ac-9-3-docs.spec.ts`
   - Тест (сначала): в списке фрагментов `NFR-6: docs/releasing.md …` (стр. 211–222) `'git tag v'` → `'git tag -a v'`, плюс `'git cat-file -t'`. На тексте rc.10 падает.
   - `docs/releasing.md`:
@@ -288,7 +288,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
     - «Первый выпуск», шаг 2 (стр. 86) — `git tag -a v1.0.0-rc.1 -m "1.0.0-rc.1"`.
   - Логи: нет.
 
-- [ ] **Task 13: CHANGELOG и версия** — G14, NFR-5 (depends on 10, 11, 12)
+- [x] **Task 13: CHANGELOG и версия** — G14, NFR-5 (depends on 10, 11, 12)
   - **Skill:** none (Markdown, JSON)
   - `CHANGELOG.md`: `## [1.0.0-rc.11] - 2026-11-16` под `## [Unreleased]`, по образцу rc.10:
     - строка-источник: «Находки Identity ID-68, ID-69 и Orchestrator OR-214, К35, сверка KT-120 (PRD v1.33–v1.34, r28–r29).»
@@ -315,7 +315,7 @@ Authority: `requirements/0000-kit/prd.md` v1.34 (r29; v1.34 закрепила �
 
 ### Фаза 5: проверка
 
-- [ ] **Task 14: полная проверка** (depends on 1–13)
+- [x] **Task 14: полная проверка** (depends on 1–13)
   - Команды по одной (правило пользователя: без `&&`):
     1. `pnpm lint`, `pnpm typecheck`, `pnpm test`;
     2. `free -h`, `uptime`, `docker ps --format '{{.Names}} {{.Label "com.docker.compose.project"}} {{.Label "org.testcontainers"}}'`: available ≥ 3 ГБ, load < 5, нет чужих `verdeect-*-e2e` и контейнеров Testcontainers. Иначе — стоп и сообщить пользователю;
