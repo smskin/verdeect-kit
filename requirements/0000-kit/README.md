@@ -2,7 +2,7 @@
 
 Общий инфраструктурный npm-пакет сервисов Вердикт 2.0: конфигурация, наблюдаемость и запуск, HTTP-каркас, БД с RLS, идемпотентность, outbox/inbox и RabbitMQ, шифр секретов, Redis, тестовый контур. Код переносится из копий в Identity, BFF, Platform, Orchestrator (эталон — `files/inventory.md`).
 
-> Режим: INIT · Ревизия: r27 · 2026-11-16 · PRD v1.32 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
+> Режим: INIT · Ревизия: r28 · 2026-11-16 · PRD v1.33 · Репозиторий: GitHub `smskin/verdeect-kit`, WSL `/home/administrator/projects/verdeect2/verdeect-kit` · Источник: чат «`@verdeect/kit`» проекта Claude «Verdeect v2» (префикс KT)
 
 ## Файлы
 
@@ -77,3 +77,4 @@ UI нет, макетов нет. Пакет `@verdeect/events` — отдель
 - r25 — 2026-11-14: порядок шага 2 KitLifecycle — закрытие долгих соединений до server.close() (BFF-77), AC-2.10, AC-3.9.
 - r26 — 2026-11-16: итоги перехода Orchestrator — курсор, OpenAPI, каналы Redis, DATABASE_UNAVAILABLE, метрика поздних попыток, тестовые точки подписчика и фоновых циклов, labels, timingGuard onE2e, повтор очистки, README.
 - r27 — 16.11.2026: PRD v1.32 — уточнения по verify rc.10 (§3.2, §3.3, §3.8, AC-4.20)
+- r28 — 16.11.2026: PRD v1.33 — находки Identity (ID-68, ID-69) и Orchestrator (К35): тенант на вызов add, outbox_tenantless_insert, null в actor, серия сбоев фоновых задач
