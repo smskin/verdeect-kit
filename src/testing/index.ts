@@ -1,4 +1,6 @@
 // Точка входа @verdeect/kit/testing (prd.md §3.8, E1 → E8): явный список экспортов; только условие development (NFR-4).
+export { stopBackgroundLoops } from './background-loops.js';
+export { waitForDelivery } from './delivery.js';
 export { createTestApp } from './create-test-app.js';
 export type { KitTestAppOptions, KitTestOverride } from './create-test-app.js';
 export { expectMatchesApi } from './expect-matches-api.js';
@@ -32,10 +34,12 @@ export { assertOutboxCoverage, expectOutbox } from './outbox-coverage.js';
 export type { KitOutboxTrace } from './outbox-coverage.js';
 export {
     declareEventsExchange,
+    deliverTestEvent,
     publishTestEvent,
     waitForBrokerReady,
     waitForInbox,
 } from './test-events.js';
+export type { KitPublishTestEventOptions, KitTestDelivery } from './test-events.js';
 export { createTestDb } from './create-test-db.js';
 export type { KitTestDb } from './create-test-db.js';
 export { CONNECTION_TIMEOUT_MS as KIT_DB_CONNECTION_TIMEOUT_MS } from '../database/timeouts.js';

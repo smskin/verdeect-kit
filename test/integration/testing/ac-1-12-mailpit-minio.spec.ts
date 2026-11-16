@@ -1,10 +1,12 @@
 // AC-1.12 (UC-14): startTestStack поднимает mailpit и minio из TEST_IMAGES только по флагам, адреса — через provide
 // (prd.md §3.8, E1). startTestStack вызывается напрямую с подставным project. v1.23: MinIO с KMS — PutObject с
-// ServerSideEncryption: AES256 в бакет, созданный тестом, проходит, объект читается.
+// ServerSideEncryption: AES256 в бакет, созданный тестом, проходит, объект читается. v1.31: startTestStack({labels}) —
+// свои метки контейнеров; timingGuard({onE2e: 'warn'}) — предупреждение без исключения.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TEST_IMAGES } from '../../../src/testing/images.js';
 import { startTestStack } from '../../../src/testing/start-test-stack.js';
-import { runningImages } from '../../support/docker.js';
+import { runTimingGuard } from '../../../src/testing/timing-guard.js';
+import { imagesWithLabels, runningImages } from '../../support/docker.js';
 import { s3Request } from '../../support/s3.js';
 
 const SERVICE = 'kit-mail-s3';
@@ -22,9 +24,12 @@ const project = fakeProject();
 let teardown: (() => Promise<void>) | null = null;
 
 beforeAll(async () => {
-    teardown = await startTestStack({ service: SERVICE, mailpit: true, minio: true })(
-        project as never,
-    );
+    teardown = await startTestStack({
+        service: SERVICE,
+        mailpit: true,
+        minio: true,
+        labels: { job: 'x' },
+    })(project as never);
 });
 
 afterAll(async () => {
@@ -86,10 +91,38 @@ describe('UC-14: mailpit и minio тестового контура', () => {
         await stop();
     });
 
+    it("AC-1.12: контейнер, поднятый с labels: {job: 'x'}, несёт эту метку и verdeect.kit.service", async () => {
+        expect(new Set(await imagesWithLabels(SERVICE, { job: 'x' }))).toEqual(
+            new Set([TEST_IMAGES.mailpit, TEST_IMAGES.minio]),
+        );
+    });
+
     it('AC-1.12: после teardown контейнеров нет', async () => {
         await teardown?.();
         teardown = null;
 
         expect(await runningImages(SERVICE)).toEqual([]);
+    });
+});
+
+describe('UC-14: метки контейнеров и сторож замеров', () => {
+    it('AC-1.12: verdeect.kit.service в labels — TypeError', () => {
+        expect(() =>
+            startTestStack({ service: SERVICE, labels: { 'verdeect.kit.service': 'other' } }),
+        ).toThrow(TypeError);
+    });
+
+    it("AC-1.12: timingGuard({onE2e: 'warn'}) при поддельном списке контейнеров с контуром — предупреждение в stderr без исключения, умолчание — исключение", async () => {
+        const lines: string[] = [];
+        const deps = {
+            load: () => 0,
+            cores: () => 4,
+            composeProjects: () => Promise.resolve(['verdeect-orchestrator-e2e']),
+            write: (line: string) => void lines.push(line),
+        };
+
+        await runTimingGuard(deps, { onE2e: 'warn' });
+        expect(lines.join('')).toContain('verdeect-orchestrator-e2e');
+        await expect(runTimingGuard(deps)).rejects.toThrow(/verdeect-orchestrator-e2e/);
     });
 });

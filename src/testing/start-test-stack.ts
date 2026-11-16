@@ -88,6 +88,9 @@ export interface KitExternalMailpit {
     readonly httpUrl: string;
 }
 
+/** Метка контейнеров контура: имя сервиса (teardown и `runningImages` ищут по ней). */
+const SERVICE_LABEL = 'verdeect.kit.service';
+
 /**
  * Параметры startTestStack (§3.8). Флаг сервиса — `true` (контейнер `TEST_IMAGES`) или адреса уже поднятого сервиса:
  * только одноразовые service-контейнеры CI, общие долгоживущие серверы не поддерживаются.
@@ -130,6 +133,11 @@ export interface TestStackOptions {
      * teardown падает со списком событий без успешного `expectOutbox` (GAP-2, AC-5.13).
      */
     readonly outboxEvents?: readonly KitEvent[];
+    /**
+     * Дополнительные метки контейнеров (§3.8 v1.31): метки контура — базовые и эти; ключ `verdeect.kit.service` —
+     * `TypeError` при вызове `startTestStack`. Для внешних сервисов (адреса уже поднятых) не применяются — контейнера нет.
+     */
+    readonly labels?: Readonly<Record<string, string>>;
 }
 
 declare module 'vitest' {
@@ -710,6 +718,9 @@ export function startTestStack(
     options: TestStackOptions,
 ): (project: TestProject) => Promise<() => Promise<void>> {
     assertServiceName(options.service, 'startTestStack');
+    if (options.labels !== undefined && Object.hasOwn(options.labels, SERVICE_LABEL)) {
+        throw new TypeError(`startTestStack: метку ${SERVICE_LABEL} в labels задаёт пакет`);
+    }
     if (options.migrations !== undefined && !enabled(options.postgres)) {
         throw new TypeError('startTestStack: migrations требует postgres');
     }
@@ -736,7 +747,7 @@ export function startTestStack(
             `startTestStack: префикс publishes «${badPrefix}» вне формата ${PUBLISH_PREFIX_PATTERN.source}`,
         );
     }
-    const labels = { 'verdeect.kit.service': options.service };
+    const labels = { ...options.labels, [SERVICE_LABEL]: options.service };
 
     return async (project) => {
         const parts = [

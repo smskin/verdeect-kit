@@ -84,10 +84,18 @@ export async function createDbApp(options: {
     readonly schema: z.ZodType<Record<string, unknown>>;
     readonly env: Record<string, string>;
     readonly overrides?: readonly KitTestOverride[];
+    readonly backgroundLoops?: boolean;
 }): Promise<NestFastifyApplication> {
     setPreparsedEnv(options.schema, parseEnv(options.schema, options.env));
 
-    return createTestApp({ module: options.module, service: 'kit', overrides: options.overrides });
+    return createTestApp({
+        module: options.module,
+        service: 'kit',
+        overrides: options.overrides,
+        ...(options.backgroundLoops === undefined
+            ? {}
+            : { backgroundLoops: options.backgroundLoops }),
+    });
 }
 
 /** Контекст `Db` теста. */

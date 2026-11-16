@@ -60,6 +60,7 @@ export async function createMessagingApp(options: {
     readonly imports?: readonly (Type | DynamicModule)[];
     readonly providers?: readonly Provider[];
     readonly overrides?: readonly KitTestOverride[];
+    readonly backgroundLoops?: boolean;
 }): Promise<NestFastifyApplication> {
     const needsDb =
         options.options.outbox !== undefined ||
@@ -83,6 +84,9 @@ export async function createMessagingApp(options: {
         schema: messagingEnvSchema,
         env: messagingEnv(options.env),
         overrides: options.overrides,
+        ...(options.backgroundLoops === undefined
+            ? {}
+            : { backgroundLoops: options.backgroundLoops }),
     });
 }
 
@@ -134,6 +138,7 @@ export function createOutboxApp(
         readonly subscriber?: KitMessagingModuleOptions['subscriber'];
         readonly providers?: readonly Provider[];
         readonly overrides?: readonly KitTestOverride[];
+        readonly backgroundLoops?: boolean;
     } = {},
 ): Promise<NestFastifyApplication> {
     return createMessagingApp({
@@ -147,6 +152,9 @@ export function createOutboxApp(
         env: options.env,
         providers: options.providers,
         overrides: options.overrides,
+        ...(options.backgroundLoops === undefined
+            ? {}
+            : { backgroundLoops: options.backgroundLoops }),
     });
 }
 

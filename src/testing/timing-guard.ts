@@ -1,6 +1,7 @@
 // Сторож замеров времени для globalSetup уровня T (prd.md §3.8, E1); эталон — O test/support/timing-guard.ts (029c25c).
 // Единственные строки пакета в stderr в E1: назначение функции — сообщать о среде (process.stderr, не console — NFR-8).
-// Vite теряет текст ошибок globalSetup, поэтому сообщение пишется в stderr до throw.
+// Vite теряет текст ошибок globalSetup, поэтому сообщение пишется в stderr до throw. v1.31: onE2e: 'warn' — контур
+// e2e даёт предупреждение без исключения.
 import { execFile } from 'node:child_process';
 import { availableParallelism, loadavg } from 'node:os';
 import { promisify } from 'node:util';
@@ -38,8 +39,17 @@ export async function defaultComposeProjects(exec: Exec): Promise<readonly strin
     }
 }
 
+/** Опции `timingGuard`. */
+export interface KitTimingGuardOptions {
+    /** Запущен контур `verdeect-*-e2e`: `fail` (умолчание) — исключение, `warn` — строка в stderr, замеры идут. */
+    readonly onE2e?: 'fail' | 'warn';
+}
+
 /** Внутренняя логика timingGuard; экспорт для тестов, не из index.ts. */
-export async function runTimingGuard(deps: TimingGuardDeps): Promise<void> {
+export async function runTimingGuard(
+    deps: TimingGuardDeps,
+    options: KitTimingGuardOptions = {},
+): Promise<void> {
     const load = deps.load();
     const cores = deps.cores();
     deps.write(`[timingGuard] load=${load.toFixed(2)} cores=${cores}\n`);
@@ -53,23 +63,37 @@ export async function runTimingGuard(deps: TimingGuardDeps): Promise<void> {
         return;
     }
     const running = projects.filter((name) => E2E_PROJECT.test(name));
-    if (running.length > 0) {
-        const message = `[timingGuard] запущен e2e-контур ${running.join(', ')} — остановите его перед замерами времени`;
-        deps.write(`${message}\n`);
-        throw new Error(message);
+    if (running.length === 0) {
+        return;
     }
+    if (options.onE2e === 'warn') {
+        deps.write(
+            `[timingGuard] WARN: запущен e2e-контур ${running.join(', ')} — замеры времени ненадёжны\n`,
+        );
+
+        return;
+    }
+    const message = `[timingGuard] запущен e2e-контур ${running.join(', ')} — остановите его перед замерами времени`;
+    deps.write(`${message}\n`);
+    throw new Error(message);
 }
 
-/** globalSetup уровня T: нагрузка, ядра, запрет при запущенном e2e-контуре verdeect-*-e2e (§3.8). */
-export function timingGuard(): Promise<void> {
+/**
+ * globalSetup уровня T: нагрузка, ядра, запущенный e2e-контур `verdeect-*-e2e` (§3.8) — по умолчанию запрет
+ * (исключение), `onE2e: 'warn'` — предупреждение в stderr, замеры идут.
+ */
+export function timingGuard(options: KitTimingGuardOptions = {}): Promise<void> {
     const exec = promisify(execFile);
 
-    return runTimingGuard({
-        load: () => loadavg()[0] ?? 0,
-        cores: () => availableParallelism(),
-        composeProjects: () => defaultComposeProjects((file, args) => exec(file, [...args])),
-        write: (line) => {
-            process.stderr.write(line);
+    return runTimingGuard(
+        {
+            load: () => loadavg()[0] ?? 0,
+            cores: () => availableParallelism(),
+            composeProjects: () => defaultComposeProjects((file, args) => exec(file, [...args])),
+            write: (line) => {
+                process.stderr.write(line);
+            },
         },
-    });
+        options,
+    );
 }
