@@ -1,6 +1,6 @@
 // expectMatchesApi (prd.md §3.8 — E3, AC-3.7; KT-17): ответ соответствует @Api маршрута — тот же построитель, что у CLI
-// verdeect-kit openapi. Успешный статус — схема response с конвертом; описанный статус ошибки (стандартные, errors
-// маршрута, 401/403/409 guard'а @verdeect/auth) — ErrorResponse. Эталона нет: пишется по PRD. Валидатор — Ajv 2020 (ajv —
+// verdeect-kit openapi (v1.31: status, @Redirect, errors {code, status}). Успешный статус — схема response с
+// конвертом; описанный статус ошибки (стандартные, errors маршрута, 401/403/409 guard'а @verdeect/auth) — ErrorResponse. Эталона нет: пишется по PRD. Валидатор — Ajv 2020 (ajv —
 // внутренняя деталь /testing, NFR-3), скомпилированная схема кэшируется по маршруту и статусу; утверждения —
 // node:assert/strict.
 import assert from 'node:assert/strict';
@@ -35,8 +35,11 @@ function validatorOf(
 
 /**
  * Проверяет ответ маршрута `[Controller, 'method']` по его `@Api` (§3.8). Статус операции — тело по схеме `response` с
- * конвертом `envelope`; описанный статус ошибки — тело `{error: {code, message, details}}`; прочий статус — ошибка.
- * Несовпадение — `AssertionError` с путями ошибок Ajv; маршрут без `@Api` — ошибка с именем маршрута.
+ * конвертом `envelope` (у `@Redirect` тело не проверяется); описанный статус ошибки — тело `{error: {code, message,
+ * details}}`, у `errors: [{code, status}]` — только этот статус; прочий статус — ошибка. `@Api({status: null})` — любой
+ * не-ошибочный статус отклоняется.
+ * Несовпадение — `AssertionError` с путями ошибок Ajv; маршрут без `@Api` — ошибка с именем маршрута. Маршрут с
+ * необязательным параметром Fastify `:name?` — та же ошибка `openapi: …`, что у генерации документа.
  */
 export function expectMatchesApi(response: KitTestResponse, route: readonly [Type, string]): void {
     const { status, schema, errorStatuses, errorSchema } = routeResponseSchema(route);
@@ -44,7 +47,7 @@ export function expectMatchesApi(response: KitTestResponse, route: readonly [Typ
     const isError = response.statusCode !== status;
     if (isError && !errorStatuses.includes(response.statusCode)) {
         assert.fail(
-            `${name}: статус ${response.statusCode} не описан в @Api (успех — ${status}, ошибки — ${errorStatuses.join(', ')})`,
+            `${name}: статус ${response.statusCode} не описан в @Api (успех — ${status === null ? 'нет' : String(status)}, ошибки — ${errorStatuses.join(', ')})`,
         );
     }
     const expected = isError ? errorSchema : schema;

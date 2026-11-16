@@ -1,5 +1,6 @@
 // AC-3.7 (UC-14): заголовки идемпотентности в OpenAPI по метаданным @Idempotent (prd.md §3.5, §3.3а; П10):
 // Idempotency-Key — параметр заголовка, Idempotent-Replayed — заголовок успешного ответа, ошибки 409/422 и 400 (required).
+// v1.31: слияние extra — parameters по паре (name, in), прочие массивы (security, tags) заменяются.
 import 'reflect-metadata';
 import { Body, Controller, Module, Post, UseGuards } from '@nestjs/common';
 import { Validator } from '@seriousme/openapi-schema-validator';
@@ -32,6 +33,37 @@ class OrdersController {
         return { id: 'o2' };
     }
 
+    @Post(':id/traced')
+    @Api({
+        summary: 'С заголовком трассировки',
+        response: Order,
+        extra: { parameters: [{ name: 'X-Trace', in: 'header', schema: { type: 'string' } }] },
+    })
+    @Idempotent()
+    traced() {
+        return { id: 'o4' };
+    }
+
+    @Post(':id/described')
+    @Api({
+        summary: 'С описанием параметра пути',
+        response: Order,
+        extra: { parameters: [{ name: 'id', in: 'path', description: 'Идентификатор' }] },
+    })
+    described() {
+        return { id: 'o5' };
+    }
+
+    @Post('tagged')
+    @Api({
+        summary: 'С заменой security и tags',
+        response: Order,
+        extra: { security: [{ serviceToken: [] }], tags: ['orders'] },
+    })
+    tagged() {
+        return { id: 'o6' };
+    }
+
     @Post('plain')
     @Api({ summary: 'Без идемпотентности', response: Order })
     plain() {
@@ -43,7 +75,15 @@ class OrdersController {
 class OrdersModule {}
 
 type Operation = {
-    parameters?: { name: string; in: string; required: boolean; schema: object }[];
+    parameters?: {
+        name: string;
+        in: string;
+        required: boolean;
+        schema: object;
+        description?: string;
+    }[];
+    security?: Record<string, string[]>[];
+    tags?: string[];
     responses: Record<string, { description: string; headers?: Record<string, object> }>;
 };
 
@@ -136,5 +176,38 @@ describe('UC-14: OpenAPI идемпотентности', () => {
 
         expect(result.errors).toBeUndefined();
         expect(result.valid).toBe(true);
+    });
+
+    it("AC-3.7: маршрут с @Idempotent, параметром пути и extra.parameters: [{name: 'X-Trace', in: 'header'}] → в документе путь, Idempotency-Key и X-Trace", async () => {
+        const { op } = await operations();
+
+        expect(op('/orders/{id}/traced').parameters?.map((item) => [item.name, item.in])).toEqual([
+            ['id', 'path'],
+            ['Idempotency-Key', 'header'],
+            ['X-Trace', 'header'],
+        ]);
+    });
+
+    it('AC-3.7: параметр extra с парой (id, path) заменяет описание, не дублирует', async () => {
+        const { op } = await operations();
+        const ids = op('/orders/{id}/described').parameters?.filter((item) => item.name === 'id');
+
+        expect(ids).toEqual([
+            {
+                name: 'id',
+                in: 'path',
+                required: true,
+                schema: { type: 'string' },
+                description: 'Идентификатор',
+            },
+        ]);
+    });
+
+    it('AC-3.7: security и tags extra заменяются целиком', async () => {
+        const { op } = await operations();
+        const tagged = op('/orders/tagged');
+
+        expect(tagged.security).toEqual([{ serviceToken: [] }]);
+        expect(tagged.tags).toEqual(['orders']);
     });
 });

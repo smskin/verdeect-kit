@@ -1,7 +1,8 @@
 // AC-3.15 (UC-4, prd.md §3.5 v1.23; К4 Orchestrator): DomainError(code, details?, {message?, headers?, status?}) —
 // текст случая вместо текста словаря; заголовки ответа (имена — к нижнему регистру); запрещённые заголовки — ошибка
 // при создании; код с несколькими объявленными статусами: status из объявленных → он, без status или вне — 500 и одно
-// событие GlitchTip; все статусы кода — в OpenAPI и expectMatchesApi.
+// событие GlitchTip; все статусы кода — в OpenAPI и expectMatchesApi. v1.31: errors: [{code, status}] — только этот
+// статус; статус вне объявленных — ошибка генерации.
 import 'reflect-metadata';
 import { Controller, Get, Module } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -45,6 +46,16 @@ class PlanController {
         throw new DomainError('PLAN_LIMIT', {}, { status: 429, headers: { 'Retry-After': '30' } });
     }
 
+    @Get('rate-only')
+    @Api({
+        summary: 'Лимит, только 429',
+        response: z.object({ ok: z.boolean() }),
+        errors: [{ code: 'PLAN_LIMIT', status: 429 }],
+    })
+    rateOnly(): never {
+        throw new DomainError('PLAN_LIMIT', {}, { status: 429 });
+    }
+
     @Get('no-status')
     noStatus(): never {
         throw new DomainError('PLAN_LIMIT');
@@ -58,6 +69,16 @@ class PlanController {
 
 @Module({ imports: [KitConfigModule.forRoot({ schema: probeEnv })], controllers: [PlanController] })
 class PlanModule {}
+
+@Controller('plan-bad')
+class PlanBadStatusController {
+    @Get()
+    @Api({ summary: 'Неверный статус', errors: [{ code: 'PLAN_LIMIT', status: 500 }] })
+    bad(): void {}
+}
+
+@Module({ controllers: [PlanBadStatusController] })
+class PlanBadStatusModule {}
 
 useProbeEnv();
 
@@ -175,5 +196,29 @@ describe('UC-4: DomainError с опциями', () => {
         for (const statusCode of [403, 429]) {
             expectMatchesApi({ statusCode, json: () => body }, [PlanController, 'rate']);
         }
+    });
+
+    it("AC-3.15: errors: [{code: 'PLAN_LIMIT', status: 429}] у кода {status: [403, 429]} → в документе только 429; expectMatchesApi на 403 падает, на 429 проходит", async () => {
+        const document = await buildOpenApiDocument(PlanModule, { title: 'plan', version: '1' });
+        const responses = (
+            document.paths['/plan/rate-only']?.['get'] as {
+                responses: Record<string, { description: string }>;
+            }
+        ).responses;
+        const body = { error: { code: 'PLAN_LIMIT', message: 'Лимит тарифа', details: {} } };
+
+        expect(Object.keys(responses)).toEqual(['200', '429']);
+        expect(() =>
+            expectMatchesApi({ statusCode: 403, json: () => body }, [PlanController, 'rateOnly']),
+        ).toThrow(/статус 403 не описан/);
+        expectMatchesApi({ statusCode: 429, json: () => body }, [PlanController, 'rateOnly']);
+    });
+
+    it('AC-3.15: status: 500 → ошибка генерации с именем кода', async () => {
+        await expect(
+            buildOpenApiDocument(PlanBadStatusModule, { title: 'plan', version: '1' }),
+        ).rejects.toThrow(
+            'openapi: PlanBadStatusController.bad — статус 500 не объявлен для кода PLAN_LIMIT',
+        );
     });
 });

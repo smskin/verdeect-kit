@@ -10,9 +10,11 @@ import { openapiCommand } from '../../../src/cli/commands/openapi.js';
 // Фикстура загружается при импорте файла (как до KT-62): иначе холодная загрузка .ts — в первом тесте и под нагрузкой
 // превышает testTimeout. CLI получает её из кэша модулей.
 import '../../fixtures/http/api-app.module.js';
+import '../../fixtures/http/optional-param-app.module.js';
 
 const FIXTURES = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../fixtures/http');
 const FIXTURE = join(FIXTURES, 'api-app.module.ts');
+const OPTIONAL_FIXTURE = join(FIXTURES, 'optional-param-app.module.ts');
 /** Эталон документа фикстуры: правится вручную вместе с фикстурой, не генерируется тестом. */
 const GOLDEN = join(FIXTURES, 'api-app.openapi.json');
 
@@ -148,5 +150,54 @@ describe('UC-14: CLI openapi', () => {
             expect(code).toBe(1);
             expect(output).toMatchObject({ error: { code: 'INVALID_EXTRA' } });
         }
+    });
+
+    it('AC-3.7: :id? → JSON-ошибка CLI с именем маршрута, выход 1', async () => {
+        const { code, output } = await run([
+            '--out',
+            'o.json',
+            '--module',
+            `${OPTIONAL_FIXTURE}#OptionalParamAppModule`,
+        ]);
+
+        expect(code).toBe(1);
+        expect(output).toMatchObject({ error: { code: 'OPENAPI_FAILED' } });
+        expect((output.error as { message: string }).message).toContain(
+            'OptionalParamController.find',
+        );
+    });
+
+    it('AC-3.7: parameters операции в openapi.extra.json сливаются по паре (name, in), а не заменяются', async () => {
+        await mkdir(join(cwd, 'contracts'), { recursive: true });
+        await writeFile(
+            join(cwd, 'contracts/openapi.extra.json'),
+            JSON.stringify({
+                paths: {
+                    '/items/{id}': {
+                        get: {
+                            parameters: [
+                                { name: 'id', in: 'path', description: 'Идентификатор' },
+                                { name: 'X-Trace', in: 'header', schema: { type: 'string' } },
+                            ],
+                        },
+                    },
+                },
+            }),
+        );
+        await run(['--out', 'contracts/openapi.json', '--module', `${FIXTURE}#ApiAppModule`]);
+        const written = JSON.parse(await readFile(join(cwd, 'contracts/openapi.json'), 'utf8')) as {
+            paths: Record<string, { get: { parameters: Record<string, unknown>[] } }>;
+        };
+        const parameters = written.paths['/items/{id}']?.get.parameters ?? [];
+
+        expect(parameters.map((item) => [item.name, item.in])).toEqual([
+            ['id', 'path'],
+            ['X-Trace', 'header'],
+        ]);
+        expect(parameters[0]).toMatchObject({
+            description: 'Идентификатор',
+            required: true,
+            schema: { type: 'string', pattern: '^item-\\d+$' },
+        });
     });
 });

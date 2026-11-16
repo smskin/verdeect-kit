@@ -6,7 +6,10 @@
 // defineErrors) + стандартные по факту (v1.24): 400/422 — zod-pipe тела или query, 422 — пути, 401/403 у защищённых, 429 —
 // только из errors; защита — @UseGuards(VerdeectAuthGuard) и Require*
 // @verdeect/auth; X-On-Behalf-Of не переносится (домен I); Idempotency-Key — по метаданным @Idempotent (internal/metadata.ts,
-// E4); extra — глубокое слияние.
+// E4); extra — глубокое слияние. v1.31 (r26): путь Fastify посегментно (fastifyPathToOpenApi: ::, regex, :from-:to,
+// file.:ext, * → {wildcard}, :id? → ошибка), параметры пути — из того же разбора; extra — parameters по (name, in);
+// статус — @Api({status}) → @HttpCode → @Redirect → POST 201/200, status: null — только ошибки; errors — код или
+// {code, status}.
 import type { DynamicModule, Type } from '@nestjs/common';
 import { RequestMethod } from '@nestjs/common';
 import {
@@ -15,6 +18,7 @@ import {
     METHOD_METADATA,
     MODULE_METADATA,
     PATH_METADATA,
+    REDIRECT_METADATA,
     ROUTE_ARGS_METADATA,
 } from '@nestjs/common/constants.js';
 import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum.js';
@@ -97,8 +101,11 @@ interface ApiRoute {
     readonly handler: object;
     readonly api: KitApiOptions;
     readonly method: HttpMethod;
-    readonly paths: readonly string[];
-    readonly status: number;
+    readonly paths: readonly OpenApiPath[];
+    /** Успешный статус; `null` — успешного ответа нет (`@Api({status: null})`). */
+    readonly status: number | null;
+    /** `@Redirect`: успешный ответ без тела. */
+    readonly redirect: boolean;
 }
 
 interface BuiltOperation {
@@ -118,14 +125,88 @@ function toSchema(schema: z.ZodType, io: 'input' | 'output'): JsonObject {
     return json;
 }
 
-function joinPath(...parts: string[]): string {
-    const path = parts
-        .flatMap((part) => part.split('/'))
-        .filter((segment) => segment !== '')
-        .map((segment) => (segment.startsWith(':') ? `{${segment.slice(1)}}` : segment))
-        .join('/');
+/** Шаблон OpenAPI пути и имена параметров пути в порядке появления. */
+interface OpenApiPath {
+    readonly path: string;
+    readonly params: readonly string[];
+}
 
-    return `/${path}`;
+const PARAM_NAME = /[A-Za-z0-9_]/;
+
+/** Конец регулярного выражения `(...)` с позиции `start` (на `(`): вложенные скобки и экранирование учитываются. */
+function regexEnd(path: string, start: number): number {
+    let depth = 0;
+    for (let index = start; index < path.length; index += 1) {
+        const char = path[index];
+        if (char === '\\') {
+            index += 1;
+        } else if (char === '(') {
+            depth += 1;
+        } else if (char === ')') {
+            depth -= 1;
+            if (depth === 0) {
+                return index + 1;
+            }
+        }
+    }
+
+    return path.length;
+}
+
+/**
+ * Путь Fastify (find-my-way) → шаблон OpenAPI (§3.5 v1.31): `::` — буквальный `:`, `:name` → `{name}` (имя —
+ * `[A-Za-z0-9_]+`, дальше литерал: `:from-:to`, `file.:ext`), регулярное выражение `(...)` после имени отбрасывается
+ * целиком, `*` → `{wildcard}`. `:name?` (необязательный параметр) — Error с именем маршрута.
+ */
+function fastifyPathToOpenApi(parts: readonly string[], routeName: string): OpenApiPath {
+    const raw = `/${parts
+        .map((part) => part.replace(/^\/+|\/+$/g, ''))
+        .filter((part) => part !== '')
+        .join('/')}`;
+    const params: string[] = [];
+    let path = '';
+    for (let index = 0; index < raw.length;) {
+        const char = raw.charAt(index);
+        if (char === '*') {
+            params.push('wildcard');
+            path += '{wildcard}';
+            index += 1;
+            continue;
+        }
+        if (char !== ':') {
+            path += char;
+            index += 1;
+            continue;
+        }
+        if (raw.charAt(index + 1) === ':') {
+            path += ':';
+            index += 2;
+            continue;
+        }
+        let end = index + 1;
+        while (end < raw.length && PARAM_NAME.test(raw.charAt(end))) {
+            end += 1;
+        }
+        const name = raw.slice(index + 1, end);
+        if (name === '') {
+            path += char;
+            index += 1;
+            continue;
+        }
+        if (raw.charAt(end) === '(') {
+            end = regexEnd(raw, end);
+        }
+        if (raw.charAt(end) === '?') {
+            throw new Error(
+                `openapi: ${routeName} — необязательный параметр :${name}? не поддерживается`,
+            );
+        }
+        params.push(name);
+        path += `{${name}}`;
+        index = end;
+    }
+
+    return { path, params };
 }
 
 function pathsOf(value: unknown): string[] {
@@ -140,12 +221,46 @@ function isObject(value: unknown): value is JsonObject {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Глубокое слияние `extra` (операция, `contracts/openapi.extra.json`): объекты сливаются, прочее заменяется. */
+/** Ключ параметра OpenAPI — пара (`name`, `in`); не объект или без пары — `null`. */
+function parameterKey(value: unknown): string | null {
+    if (!isObject(value) || typeof value.name !== 'string' || typeof value.in !== 'string') {
+        return null;
+    }
+
+    return `${value.in}\u0000${value.name}`;
+}
+
+/** `parameters`: элемент `extra` с той же парой (`name`, `in`) сливается поверх, новый — в конец. */
+function mergeParameters(target: readonly unknown[], extra: readonly unknown[]): unknown[] {
+    const result = [...target];
+    for (const item of extra) {
+        const key = parameterKey(item);
+        const index = key === null ? -1 : result.findIndex((own) => parameterKey(own) === key);
+        const current = result[index];
+        if (index >= 0 && isObject(current) && isObject(item)) {
+            result[index] = deepMerge(current, item);
+        } else {
+            result.push(item);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Глубокое слияние `extra` (операция, `contracts/openapi.extra.json`, §3.5 v1.31): объекты сливаются; массивы
+ * `parameters` — по паре (`name`, `in`): элемент `extra` с той же парой сливается поверх, новый добавляется в конец;
+ * прочие массивы (`security`, `tags`, …) и значения заменяются.
+ */
 export function deepMerge(target: JsonObject, extra: Readonly<JsonObject>): JsonObject {
     const result: JsonObject = { ...target };
     for (const [key, value] of Object.entries(extra)) {
         const current = result[key];
-        result[key] = isObject(current) && isObject(value) ? deepMerge(current, value) : value;
+        if (key === 'parameters' && Array.isArray(current) && Array.isArray(value)) {
+            result[key] = mergeParameters(current, value);
+        } else {
+            result[key] = isObject(current) && isObject(value) ? deepMerge(current, value) : value;
+        }
     }
 
     return result;
@@ -306,15 +421,22 @@ function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, 
             errors.set(409, ['TENANT_REQUIRED']);
         }
     }
-    for (const code of route.api.errors ?? []) {
+    const routeName = `${route.controller.name}.${route.handlerName}`;
+    for (const item of route.api.errors ?? []) {
+        const code = typeof item === 'string' ? item : item.code;
         const statuses = errorStatuses(code);
         if (statuses === undefined) {
             throw new Error(
-                `openapi: ${route.controller.name}.${route.handlerName} — код ${code} не зарегистрирован в defineErrors`,
+                `openapi: ${routeName} — код ${code} не зарегистрирован в defineErrors`,
             );
         }
-        // Все объявленные статусы кода (AC-3.15).
-        for (const status of statuses) {
+        if (typeof item !== 'string' && !statuses.includes(item.status)) {
+            throw new Error(
+                `openapi: ${routeName} — статус ${String(item.status)} не объявлен для кода ${code}`,
+            );
+        }
+        // Строка — все объявленные статусы кода, {code, status} — только status (AC-3.15).
+        for (const status of typeof item === 'string' ? statuses : [item.status]) {
             errors.set(status, [...(errors.get(status) ?? []), code]);
         }
     }
@@ -334,7 +456,7 @@ function errorsOf(route: ApiRoute, security: RouteSecurity | null): Map<number, 
 
 function parametersOf(
     route: ApiRoute,
-    path: string,
+    pathParams: readonly string[],
 ): { parameters: JsonObject[]; body?: JsonObject } {
     const args = (Reflect.getMetadata(ROUTE_ARGS_METADATA, route.controller, route.handlerName) ??
         {}) as Record<string, RouteArgument>;
@@ -356,16 +478,12 @@ function parametersOf(
             pathSchemas.set(argument.data, schema);
         }
     }
-    const pathParameters = [...path.matchAll(/\{([^}]+)\}/g)].map((match) => {
-        const name = match[1] ?? '';
-
-        return {
-            name,
-            in: 'path',
-            required: true,
-            schema: pathSchemas.get(name) ?? { type: 'string' },
-        };
-    });
+    const pathParameters = [...new Set(pathParams)].map((name) => ({
+        name,
+        in: 'path',
+        required: true,
+        schema: pathSchemas.get(name) ?? { type: 'string' },
+    }));
 
     const idempotent = idempotentOf(route);
     const idempotencyKey =
@@ -386,28 +504,33 @@ function parametersOf(
     };
 }
 
-function buildOperation(route: ApiRoute, path: string): BuiltOperation {
-    const security = securityOf(route.controller, route.handler);
-    const { parameters, body } = parametersOf(route, path);
-    const schema = responseSchemaOf(route.api);
-    const responses: Record<string, JsonObject> = {
-        [String(route.status)]:
-            schema === null
-                ? { description: 'успех, без тела' }
-                : { description: 'успех', content: { 'application/json': { schema } } },
-    };
+/** Успешный ответ операции: нет при `status: null`, без тела при `@Redirect` или без `response`. */
+function successResponses(route: ApiRoute): Record<string, JsonObject> {
+    if (route.status === null) {
+        return {};
+    }
+    const schema = route.redirect ? null : responseSchemaOf(route.api);
+    const success: JsonObject = route.redirect
+        ? { description: 'редирект' }
+        : schema === null
+          ? { description: 'успех, без тела' }
+          : { description: 'успех', content: { 'application/json': { schema } } };
     if (idempotentOf(route) !== null) {
-        const success = responses[String(route.status)];
-        responses[String(route.status)] = {
-            ...success,
-            headers: {
-                'Idempotent-Replayed': {
-                    schema: { type: 'string', enum: ['true'] },
-                    description: 'ответ сохранён и повторён',
-                },
+        success.headers = {
+            'Idempotent-Replayed': {
+                schema: { type: 'string', enum: ['true'] },
+                description: 'ответ сохранён и повторён',
             },
         };
     }
+
+    return { [String(route.status)]: success };
+}
+
+function buildOperation(route: ApiRoute, { path, params }: OpenApiPath): BuiltOperation {
+    const security = securityOf(route.controller, route.handler);
+    const { parameters, body } = parametersOf(route, params);
+    const responses = successResponses(route);
     for (const [status, codes] of [...errorsOf(route, security).entries()].sort(
         ([a], [b]) => a - b,
     )) {
@@ -448,7 +571,9 @@ function buildOperation(route: ApiRoute, path: string): BuiltOperation {
     };
 }
 
-/** Маршрут `[Controller, 'method']` с `@Api`; без `@Api` — `null`; `@Api` без метода HTTP — Error. */
+/**
+ * Маршрут `[Controller, 'method']` с `@Api`; без `@Api` — `null`; `@Api` без метода HTTP или путь с `:name?` — Error.
+ */
 function apiRouteOf(controller: Type, handlerName: string): ApiRoute | null {
     const prototype = controller.prototype as Record<string, unknown>;
     const handler = prototype[handlerName];
@@ -466,19 +591,39 @@ function apiRouteOf(controller: Type, handlerName: string): ApiRoute | null {
             `openapi: ${controller.name}.${handlerName} — @Api без пути или метода HTTP`,
         );
     }
+    const redirect = Reflect.getMetadata(REDIRECT_METADATA, handler) as
+        { readonly statusCode?: number } | undefined;
+    // Приоритет (§3.5 v1.31): @Api({status}) → @HttpCode → @Redirect (умолчание Nest 302) → POST 201, иначе 200.
     const status =
-        (Reflect.getMetadata(HTTP_CODE_METADATA, handler) as number | undefined) ??
-        (method === 'post' ? 201 : 200);
+        api.status !== undefined
+            ? api.status
+            : ((Reflect.getMetadata(HTTP_CODE_METADATA, handler) as number | undefined) ??
+              (redirect === undefined ? undefined : (redirect.statusCode ?? 302)) ??
+              (method === 'post' ? 201 : 200));
     const paths = pathsOf(Reflect.getMetadata(PATH_METADATA, controller)).flatMap((prefix) =>
-        pathsOf(handlerPath).map((suffix) => joinPath(prefix, suffix)),
+        pathsOf(handlerPath).map((suffix) =>
+            fastifyPathToOpenApi([prefix, suffix], `${controller.name}.${handlerName}`),
+        ),
     );
 
-    return { controller, handlerName, handler, api, method, paths, status };
+    return {
+        controller,
+        handlerName,
+        handler,
+        api,
+        method,
+        paths,
+        status,
+        redirect: redirect !== undefined && api.status !== null,
+    };
 }
 
-/** Схема успешного ответа, статус и описанные статусы ошибок маршрута для `expectMatchesApi`. Внутренняя функция. */
+/**
+ * Схема успешного ответа, статус (`null` — успешного ответа нет) и описанные статусы ошибок маршрута для
+ * `expectMatchesApi`; у `@Redirect` схемы тела нет. Внутренняя функция.
+ */
 export function routeResponseSchema(route: readonly [Type, string]): {
-    readonly status: number;
+    readonly status: number | null;
     readonly schema: JsonObject | null;
     readonly errorStatuses: readonly number[];
     readonly errorSchema: JsonObject;
@@ -492,7 +637,7 @@ export function routeResponseSchema(route: readonly [Type, string]): {
 
     return {
         status: api.status,
-        schema: responseSchemaOf(api.api),
+        schema: api.redirect ? null : responseSchemaOf(api.api),
         errorStatuses: [...errors.keys()].sort((a, b) => a - b),
         errorSchema: ERROR_RESPONSE,
     };
