@@ -4,6 +4,42 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.10] - 2026-11-16
+
+Находки перехода Orchestrator OR-199, OR-205, OR-207, сверка KT-103 (PRD v1.31, r26).
+
+### Added
+
+- `/testing`: `deliverTestEvent(app, Event, data, opts?)` — доставка конверта подписчику этого приложения тем же путём, что брокер (разбор, пара `type`/`version`, `data`, inbox, классификация ошибки), без брокера; итог `KitTestDelivery` — `{result: 'handled' | 'duplicate' | 'skipped' | 'retry' | 'dlq', reason?}`.
+- `/testing`: `waitForDelivery(app, id, {timeoutMs})` — первый итог доставки брокера события в этом экземпляре (подписчик `dedupe: 'none'`); журнал итогов — только при загруженном `/testing`.
+- `/testing`: `stopBackgroundLoops(app)` и `createTestApp({backgroundLoops})` — остановка или отключение relay outbox и очисток в тестах.
+- `/testing`: тип `KitPublishTestEventOptions` стал публичным (опции `publishTestEvent` и `deliverTestEvent`).
+- `/testing`: `startTestStack({labels})` — дополнительные метки контейнеров (`verdeect.kit.service` — `TypeError`); `timingGuard({onE2e: 'warn' | 'fail'})`.
+- `/http`: `@Api({status})` — число или `null` (только ошибки); элемент `errors` — код или `{code, status}` (только этот статус, статус не объявлен для кода — ошибка генерации).
+- `/observability`: метрика `verdeect_idempotency_late_completions_total{scope}` в `kitMetrics` и правило `VerdeectIdempotencyLateCompletions` шаблона алертов (порог `verdeect_kit_threshold:idempotency_late_completions`).
+
+### Changed
+
+- **Курсор keyset по типу столбца:** значение ключа проверяется до запроса — `timestamptz` (строгий ISO 8601 с зоной; `now`, `infinity` — нет), `uuid`, целое, `boolean`, строка; несовпадение — 422 `VALIDATION_FAILED` `path: cursor` без GlitchTip (раньше — ошибка pg и 500).
+- **OpenAPI — пути Fastify:** посегментный разбор (`::` → `:`, регулярное выражение отбрасывается, `:from-:to`, `file.:ext`, `*` → `{wildcard}`), параметры пути — из того же разбора; `:id?` — ошибка генерации `OPENAPI_FAILED`.
+- **OpenAPI — статус:** `@Api({status})` → `@HttpCode` → `@Redirect` (статус редиректа, ответ без тела) → 201/200; `expectMatchesApi` — те же статусы.
+- **Слияние `extra`:** `parameters` сливаются по паре (`name`, `in`) — выведенные параметры (путь, `Idempotency-Key`) больше не пропадают; прочие массивы заменяются, как раньше. То же для `contracts/openapi.extra.json`.
+- **Отказ запуска при недоступной БД:** `KitDatabaseModule` при сборке выполняет `select 1` основного пула в сроке `DB_POOL_ACQUIRE_TIMEOUT_MS` (раньше без `KitIdempotencyModule` сервис открывал порт); ошибка соединения или срок — `StartupFailure` с кодом `DATABASE_UNAVAILABLE`: `failStartup` пишет `fatal` без SQL и адреса и одно событие с тегом `code`. Прочие ошибки соединения при запуске — `STARTUP_FAILED`, как раньше.
+- **Очистка outbox/inbox и идемпотентности:** замок занят другой репликой — следующая попытка через 5 мин + случайно до 1 мин (раньше — через час); после прохода — через час.
+- **Срок обработчиков при остановке** запоминается только после начала остановки `KitLifecycle`: ранний вызов не фиксирует срок для всей остановки.
+- **Redis:** в логах `KitRedisChannels` — только вид канала `channelKind`, без полного имени (NFR-4).
+- `/idempotency`: поздняя попытка — `warn` с полем `scope` (шаблон маршрута) и метрика.
+
+### Как перейти
+
+- **Недоступная БД при запуске.** Отказ запуска теперь у всех сервисов с `KitDatabaseModule`, в том числе у CLI и `createTestApp`: стенды тестов с намеренно недоступной БД собирайте после подъёма БД или подменяйте пулы.
+- **Курсор из `timestamptz` в `mode: 'string'`.** Курсор из текста PostgreSQL (`2026-11-10 10:04:00+00`) без `cursorTimestamp` теперь даёт 422: ключ берите через `cursorTimestamp(col)`.
+- **Снимок OpenAPI.** Пересоберите `contracts/openapi.json`: пути с `::`, регулярным выражением и `*`, статусы `@HttpCode`/`@Redirect`/`status` могут измениться; маршрут `:id?` разнесите на два.
+- **CLI сервиса.** Пример README: `createApplicationContext(CliModule, {logger: false, abortOnError: false})` и `failStartup` при ошибке сборки — JSON-ошибка и выход 1 вместо текста Nest.
+- **`createHttpApp`.** При ошибке сборки (DI, фабрики, недоступная БД) Nest больше не печатает текст ошибки и буфер логов — обрабатывайте отклонённый промис (`try/catch` + `failStartup`).
+- **Новые экспорты `/testing`** — `deliverTestEvent`, `waitForDelivery`, `stopBackgroundLoops`; прежний код работает без изменений.
+- **Алерты.** Правило поздних попыток идемпотентности — в шаблоне `alertRulesTemplate`; свой порог — `verdeect_kit_threshold:idempotency_late_completions`.
+
 ## [1.0.0-rc.9] - 2026-11-14
 
 Находка BFF-77 (PRD v1.30, r25).
