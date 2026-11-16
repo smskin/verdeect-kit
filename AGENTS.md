@@ -18,14 +18,14 @@
 
 ## Структура проекта
 
-Состояние: последний опубликованный выпуск — `1.0.0-rc.8`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.9` (`docs/releasing.md`).
+Состояние: последний опубликованный выпуск — `1.0.0-rc.9`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.10` (`docs/releasing.md`).
 
 ```
 verdeect-kit/
 ├── src/
 │   ├── internal/                 # без точки входа: peer.ts (loadPeer, requirePeer, AC-1.2), service-name.ts, pg-errors.ts,
 │                                 #   preparsed-env.ts, tokens.ts, ids.ts, metadata.ts, sql-identifier.ts, tx-context.ts, outbox-policy.ts,
-│                                 #   rabbitmq-definitions.ts, redis-acl.ts, cleanup-result.ts
+│                                 #   rabbitmq-definitions.ts, redis-acl.ts, cleanup-result.ts, cleanup-schedule.ts
 │   ├── config/                   # ./config — §3.1: fragments, helpers, define-env, parse-env, cli-schemas, kit-config.module
 │   ├── observability/            # ./observability — §3.2: redaction, sanitize-error, logger-options, sentry, fail-startup,
 │                                 #   health-registry, metrics, metrics-server, lifecycle
@@ -46,7 +46,8 @@ verdeect-kit/
 │                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale (ещё подпуть ./testing/timeout-scale
 │                                 #   без development, только node:*), create-test-app, create-test-db,
 │                                 #   expect-problem, expect-matches-api, scratch-database, worker-scope,
-│                                 #   tenant-isolation, count-queries, rabbitmq-admin, outbox-coverage, test-events, redis-worker
+│                                 #   tenant-isolation, count-queries, rabbitmq-admin, outbox-coverage, test-events, redis-worker,
+│                                 #   background-loops, delivery
 │   └── cli/                      # bin verdeect-kit: main.ts (только runCli), run.ts (runCli: таблица команд, справка --help),
 │                                 #   commands/openapi.ts, commands/db.ts, commands/rabbitmq.ts,
 │                                 #   commands/crypto.ts, commands/redis.ts

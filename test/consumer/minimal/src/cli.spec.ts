@@ -1,8 +1,10 @@
 // AC-2.15 (UC-13, prd.md §3.2, §3.4 v1.25) на архиве пакета: контекст CLI потребителя — KitCoreModule({entry: 'cli'})
 // и общий модуль сообщений с listen: false — собирается без HTTP, не подключается к брокеру (адрес брокера — счётчик
 // соединений), OutboxStore.add пишет строку, awaitPublished по сроку возвращает итог без исключения. Окружение —
-// vi.stubEnv (файлы vitest потребителя изолированы по умолчанию).
+// vi.stubEnv (файлы vitest потребителя изолированы по умолчанию). v1.31: CLI сервиса (dist/service/cli.js) с неверным
+// окружением — JSON-ошибка fatal INVALID_ENVIRONMENT в stderr и выход 1, без текста Nest (отдельный процесс).
 import 'reflect-metadata';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
 import { Module, type INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -80,5 +82,33 @@ describe('UC-13: CLI потребителя', () => {
 
         expect(result.published + result.pending).toBe(1);
         expect(connections).toBe(0);
+    });
+});
+
+describe('UC-13: CLI сервиса с failStartup', () => {
+    it('AC-2.15: CLI сервиса с неверным окружением — JSON-ошибка и выход 1, а не текст Nest', async () => {
+        const env = { ...process.env };
+        delete env.DATABASE_URL;
+        const child = spawn(process.execPath, ['dist/service/cli.js'], { env });
+        let stderr = '';
+        child.stderr.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString('utf8');
+        });
+        const code = await new Promise<number | null>((resolve) => child.on('close', resolve));
+        const records = stderr
+            .split('\n')
+            .filter((line) => line.startsWith('{'))
+            .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+        expect(code).toBe(1);
+        expect(records).toContainEqual(
+            expect.objectContaining({
+                level: 60,
+                code: 'INVALID_ENVIRONMENT',
+                keys: expect.arrayContaining(['DATABASE_URL']) as unknown,
+            }),
+        );
+        expect(stderr).not.toContain('ExceptionHandler');
+        expect(stderr).not.toContain('Nest');
     });
 });
