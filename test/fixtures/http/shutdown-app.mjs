@@ -3,7 +3,8 @@
 // dist. Декораторы применяются функциями: в .mjs нет emitDecoratorMetadata, внедрение задаётся явно Inject(...).
 // Порты — в строке лога «сервис слушает» (stdout). Режим ws (BFF-77, prd.md §3.2 v1.30): WebSocket /ws вручную (рукопожатие и
 // кадры закрытия без зависимостей); server.close подменён по образцу @fastify/http-proxy — клиенты получают 1005; участник
-// шага 2 сервиса закрывает сокеты кодом 1001 и пишет в stdout строку «ws: 1001 отправлен» с server.listening.
+// шага 2 сервиса закрывает сокеты кодом 1001 и пишет в stdout строку «ws: 1001 отправлен» с server.listening. Подмена
+// server.close первой пишет в stdout строку «http: server.close» (до исходного close): тест ждёт её событием, без опроса.
 import 'reflect-metadata';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -42,6 +43,9 @@ function configureWs(fastify) {
     // Как @fastify/http-proxy 11.6.5 (index.js:511–522): server.close закрывает WS-клиентов пустым кадром закрытия (1005).
     const close = httpServer.close;
     httpServer.close = function (cb) {
+        process.stdout.write(
+            `${JSON.stringify({ msg: 'http: server.close', listening: this.listening })}\n`,
+        );
         for (const socket of wsSockets) {
             if (!socket.destroyed && !socket.writableEnded) {
                 socket.write(Buffer.from([0x88, 0x00]));

@@ -4,6 +4,8 @@
 // ac-10-8-shutdown.http-spec.ts и or-106-health-stopping-first.http-spec.ts. Ребёнок импортирует dist, собранный в
 // beforeAll в node_modules/.cache (dist/ не трогается). v1.30 (BFF-77): участник шага 2 сервиса закрывает WebSocket кодом
 // 1001 раньше server.close() участника http — клиент получает 1001, а не 1005 подмены server.close (как @fastify/http-proxy).
+// rc.11 (дефект CI №37): ws-тест ждёт строку «http: server.close» фикстуры событием stdout и сразу пробует новое
+// соединение — без опроса с паузой.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +26,8 @@ interface Started {
     readonly metricsPort: number;
     readonly exited: Promise<{ code: number | null; at: number }>;
     readonly output: () => string;
+    /** Ждёт строку вывода с фрагментом `fragment` (уже накопленную или новую); выход ребёнка раньше — отказ. */
+    readonly waitFor: (fragment: string) => Promise<void>;
 }
 
 function start(mode: 'plain' | 'sse' | 'ws'): Promise<Started> {
@@ -44,6 +48,24 @@ function start(mode: 'plain' | 'sse' | 'ws'): Promise<Started> {
         const exited = new Promise<{ code: number | null; at: number }>((done) => {
             child.once('exit', (code) => done({ code, at: performance.now() }));
         });
+        const waitFor = (fragment: string): Promise<void> =>
+            new Promise((found, fail) => {
+                if (output.includes(fragment)) {
+                    found();
+                    return;
+                }
+                const onData = (): void => {
+                    if (output.includes(fragment)) {
+                        child.stdout.off('data', onData);
+                        found();
+                    }
+                };
+                child.stdout.on('data', onData);
+                void exited.then(() => {
+                    child.stdout.off('data', onData);
+                    fail(new Error(`ребёнок вышел без строки ${fragment}:\n${output}`));
+                });
+            });
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stderr.on('data', (chunk: string) => {
@@ -57,7 +79,7 @@ function start(mode: 'plain' | 'sse' | 'ws'): Promise<Started> {
                     port: number;
                     metricsPort: number;
                 };
-                resolve({ child, port, metricsPort, exited, output: () => output });
+                resolve({ child, port, metricsPort, exited, output: () => output, waitFor });
             }
         });
         child.once('error', reject);
@@ -255,18 +277,30 @@ describe('UC-8: остановка HTTP под нагрузкой', () => {
             });
             const signalledAt = performance.now();
             app.child.kill('SIGTERM');
-            const polled = await poll(app, app.exited);
+            await app.waitFor('"http: server.close"');
+            // Строка пишется до server.close: соединение из очереди listen ядра сбрасывается close() — ECONNRESET после
+            // рукопожатия; тогда сразу, без паузы, второй пробник: слушатель уже закрыт.
+            const refusal = await probeNewConnection(app.port);
+            const afterReset =
+                refusal.code === 'ECONNRESET' && refusal.handshake
+                    ? await probeNewConnection(app.port)
+                    : null;
             const code = await closed;
             const exit = await app.exited;
-            const sent = app
-                .output()
-                .split('\n')
-                .find((line) => line.includes('"ws: 1001 отправлен"'));
+            const lines = app.output().split('\n');
+            const sentAt = lines.findIndex((line) => line.includes('"ws: 1001 отправлен"'));
+            const closeAt = lines.findIndex((line) => line.includes('"http: server.close"'));
 
             expect(code, app.output()).toBe(1001);
-            expect(sent, app.output()).toBeDefined();
-            expect((JSON.parse(sent ?? '{}') as { listening?: boolean }).listening).toBe(true);
-            expect(polled.okRefused, app.output()).not.toBeNull();
+            expect(sentAt, app.output()).toBeGreaterThan(-1);
+            expect(sentAt, app.output()).toBeLessThan(closeAt);
+            expect((JSON.parse(lines[sentAt] ?? '{}') as { listening?: boolean }).listening).toBe(
+                true,
+            );
+            expect(
+                refusal.code === 'ECONNREFUSED' || afterReset?.code === 'ECONNREFUSED',
+                JSON.stringify({ refusal, afterReset }),
+            ).toBe(true);
             expect(exit.code, app.output()).toBe(0);
             expect(exit.at - signalledAt).toBeLessThan(TIMEOUT_MS);
             expect(app.output()).not.toContain('SHUTDOWN_TIMEOUT');
