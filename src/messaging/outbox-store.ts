@@ -1,5 +1,6 @@
-// OutboxStore (prd.md §3.4, §6, UC-5, AC-5.1, AC-5.2, AC-5.15). Эталон — O outbox-store.ts; по PRD — id = newId('evt') в
-// коде, tenant/actor/traceId из DbContext (txContextOf), проверка data и признака tenant до записи, afterCommit →
+// OutboxStore (prd.md §3.4 v1.33, §6, UC-5, AC-5.1, AC-5.2, AC-5.15). Эталон — O outbox-store.ts; по PRD — id = newId('evt')
+// в коде, tenant (DbContext или tenant вызова, v1.33)/actor/traceId из DbContext (txContextOf), проверка data и признака
+// tenant до записи, afterCommit →
 // relay.wake(); SQL-триггеров нет (P0). Запросы relay и очистки — построителем Drizzle по объекту таблицы (AC-9.4).
 import { setTimeout as sleep } from 'node:timers/promises';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -56,8 +57,9 @@ export interface OutboxStoreDeps {
 }
 
 /**
- * Запись событий в outbox в транзакции сервиса (§3.4): `add(tx, Event, {subjectId, data})`. Строка видна relay после
- * `COMMIT` вместе с изменением домена; откат транзакции — ни изменения, ни события.
+ * Запись событий в outbox в транзакции сервиса (§3.4): `add(tx, Event, {subjectId, data, tenant?})`. Строка видна relay
+ * после `COMMIT` вместе с изменением домена; откат транзакции — ни изменения, ни события. Тенант строки: `'none'` —
+ * всегда `null`; `'required'` — `tenant` вызова или тенант `DbContext`.
  */
 export class OutboxStore {
     private readonly log: MessagingLog;
@@ -68,18 +70,25 @@ export class OutboxStore {
     }
 
     /**
-     * Добавляет событие в outbox транзакции `tx` (`Db.transaction`): `tenant`, `actor`, `traceId` — из `DbContext`,
-     * `id` — `evt_` + ULID; после `COMMIT` relay публикует его без ожидания опроса. Любая ошибка — исключение до записи:
-     * транзакция сервиса откатывается.
+     * Добавляет событие в outbox транзакции `tx` (`Db.transaction`): `actor`, `traceId` — из `DbContext`, `id` — `evt_` +
+     * ULID; после `COMMIT` relay публикует его без ожидания опроса. Тенант строки (§3.4 v1.33): `tenant: 'none'` — всегда
+     * `null` при любом тенанте транзакции; `'required'` — `input.tenant`, если задан, иначе тенант `DbContext`. Любая
+     * ошибка — исключение до записи: транзакция сервиса откатывается.
      * @returns id события.
-     * @throws {TypeError} событие не из `outbox.events`, `tx` не из `Db.transaction`, признак `tenant` нарушен, пустой
-     * `subjectId`, `data` не по схеме (в тексте — пути полей без значений).
+     * @throws {TypeError} событие не из `outbox.events`, `tx` не из `Db.transaction`; `'none'` с заданным `input.tenant`;
+     * `'required'`: `input.tenant` задан и пуст, не совпадает с непустым тенантом транзакции, или тенанта нет ни там, ни
+     * там; пустой `subjectId`, `data` не по схеме (в тексте — пути полей без значений).
      * @throws {AfterCommitInReadOnlyError} `tx` из `Db.read`.
      */
     async add<E extends KitEvent>(
         tx: DbTx,
         event: E,
-        input: { readonly subjectId: string; readonly data: z.input<E['data']> },
+        input: {
+            readonly subjectId: string;
+            readonly data: z.input<E['data']>;
+            /** Тенант строки события `'required'` (slug), если транзакция без тенанта или с тем же; у `'none'` не задаётся. */
+            readonly tenant?: string;
+        },
     ): Promise<string> {
         const { type } = event;
         if (this.deps.events.get(eventKey(event)) !== event) {
@@ -91,17 +100,7 @@ export class OutboxStore {
         if (ctx === undefined) {
             throw new TypeError('OutboxStore.add: tx — не транзакция Db.transaction');
         }
-        const tenant = ctx.tenant ?? '';
-        if (event.tenant === 'required' && tenant === '') {
-            throw new TypeError(
-                `OutboxStore.add: событие ${type} требует компанию (tenant: 'required'), в DbContext тенанта нет`,
-            );
-        }
-        if (event.tenant === 'none' && tenant !== '') {
-            throw new TypeError(
-                `OutboxStore.add: событие ${type} без компании (tenant: 'none'), а в DbContext тенант задан`,
-            );
-        }
+        const tenant = this.rowTenant(event, ctx.tenant ?? '', input.tenant);
         if (typeof input.subjectId !== 'string' || input.subjectId === '') {
             throw new TypeError(`OutboxStore.add: событие ${type} — пустой subjectId`);
         }
@@ -121,7 +120,7 @@ export class OutboxStore {
         const id = newId('evt');
         await tx.insert(this.deps.table).values({
             id,
-            tenant: event.tenant === 'none' ? null : tenant,
+            tenant,
             type,
             version: event.version,
             subjectId: input.subjectId,
@@ -132,6 +131,43 @@ export class OutboxStore {
         this.log.debug({ type, id }, 'outbox: строка добавлена');
 
         return id;
+    }
+
+    /** Тенант строки по признаку события, тенанту транзакции и `tenant` вызова (§3.4 v1.33 стр. 129). */
+    private rowTenant(
+        event: KitEvent,
+        txTenant: string,
+        explicit: string | undefined,
+    ): string | null {
+        const { type } = event;
+        if (event.tenant === 'none') {
+            if (explicit !== undefined) {
+                throw new TypeError(
+                    `OutboxStore.add: событие ${type} без компании (tenant: 'none') — tenant вызова не задаётся`,
+                );
+            }
+
+            return null;
+        }
+        if (explicit === undefined) {
+            if (txTenant === '') {
+                throw new TypeError(
+                    `OutboxStore.add: событие ${type} требует компанию (tenant: 'required'), в DbContext тенанта нет и tenant вызова не задан`,
+                );
+            }
+
+            return txTenant;
+        }
+        if (explicit === '') {
+            throw new TypeError(`OutboxStore.add: событие ${type}: tenant вызова пуст`);
+        }
+        if (txTenant !== '' && explicit !== txTenant) {
+            throw new TypeError(
+                `OutboxStore.add: событие ${type}: tenant вызова не совпадает с тенантом транзакции`,
+            );
+        }
+
+        return explicit;
     }
 
     /** @internal Пачка неопубликованных по `seq` под `FOR UPDATE SKIP LOCKED` (relay). */

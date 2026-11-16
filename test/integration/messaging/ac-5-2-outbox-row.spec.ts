@@ -1,5 +1,6 @@
 // AC-5.2 (UC-5): строка outbox — tenant, actor, traceId из DbContext, id evt_ + ULID; конверт relay — 01 §7.1, routing
-// key = type; строка с типом вне outbox.events — subject.kind 'unknown', warn один раз на тип (prd.md §3.4 v1.15; П23).
+// key = type; строка с типом вне outbox.events — subject.kind 'unknown', warn один раз на тип (prd.md §3.4 v1.15; П23);
+// actor с null — null в строке и конверте, незаданный ключ — пропуск (§3.3 v1.33 стр. 95).
 // Эквивалентность O outbox.int-spec «relay публикует с routing key = type…», «чужой tenant».
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sql } from 'drizzle-orm';
@@ -96,6 +97,31 @@ describe('UC-5: строка и конверт outbox', () => {
         expect(typeof message?.properties.timestamp).toBe('number');
         await waitUntil(async () => (await outboxRows())[0]?.published_at !== null, 'published_at');
         expect(row?.id).toBe(id);
+    });
+
+    it("AC-5.2: контекст с actor {clientId: null, channel: 'system'} → в строке outbox и в конверте clientId: null; ключа accountId нет; EnvelopeSchema принимает конверт", async () => {
+        const captured = await broker.capture('kit.#');
+        await app.get(Db).transaction(
+            {
+                tenant: 'acme',
+                traceId: 'trace-null',
+                actor: { clientId: null, channel: 'system' },
+            },
+            (tx) =>
+                app.get(OutboxStore).add(tx, TestNoteCreated, {
+                    subjectId: 'n1',
+                    data: { noteId: 'n1', title: 'T' },
+                }),
+        );
+        await waitUntil(() => captured.length === 1, 'одно сообщение');
+
+        expect((await outboxRows())[0]?.actor).toStrictEqual({ clientId: null, channel: 'system' });
+        const body = captured[0]?.body ?? {};
+        const actor = body['actor'] as Record<string, unknown>;
+        expect('clientId' in actor).toBe(true);
+        expect(actor['clientId']).toBeNull();
+        expect('accountId' in actor).toBe(false);
+        expect(() => EnvelopeSchema.parse(body)).not.toThrow();
     });
 
     it('O outbox: строка чужого tenant под app.tenant=acme → ошибка политики', async () => {

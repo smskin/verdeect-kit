@@ -33,6 +33,8 @@ const ISOLATED: string[] = [
     'test/integration/database/ac-4-20-database-unavailable.spec.ts',
     // initFakeSentry — процесс-глобальный Sentry.
     'test/integration/redis/ac-8-6-channel-kind.spec.ts',
+    // initFakeSentry — process-global Sentry.
+    'test/integration/messaging/ac-5-24-background-failures.spec.ts',
 ];
 
 export default defineConfig({

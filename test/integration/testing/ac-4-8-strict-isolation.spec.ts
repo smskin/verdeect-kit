@@ -2,7 +2,8 @@
 // под пустым тенантом, исключения outbox и idempotency_key, функция idempotency_purge (prd.md §3.8 v1.14). Перенос
 // приёмов O ac-10-2-rls и fr-21-roles; нестрогая модель I («пустой тенант видит всё») должна падать. Каждое нарушение —
 // своя БД createScratchDatabase(), изменения — администратором, проверка — под kit_app. E5: outbox — настоящая
-// createOutboxTable фикстуры, политика сверяется с OUTBOX_POLICY_SQL.
+// createOutboxTable фикстуры, политика сверяется с OUTBOX_POLICY_SQL. v1.33: у nullable outbox — вторая политика
+// outbox_tenantless_insert (§3.4, §3.8 стр. 197).
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import {
@@ -14,6 +15,7 @@ import {
     type KitTenantIsolationOptions,
 } from '../../../src/testing/tenant-isolation.js';
 import { adminQuery } from '../../support/postgres.js';
+import { sqlStateOf } from '../../support/database.js';
 
 const OPTIONS: KitTenantIsolationOptions = { schema: 'kit' };
 const PURGE = 'kit.idempotency_purge(integer)';
@@ -193,7 +195,7 @@ describe('UC-1: строгий RLS', () => {
         );
     });
 
-    it('AC-4.8: outbox из createOutboxTable (схема kit) — проходит', async () => {
+    it('AC-4.8: outbox из createOutboxTable (схема kit), две политики при nullable tenant — проходит', async () => {
         await withScratch(
             [
                 "insert into kit.outbox (id, tenant, type, version, subject_id, actor, trace_id, data) values ('evt_1', 'acme', 'kit.a.b', 1, 's', '{}', 't', '{}')",
@@ -237,9 +239,111 @@ describe('UC-1: строгий RLS', () => {
     });
 
     it('AC-4.8: outbox без политики → нарушение', async () => {
-        await withScratch(['DROP POLICY outbox_tenant_isolation ON kit.outbox'], async (run) => {
-            await expect(run()).rejects.toThrow('outbox: нет политики');
+        await withScratch(
+            [
+                'DROP POLICY outbox_tenant_isolation ON kit.outbox',
+                'DROP POLICY outbox_tenantless_insert ON kit.outbox',
+            ],
+            async (run) => {
+                await expect(run()).rejects.toThrow('outbox: нет политики');
+            },
+        );
+    });
+
+    it('AC-4.8: под тенантом acme вставка строки outbox с tenant null проходит, строка не видна; вставка строки other — 42501', async () => {
+        const scratch = await createScratchDatabase();
+        const client = new pg.Client({ connectionString: scratch.url });
+        const insert = (id: string, tenant: string | null) =>
+            client.query(
+                "insert into kit.outbox (id, tenant, type, version, subject_id, actor, trace_id, data) values ($1, $2, 'kit.a.b', 1, 's', '{}', 't', '{}')",
+                [id, tenant],
+            );
+        const count = async (id: string): Promise<number> => {
+            const { rows } = await client.query<{ count: number }>(
+                'select count(*)::int as count from kit.outbox where id = $1',
+                [id],
+            );
+
+            return rows[0]?.count ?? -1;
+        };
+        try {
+            await client.connect();
+            await client.query('begin');
+            await client.query("select set_config('app.tenant', 'acme', true)");
+            await insert('evt_tenantless_1', null);
+            expect(await count('evt_tenantless_1')).toBe(0);
+            await client.query('commit');
+
+            await client.query('begin');
+            await client.query("select set_config('app.tenant', 'acme', true)");
+            const error: unknown = await insert('evt_other_1', 'other').catch(
+                (caught: unknown) => caught,
+            );
+            await client.query('rollback');
+            expect(sqlStateOf(error)).toBe('42501');
+
+            await client.query('begin');
+            await client.query("select set_config('app.tenant', '', true)");
+            expect(await count('evt_tenantless_1')).toBe(1);
+            await client.query('rollback');
+        } finally {
+            await client.end();
+            await scratch.drop();
+        }
+    });
+
+    it('AC-4.8: лишняя политика у outbox (CREATE POLICY outbox_extra … FOR SELECT USING (true)) → «outbox: лишняя политика outbox_extra»', async () => {
+        await withScratch(
+            ['CREATE POLICY outbox_extra ON kit.outbox FOR SELECT USING (true)'],
+            async (run) => {
+                await expect(run()).rejects.toThrow('outbox: лишняя политика outbox_extra');
+            },
+        );
+    });
+
+    it('AC-4.8: nullable outbox без outbox_tenantless_insert (DROP POLICY) → «outbox: политика не по createOutboxTable (outbox_tenantless_insert)»', async () => {
+        await withScratch(['DROP POLICY outbox_tenantless_insert ON kit.outbox'], async (run) => {
+            await expect(run()).rejects.toThrow(
+                'outbox: политика не по createOutboxTable (outbox_tenantless_insert)',
+            );
         });
+    });
+
+    it('AC-4.8: outbox_tenantless_insert с иным WITH CHECK (true) → «outbox: политика не по createOutboxTable (outbox_tenantless_insert)»', async () => {
+        await withScratch(
+            [
+                'DROP POLICY outbox_tenantless_insert ON kit.outbox',
+                'CREATE POLICY outbox_tenantless_insert ON kit.outbox AS PERMISSIVE FOR INSERT TO public WITH CHECK (true)',
+            ],
+            async (run) => {
+                await expect(run()).rejects.toThrow(
+                    'outbox: политика не по createOutboxTable (outbox_tenantless_insert)',
+                );
+            },
+        );
+    });
+
+    it('AC-4.8: outbox NOT NULL (ALTER COLUMN tenant SET NOT NULL на пустой таблице) с outbox_tenantless_insert → «outbox: лишняя политика outbox_tenantless_insert (tenant NOT NULL)»', async () => {
+        await withScratch(
+            ['ALTER TABLE kit.outbox ALTER COLUMN tenant SET NOT NULL'],
+            async (run) => {
+                await expect(run()).rejects.toThrow(
+                    'outbox: лишняя политика outbox_tenantless_insert (tenant NOT NULL)',
+                );
+            },
+        );
+    });
+
+    it('AC-4.8: outbox NOT NULL без outbox_tenantless_insert (SET NOT NULL + DROP POLICY outbox_tenantless_insert) — проходит', async () => {
+        await withScratch(
+            [
+                'ALTER TABLE kit.outbox ALTER COLUMN tenant SET NOT NULL',
+                'DROP POLICY outbox_tenantless_insert ON kit.outbox',
+            ],
+            async (run) => {
+                await run();
+            },
+        );
     });
 
     it('AC-4.8: except пропускает таблицу', async () => {

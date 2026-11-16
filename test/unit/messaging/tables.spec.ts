@@ -1,8 +1,13 @@
-// §6, AC-5.15 (U): createOutboxTable (tenantNullable), createInboxTable — колонки, индексы, политика (prd.md §3.4, §6);
-// src/messaging/tables.ts. Эталон — O outbox.schema.ts, inbox.schema.ts.
+// §6, AC-5.15, AC-4.8 (U): createOutboxTable (tenantNullable), createInboxTable — колонки, индексы, политики
+// (prd.md §3.4 v1.33, §6); src/messaging/tables.ts. Эталон — O outbox.schema.ts, inbox.schema.ts.
 import { getTableConfig, pgSchema } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
-import { OUTBOX_POLICY, OUTBOX_POLICY_SQL } from '../../../src/internal/outbox-policy.js';
+import {
+    OUTBOX_POLICY,
+    OUTBOX_POLICY_SQL,
+    OUTBOX_TENANTLESS_INSERT_POLICY,
+    OUTBOX_TENANTLESS_INSERT_SQL,
+} from '../../../src/internal/outbox-policy.js';
 import {
     createInboxTable,
     createOutboxTable,
@@ -56,6 +61,33 @@ describe('UC-5: таблицы сообщений', () => {
         expect(policy?.name).toBe(OUTBOX_POLICY);
         expect(policy?.for).toBe('all');
         expect(JSON.stringify(policy?.using)).toContain(OUTBOX_POLICY_SQL);
+    });
+
+    it('AC-4.8: createOutboxTable({tenantNullable: true}) — две политики: outbox_tenant_isolation (ALL) и outbox_tenantless_insert (permissive, INSERT, public, WITH CHECK tenant IS NULL)', () => {
+        const policies = getTableConfig(createOutboxTable(kit, { tenantNullable: true })).policies;
+
+        expect(policies.map((policy) => policy.name)).toEqual([
+            OUTBOX_POLICY,
+            OUTBOX_TENANTLESS_INSERT_POLICY,
+        ]);
+        expect(policies[0]?.for).toBe('all');
+        const tenantless = policies[1];
+        expect(tenantless?.as).toBe('permissive');
+        expect(tenantless?.for).toBe('insert');
+        expect(tenantless?.to).toBe('public');
+        expect(tenantless?.using).toBeUndefined();
+        expect(JSON.stringify(tenantless?.withCheck)).toContain(OUTBOX_TENANTLESS_INSERT_SQL);
+    });
+
+    it('AC-4.8: createOutboxTable() и {tenantNullable: false} — одна политика outbox_tenant_isolation', () => {
+        for (const table of [
+            createOutboxTable(kit),
+            createOutboxTable(kit, { tenantNullable: false }),
+        ]) {
+            expect(getTableConfig(table).policies.map((policy) => policy.name)).toEqual([
+                OUTBOX_POLICY,
+            ]);
+        }
     });
 
     it('§6: createInboxTable — id PK, без политики', () => {

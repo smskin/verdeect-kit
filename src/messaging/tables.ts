@@ -1,4 +1,4 @@
-// createOutboxTable, createInboxTable (prd.md §3.4, §6, AC-5.15). Эталон — O outbox.schema.ts, inbox.schema.ts; из I —
+// createOutboxTable, createInboxTable (prd.md §3.4 v1.33, §6, AC-5.15, AC-4.8). Эталон — O outbox.schema.ts, inbox.schema.ts; из I —
 // nullable tenant (tenantNullable), тип tenant по tenantNullable — перегрузки (AC-5.21); по PRD §6 — subject_id вместо subject jsonb, id inbox — id события. Файл без pg и
 // без ./peer.js: схему сервиса грузит drizzle-kit через require; проверку peer делает index.ts.
 import { sql } from 'drizzle-orm';
@@ -18,6 +18,8 @@ import {
     OUTBOX_POLICY,
     OUTBOX_POLICY_SQL,
     OUTBOX_TABLE,
+    OUTBOX_TENANTLESS_INSERT_POLICY,
+    OUTBOX_TENANTLESS_INSERT_SQL,
 } from '../internal/outbox-policy.js';
 import { assertServiceName } from '../internal/service-name.js';
 
@@ -34,10 +36,14 @@ type NullableTenantColumn = ReturnType<
 /** Колонка `tenant` с NOT NULL. */
 type TenantColumn = ReturnType<NullableTenantColumn['notNull']>;
 
-/** Таблица outbox с колонкой `tenant` вида `TTenant`; DDL одинаков, отличается только тип `tenant`. */
+/**
+ * Таблица outbox с колонкой `tenant` вида `TTenant`. При `tenantNullable` — вторая политика
+ * `outbox_tenantless_insert` (§3.4 v1.33); иначе DDL прежний.
+ */
 function outboxTable<TTenant extends NullableTenantColumn | TenantColumn>(
     schema: PgSchema,
     tenant: TTenant,
+    tenantNullable: boolean,
 ) {
     return schema.table(
         OUTBOX_TABLE,
@@ -72,6 +78,16 @@ function outboxTable<TTenant extends NullableTenantColumn | TenantColumn>(
                 using: sql.raw(OUTBOX_POLICY_SQL),
                 withCheck: sql.raw(OUTBOX_POLICY_SQL),
             }),
+            ...(tenantNullable
+                ? [
+                      pgPolicy(OUTBOX_TENANTLESS_INSERT_POLICY, {
+                          as: 'permissive',
+                          for: 'insert',
+                          to: 'public',
+                          withCheck: sql.raw(OUTBOX_TENANTLESS_INSERT_SQL),
+                      }),
+                  ]
+                : []),
         ],
     );
 }
@@ -98,7 +114,10 @@ export function createOutboxTable(
 ): KitOutboxTableStrict;
 /**
  * Таблица `<schema>.outbox` с nullable `tenant` (события `tenant: 'none'`, роль Identity): select даёт
- * `tenant: string | null` (AC-5.21).
+ * `tenant: string | null` (AC-5.21). Вторая политика `outbox_tenantless_insert` (permissive, `FOR INSERT`,
+ * `WITH CHECK (tenant IS NULL)`, §3.4 v1.33): под тенантом транзакции вставка строки с `null` проходит
+ * (permissive-политики складываются по ИЛИ), но строка под этим тенантом не видна; строка чужого тенанта — 42501.
+ * Сервис после обновления пакета генерирует миграцию (`drizzle-kit generate`).
  * @throws {TypeError} имя схемы вне `^[a-z][a-z0-9-]{1,31}$`.
  */
 export function createOutboxTable(
@@ -112,8 +131,8 @@ export function createOutboxTable(
     assertServiceName(schema.schemaName, 'createOutboxTable');
 
     return options.tenantNullable === true
-        ? outboxTable(schema, text('tenant'))
-        : outboxTable(schema, text('tenant').notNull());
+        ? outboxTable(schema, text('tenant'), true)
+        : outboxTable(schema, text('tenant').notNull(), false);
 }
 
 /**
