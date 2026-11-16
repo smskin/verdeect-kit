@@ -2,6 +2,7 @@
 // rules/base.md). Эталоны: isUniqueViolation — I pg-errors.ts; isPoolTimeout — O pool-client.ts (сообщения);
 // isConnectionError — по PRD (у I/O — instanceof DrizzleQueryError, не переносится; формы — KT-15 п. 9).
 // tagPoolTimeout/poolTimeoutOf — метка пула /database: срок учтён (решение E3, KT-19 п. 3, AC-4.5).
+// connectionCodeOf — код узла для подробностей отказа проверки соединения KitDatabaseModule (§3.3 v1.31, AC-4.20).
 
 /** Глубина обхода `cause` — как у `sanitizeError` (§3.2). */
 const MAX_CAUSE_DEPTH = 10;
@@ -149,4 +150,14 @@ export function sqlStateOf(error: unknown): string | null {
     }
 
     return null;
+}
+
+/**
+ * Код первого узла цепочки `cause` (до 10 уровней) со строковым `code` — системный (`ECONNREFUSED`) или SQLSTATE — или
+ * `null`. Поле `cause` отказа `DATABASE_UNAVAILABLE` проверки соединения (§3.3): без адреса и текста ошибки.
+ */
+export function connectionCodeOf(error: unknown): string | null {
+    const node = causeChain(error).find((item) => typeof item.code === 'string');
+
+    return typeof node?.code === 'string' ? node.code : null;
 }

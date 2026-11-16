@@ -2,6 +2,8 @@
 // с задержкой 500 мс), код 1; InvalidEnvironmentError — только имена ключей; StartupFailure — startupCode и
 // startupDetails(); GlitchTip недоступен — выход через flush 2 с (prd.md §3.2, UC-3 А2). Перенос: O fail-startup.spec.ts
 // (it.each по веткам, лог в потоке, выход только после flush). Sentry — настоящий SDK с поддельным транспортом.
+// v1.31 (AC-4.20): DATABASE_UNAVAILABLE даёт только отказ проверки соединения KitDatabaseModule (StartupFailure);
+// ошибка соединения другой зависимости — STARTUP_FAILED.
 import * as Sentry from '@sentry/nestjs';
 import { pino } from 'pino';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -155,6 +157,25 @@ describe('UC-3: отказ запуска', () => {
 
         for (const output of [env.output, other.output]) {
             expect(String(output.records()[0]?.msg)).toMatch(/[а-яё]/i);
+        }
+    });
+
+    it('AC-4.20: ошибка соединения не от проверки БД (ECONNREFUSED другой зависимости, срок пула сервиса) — STARTUP_FAILED, не DATABASE_UNAVAILABLE', async () => {
+        const refused = new Error('connect failed', {
+            cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5672'), {
+                code: 'ECONNREFUSED',
+            }),
+        });
+        const timeout = new Error('timeout exceeded when trying to connect');
+
+        for (const raw of [refused, timeout]) {
+            delivered.splice(0);
+            const { output, exit } = await run(raw);
+
+            expect(exit).toHaveBeenCalledWith(1);
+            expect(output.records()[0]).toMatchObject({ level: 60, code: 'STARTUP_FAILED' });
+            expect(delivered).toHaveLength(1);
+            expect(delivered[0]?.tags).toMatchObject({ code: 'STARTUP_FAILED' });
         }
     });
 });

@@ -6,6 +6,7 @@ import {
     isPoolTimeout,
     isUniqueViolation,
     poolTimeoutOf,
+    connectionCodeOf,
     sqlStateOf,
     tagPoolTimeout,
 } from '../../../src/internal/pg-errors.js';
@@ -158,5 +159,14 @@ describe('AC-4.17: sqlStateOf', () => {
         expect(sqlStateOf(nested(pgError('EPIPE'), 1))).toBeNull();
         expect(sqlStateOf(new Error('x'))).toBeNull();
         expect(sqlStateOf('42P01')).toBeNull();
+    });
+});
+
+describe('AC-4.20: connectionCodeOf', () => {
+    it('AC-4.20: код первого узла цепочки cause — errno или SQLSTATE; без кода — null', () => {
+        expect(connectionCodeOf(nested(pgError('ECONNREFUSED'), 2))).toBe('ECONNREFUSED');
+        expect(connectionCodeOf(nested(pgError('08006'), 1))).toBe('08006');
+        expect(connectionCodeOf(new Error('timeout exceeded when trying to connect'))).toBeNull();
+        expect(connectionCodeOf('x')).toBeNull();
     });
 });

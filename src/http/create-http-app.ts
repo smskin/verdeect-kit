@@ -132,6 +132,9 @@ const defaultCompile: Compile = (root, adapter) =>
         bufferLogs: true,
         // С умолчанием true Nest при ошибке DI сам вызывает process.exit(1), минуя failStartup.
         abortOnError: false,
+        // Иначе зона исключений Nest при отказе фабрики (недоступная БД) выводит ошибку с адресом через
+        // ConsoleLogger до failStartup (AC-4.20); буфер сбрасывает buildHttpApp после useLogger.
+        autoFlushLogs: false,
     });
 
 /** Хуки Fastify и участник шага 2: заголовки, Connection: close и закрытие простаивающих соединений при остановке. */
@@ -239,6 +242,8 @@ export async function buildHttpApp(options: BuildHttpAppOptions): Promise<NestFa
     });
     const app = await (options.compile ?? defaultCompile)(root, adapter);
     app.useLogger(app.get(NestPinoLogger));
+    // autoFlushLogs: false — Nest сам буфер не сбрасывает: записи Nest Logger модулей иначе копятся молча.
+    app.flushLogs();
     const logger = app.get<Logger>(KIT_LOGGER);
 
     const closeServer = installServerHooks(app, headers);
@@ -268,7 +273,8 @@ export async function buildHttpApp(options: BuildHttpAppOptions): Promise<NestFa
  * Fastify-приложение Nest сервиса (§3.5): заголовки безопасности API, trace-id из `traceparent`, `GET /ok`, фильтр
  * `KitExceptionFilter`, 404 `ROUTE_NOT_FOUND`, логгер nestjs-pino, `KitLifecycle` и `HealthRegistry` для модулей сервиса.
  * `app.close()` — программная остановка по шагам 1–5 (§3.2) без сторожа и `exit`. Процесс сервиса запускает
- * `bootstrapService`; `createHttpApp` — для своих точек входа и тестов.
+ * `bootstrapService`; `createHttpApp` — для своих точек входа и тестов. При ошибке сборки (DI, фабрики, недоступная БД)
+ * Nest не печатает текст ошибки и буфер логов — промис отклоняется: обрабатывайте его (`try/catch` + `failStartup`).
  */
 export function createHttpApp(options: KitHttpAppOptions): Promise<NestFastifyApplication> {
     return buildHttpApp(options);

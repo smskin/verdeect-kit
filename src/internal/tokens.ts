@@ -23,3 +23,18 @@ export const KIT_REDIS_SUBSCRIBER = Symbol('KIT_REDIS_SUBSCRIBER');
 
 /** @internal Логгер фоновых операций /redis (pino экземпляра или адаптер Nest). Наружу не реэкспортируется. */
 export const KIT_REDIS_LOG = Symbol('KIT_REDIS_LOG');
+
+/** @internal Пулы `/database` основной и чтения (`KitDatabaseModule`). Наружу не реэкспортируется. */
+export const KIT_PG_POOLS = Symbol('KIT_PG_POOLS');
+
+/**
+ * @internal Фоновые циклы (relay outbox, очистки): `false` — `createTestApp({backgroundLoops: false})`, циклы не
+ * запускаются. Нет провайдера — `true`. Наружу не реэкспортируется.
+ */
+export const KIT_BACKGROUND_LOOPS = Symbol('KIT_BACKGROUND_LOOPS');
+
+/**
+ * @internal Ключ `globalThis`: журнал итогов доставки для `waitForDelivery` включён — ставит `/testing` при загрузке
+ * (`src/testing/delivery.ts`). Production без `/testing` журнала не ведёт (NFR-4). Наружу не реэкспортируется.
+ */
+export const KIT_DELIVERY_LOG_FLAG = Symbol.for('verdeect-kit.delivery-log');
