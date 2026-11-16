@@ -2,6 +2,8 @@
 // всех компаний и без компании, одна реплика (runExclusive), метрика verdeect_cleanup_runs_total ok/partial/error,
 // остановка во время прохода → interrupted, DB_POOL_MAX=1 (prd.md §3.3а v1.14; KT-22 п. 4, 5). Перенос O idempotency-cleanup.int-spec.ts.
 // v1.31 (AC-5.12): при занятом замке следующий проход через 5 мин + до 1 мин, после прохода — через час.
+// v1.34 (§3.3а стр. 117, AC-5.24): ошибка прохода — серия backgroundFailed('idempotency-cleanup'), выполненный проход —
+// backgroundSucceeded. Серия — на процесс, а модули проекта shared общие между файлами: тест сначала закрывает серию.
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Db, mainPoolOf } from '../../../src/database/db.js';
@@ -10,6 +12,9 @@ import { countQueries } from '../../../src/testing/count-queries.js';
 import { createScratchDatabase } from '../../../src/testing/scratch-database.js';
 import { adminQuery as adminAt } from '../../support/postgres.js';
 import { adminQuery, appUrl } from '../../support/database.js';
+import { KIT_LOGGER } from '../../../src/internal/tokens.js';
+import { memoryLogger } from '../../support/messaging.js';
+import type { KitMetrics } from '../../../src/observability/metrics.js';
 import {
     OTHER_TENANT,
     cleanupRuns,
@@ -27,6 +32,16 @@ async function seed(rows: readonly (readonly [string | null, string, number])[])
              values ($1, 'user:u', $2, 'f', 'done', now() - make_interval(hours => $3))`,
             [tenant, key, hours],
         );
+    }
+}
+
+/** Серия процесса закрывается обычным проходом: следующие файлы проекта shared начинают без неё. */
+async function closeProcessSeries(): Promise<void> {
+    const normal = await createStand();
+    try {
+        await normal.cleanup.run();
+    } finally {
+        await normal.close();
     }
 }
 
@@ -108,7 +123,7 @@ describe('UC-9: очистка идемпотентности', () => {
         expect(await keys()).toHaveLength(1);
     });
 
-    it('AC-9.5: ошибка БД во время прохода → result="error", error-лог, captureError', async () => {
+    it('AC-9.5: ошибка БД во время прохода → result="error", серия idempotency-cleanup', async () => {
         const scratch = await createScratchDatabase();
         const broken = await createStand({ url: scratch.url });
         try {
@@ -125,6 +140,180 @@ describe('UC-9: очистка идемпотентности', () => {
         } finally {
             await broken.close();
             await scratch.drop();
+        }
+    });
+
+    it('AC-5.24: ошибка прохода очистки идемпотентности → серия idempotency-cleanup: error, затем warn с failures 2; выполненный проход закрывает серию (info); verdeect_background_failures_total{task="idempotency-cleanup"} +2', async () => {
+        const failuresTotal = async (metrics: KitMetrics): Promise<number> => {
+            const metric = await metrics.registry
+                .getSingleMetric('verdeect_background_failures_total')
+                ?.get();
+
+            return (
+                metric?.values.find((value) => value.labels['task'] === 'idempotency-cleanup')
+                    ?.value ?? 0
+            );
+        };
+        const series = (lines: readonly Record<string, unknown>[]): string[] =>
+            lines
+                .filter((line) => line['task'] === 'idempotency-cleanup')
+                .map((line) => `${String(line['level'])}:${String(line['failures'] ?? '-')}`);
+        const normalLog = memoryLogger();
+        const brokenLog = memoryLogger();
+        const normal = await createStand({
+            overrides: [{ provide: KIT_LOGGER, useValue: normalLog.logger }],
+        });
+        const scratch = await createScratchDatabase();
+        const broken = await createStand({
+            url: scratch.url,
+            overrides: [{ provide: KIT_LOGGER, useValue: brokenLog.logger }],
+        });
+        try {
+            await adminAt(
+                scratch.adminUrl,
+                `CREATE OR REPLACE FUNCTION kit.idempotency_purge(batch integer) RETURNS integer
+                 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'сбой очистки'; END $$`,
+            );
+            // Возможная серия прошлых файлов проекта shared закрывается.
+            await normal.cleanup.run();
+            const from = normalLog.lines.length;
+            const before = await failuresTotal(broken.metrics);
+
+            await broken.cleanup.run();
+            await broken.cleanup.run();
+
+            expect(series(brokenLog.lines)).toEqual(['50:-', '40:2']);
+            expect((await failuresTotal(broken.metrics)) - before).toBe(2);
+
+            await normal.cleanup.run();
+
+            expect(series(normalLog.lines.slice(from))).toEqual(['30:2']);
+            expect(
+                normalLog.lines
+                    .slice(from)
+                    .find((line) => line['task'] === 'idempotency-cleanup')?.['msg'],
+            ).toBe('фоновая задача: серия сбоев закрыта');
+        } finally {
+            await broken.close();
+            await scratch.drop();
+            await normal.close();
+        }
+    });
+
+    it('AC-5.24: проход, прерванный остановкой (interrupted), открытую серию idempotency-cleanup не закрывает', async () => {
+        const standLog = memoryLogger();
+        const brokenScratch = await createScratchDatabase();
+        const broken = await createStand({ url: brokenScratch.url });
+        const scratch = await createScratchDatabase();
+        const stand = await createStand({
+            url: scratch.url,
+            overrides: [{ provide: KIT_LOGGER, useValue: standLog.logger }],
+        });
+        try {
+            for (let n = 1; n <= 6; n += 1) {
+                await adminAt(
+                    scratch.adminUrl,
+                    `insert into kit.idempotency_key (tenant, subject, key, fingerprint, state, created_at)
+                     values ('acme', 'user:u', $1, 'f', 'done', now() - interval '25 hours')`,
+                    [`i${n}`],
+                );
+            }
+            await adminAt(
+                brokenScratch.adminUrl,
+                `CREATE OR REPLACE FUNCTION kit.idempotency_purge(batch integer) RETURNS integer
+                 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'сбой очистки'; END $$`,
+            );
+            // Серия на процесс: сбой другого стенда открывает её.
+            await broken.cleanup.run();
+            const from = standLog.lines.length;
+            const before = await cleanupRuns(stand.metrics, 'interrupted');
+            let signal = (): void => undefined;
+            const firstBatch = new Promise<void>((resolve) => {
+                signal = resolve;
+            });
+            await countQueries(
+                mainPoolOf(stand.app.get(Db)),
+                async () => {
+                    const run = stand.cleanup.run({ batchSize: 2, maxBatches: 100 });
+                    await firstBatch;
+                    await stand.cleanup.beforeApplicationShutdown();
+                    await run;
+                },
+                {
+                    onQuery: (text) => {
+                        if (text.includes('idempotency_purge')) {
+                            signal();
+                        }
+                    },
+                },
+            );
+
+            expect(await cleanupRuns(stand.metrics, 'interrupted')).toBe(before + 1);
+            expect(
+                standLog.lines.slice(from).filter((line) => line['task'] === 'idempotency-cleanup'),
+            ).toEqual([]);
+        } finally {
+            await stand.close();
+            await scratch.drop();
+            await broken.close();
+            await brokenScratch.drop();
+            await closeProcessSeries();
+        }
+    });
+
+    it('AC-5.24: проход, прерванный остановкой и упавший с ошибкой БД, серию idempotency-cleanup не меняет; result="error" +1', async () => {
+        const standLog = memoryLogger();
+        const brokenScratch = await createScratchDatabase();
+        const broken = await createStand({ url: brokenScratch.url });
+        const scratch = await createScratchDatabase();
+        const stand = await createStand({
+            url: scratch.url,
+            overrides: [{ provide: KIT_LOGGER, useValue: standLog.logger }],
+        });
+        try {
+            for (const url of [brokenScratch.adminUrl, scratch.adminUrl]) {
+                await adminAt(
+                    url,
+                    `CREATE OR REPLACE FUNCTION kit.idempotency_purge(batch integer) RETURNS integer
+                     LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'сбой очистки'; END $$`,
+                );
+            }
+            // Серия на процесс: сбой другого стенда открывает её.
+            await broken.cleanup.run();
+            const from = standLog.lines.length;
+            const before = await cleanupRuns(stand.metrics, 'error');
+            let signal = (): void => undefined;
+            const sent = new Promise<void>((resolve) => {
+                signal = resolve;
+            });
+            await countQueries(
+                mainPoolOf(stand.app.get(Db)),
+                async () => {
+                    const run = stand.cleanup.run();
+                    // Остановка ставится, пока ответ с ошибкой ещё не вернулся с сервера.
+                    await sent;
+                    await stand.cleanup.beforeApplicationShutdown();
+                    await run;
+                },
+                {
+                    onQuery: (text) => {
+                        if (text.includes('idempotency_purge')) {
+                            signal();
+                        }
+                    },
+                },
+            );
+
+            expect(await cleanupRuns(stand.metrics, 'error')).toBe(before + 1);
+            expect(
+                standLog.lines.slice(from).filter((line) => line['task'] === 'idempotency-cleanup'),
+            ).toEqual([]);
+        } finally {
+            await stand.close();
+            await scratch.drop();
+            await broken.close();
+            await brokenScratch.drop();
+            await closeProcessSeries();
         }
     });
 
