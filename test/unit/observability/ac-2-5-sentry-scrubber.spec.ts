@@ -1,8 +1,10 @@
 // AC-2.5 (U, UC-4; NFR-4): событие GlitchTip без query (в том числе в request.url), без request.data, user только с id,
 // без хвоста params: и Key (…)=(…) в тексте исключения; имена SENSITIVE_KEYS и KitRedaction.sensitiveKeys → [Filtered].
 // AC-2.12: maskPath — к request.url события (prd.md §3.2). Перенос: I/O sentry-scrubber.spec.ts ([Filtered] в extra,
-// contexts, breadcrumbs; удаление cookies, data, заголовков; user → id; глубина 8 без исключения).
+// contexts, breadcrumbs; удаление cookies, data, заголовков; user → id; глубина 8 без исключения). KT-124: настоящий
+// DrizzleQueryError без pg-причины — в событии нет SQL и параметров.
 import type { Event } from '@sentry/nestjs';
+import { DrizzleQueryError } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { KitRedaction } from '../../../src/observability/index.js';
 import { scrubBreadcrumb, scrubEvent } from '../../../src/observability/sentry.js';
@@ -96,6 +98,31 @@ describe('UC-4: скраббер событий GlitchTip', () => {
         expect(scrubbed.exception?.values?.map((value) => value.value)).toEqual([
             'Failed query (23505)',
             'Failed query (23505)',
+        ]);
+    });
+
+    it('AC-2.5: настоящий DrizzleQueryError без pg-причины (тайм-аут) — в событии нет SQL и параметров', () => {
+        const error = new DrizzleQueryError(
+            'select * from "svc"."account" where "email" = $1',
+            ['MARK_PARAM'],
+            new Error('Query read timeout'),
+        );
+
+        const scrubbed = scrubEvent(
+            {
+                exception: {
+                    values: [{ value: error.message }, { value: 'Query read timeout' }],
+                },
+            },
+            error,
+        );
+
+        const text = JSON.stringify(scrubbed);
+        expect(text).not.toContain('MARK_PARAM');
+        expect(text).not.toContain('account');
+        expect(scrubbed.exception?.values?.map((value) => value.value)).toEqual([
+            'Failed query',
+            'Failed query',
         ]);
     });
 
