@@ -1,5 +1,6 @@
 // Ошибки обработчика и отказ запуска /messaging (prd.md §3.4, AC-5.7, AC-5.15, AC-5.19). Эталон — O
 // expected-message-error.ts, invalid-message.error.ts; MessagingStartupError — отказ запуска по образцу kit (П1, П8).
+// v1.35: код MESSAGING_QUEUE_MISMATCH (§3.4).
 import type { StartupFailure } from '../observability/fail-startup.js';
 
 const CODE = /^[A-Z][A-Z0-9_]*$/;
@@ -47,11 +48,13 @@ export class InvalidMessageError extends Error {
 }
 
 /** Коды отказа запуска /messaging. */
-export type MessagingStartupCode = 'MESSAGING_TENANT_NOT_NULLABLE' | 'MESSAGING_RETRY_TTL_MISMATCH';
+export type MessagingStartupCode =
+    'MESSAGING_TENANT_NOT_NULLABLE' | 'MESSAGING_RETRY_TTL_MISMATCH' | 'MESSAGING_QUEUE_MISMATCH';
 
 /**
  * Отказ запуска `/messaging` с кодом: `MESSAGING_TENANT_NOT_NULLABLE` — событие `tenant: 'none'` при NOT NULL `tenant`
- * outbox; `MESSAGING_RETRY_TTL_MISMATCH` — `<svc>.retry` объявлена с другим TTL. `failStartup` пишет `startupCode` и
+ * outbox; `MESSAGING_RETRY_TTL_MISMATCH` — `<svc>.retry` объявлена с другим TTL; `MESSAGING_QUEUE_MISMATCH` — своя
+ * очередь (`<svc>`, `<svc>.retry`, `<svc>.dlq`) объявлена с другими аргументами. `failStartup` пишет `startupCode` и
  * `startupDetails()` — только имена (тип события, таблица, очередь), без значений окружения.
  */
 export class MessagingStartupError extends Error implements StartupFailure {

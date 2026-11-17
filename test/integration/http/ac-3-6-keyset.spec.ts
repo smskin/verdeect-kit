@@ -2,10 +2,21 @@
 // пропусков, вставка между страницами, неуникальный последний ключ, limit 201 и неверный курсор → 422. PostgreSQL —
 // globalSetup уровня I (startTestStack); своя временная схема на файл, удаляется в afterAll. Порядок — по уникальному id.
 // v1.31 (r26): значение ключа курсора проверяется по типу столбца до запроса (timestamptz, uuid) → 422 path: cursor.
+// v1.35 (r30): timestamp без зоны, date, numeric, enum, citext; jsonb — ошибка afterCursor; обход по timestamp и date.
 import { randomBytes } from 'node:crypto';
 import { asc, desc, sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { pgSchema, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+    customType,
+    date,
+    jsonb,
+    numeric,
+    pgSchema,
+    pgTable,
+    text,
+    timestamp,
+    uuid,
+} from 'drizzle-orm/pg-core';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 import { DomainError } from '../../../src/http/errors.js';
@@ -35,6 +46,20 @@ const events = schema.table('events', {
     at: timestamp('at', { withTimezone: true }).notNull(),
 });
 
+/** Типы столбцов v1.35: timestamp без зоны и date — в режиме date (JS Date), как у сервисов. */
+const kind = schema.enum('kind', ['a', 'b']);
+const typed = schema.table('typed', {
+    id: text('id').primaryKey(),
+    at: timestamp('at').notNull(),
+    day: date('day', { mode: 'date' }).notNull(),
+    amount: numeric('amount').notNull(),
+    kind: kind('kind').notNull(),
+    payload: jsonb('payload').notNull(),
+});
+/** citext — customType, как у Identity (account.email); расширение — в схеме public. */
+const citext = customType<{ data: string }>({ dataType: () => 'citext' });
+const names = pgTable(`${SCHEMA}_names`, { email: citext('email').primaryKey() });
+
 let pool: pg.Pool;
 let db: NodePgDatabase;
 
@@ -50,9 +75,18 @@ beforeAll(async () => {
     await db.execute(
         sql.raw(`create table "${SCHEMA}".events (id text primary key, at timestamptz not null)`),
     );
+    await db.execute(sql.raw(`create type "${SCHEMA}".kind as enum ('a', 'b')`));
+    await db.execute(
+        sql.raw(
+            `create table "${SCHEMA}".typed (id text primary key, at timestamp not null, day date not null, amount numeric not null, kind "${SCHEMA}".kind not null, payload jsonb not null)`,
+        ),
+    );
+    await db.execute(sql.raw('create extension if not exists citext'));
+    await db.execute(sql.raw(`create table public."${SCHEMA}_names" (email citext primary key)`));
 });
 
 afterAll(async () => {
+    await db.execute(sql.raw(`drop table if exists public."${SCHEMA}_names"`));
     await db.execute(sql.raw(`drop schema "${SCHEMA}" cascade`));
     await pool.end();
 });
@@ -60,7 +94,20 @@ afterAll(async () => {
 beforeEach(async () => {
     await db.delete(items);
     await db.delete(events);
+    await db.delete(typed);
+    await db.delete(names);
 });
+
+/** Ошибка вызова или undefined. */
+async function failureOf(work: () => Promise<unknown>): Promise<unknown> {
+    try {
+        await work();
+    } catch (caught) {
+        return caught;
+    }
+
+    return undefined;
+}
 
 /** Строки: по две на каждую минуту — ключ created_at неуникален, порядок держит id. */
 async function seed(count: number): Promise<void> {
@@ -218,6 +265,133 @@ describe('UC-4: keyset на PostgreSQL', () => {
                 issues: [{ path: 'cursor', code: 'invalid' }],
             });
             expect(count, cursor).toBe(0);
+        }
+    });
+
+    it('AC-3.6: курсор с ключом timestamp = "now", date = "infinity", numeric = "abc", enum вне списка → 422 path: cursor без запроса к БД', async () => {
+        const cases: [Parameters<typeof afterCursor>[0], string][] = [
+            [[typed.at, typed.id], 'now'],
+            [[typed.at, typed.id], 'epoch'],
+            [[typed.at, typed.id], '2026-11-10T10:00:00Z'],
+            [[typed.day, typed.id], 'infinity'],
+            [[typed.day, typed.id], 'today'],
+            [[typed.amount, typed.id], 'abc'],
+            [[typed.amount, typed.id], 'NaN'],
+            [[typed.kind, typed.id], 'c'],
+        ];
+        for (const [cols, key] of cases) {
+            const cursor = encodeCursor([key, 'id-1']);
+            let error: unknown;
+            const { count } = await countQueries(pool, async () => {
+                error = await failureOf(() =>
+                    db
+                        .select()
+                        .from(typed)
+                        .where(afterCursor(cols, decodeCursor(cursor, 2), 'asc'))
+                        .limit(2),
+                );
+            });
+
+            expect(error, key).toBeInstanceOf(DomainError);
+            expect((error as DomainError).status, key).toBe(422);
+            expect((error as DomainError).details).toEqual({
+                issues: [{ path: 'cursor', code: 'invalid' }],
+            });
+            expect(count, key).toBe(0);
+        }
+    });
+
+    it('AC-3.6: сортировка по столбцу jsonb → ошибка afterCursor', async () => {
+        let error: unknown;
+        const { count } = await countQueries(pool, async () => {
+            error = await failureOf(() =>
+                db
+                    .select()
+                    .from(typed)
+                    .where(afterCursor([typed.payload, typed.id], null, 'asc'))
+                    .limit(2),
+            );
+        });
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(DomainError);
+        expect((error as Error).message).toBe(
+            'afterCursor: столбец payload (PgJsonb) не поддержан курсором keyset',
+        );
+        expect(count).toBe(0);
+    });
+
+    it('AC-3.6: курсор по столбцу citext проходится до конца без дублей, неверное значение (42) → 422 path: cursor без запроса к БД', async () => {
+        const emails = ['a@x', 'B@x', 'c@x', 'D@x', 'e@x'];
+        await db.insert(names).values(emails.map((email) => ({ email })));
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        do {
+            const keys = decodeCursor(cursor, 1);
+            const rows = await db
+                .select({ email: names.email })
+                .from(names)
+                .where(afterCursor([names.email], keys, 'asc'))
+                .orderBy(asc(names.email))
+                .limit(3);
+            const current = pageOf(rows, 2, (row) => [row.email]);
+            seen.push(...current.items.map((row) => row.email));
+            cursor = current.nextCursor ?? undefined;
+        } while (cursor !== undefined && seen.length < 20);
+
+        // citext сравнивает без учёта регистра: порядок a, B, c, D, e.
+        expect(seen).toEqual(emails);
+        let error: unknown;
+        const { count } = await countQueries(pool, async () => {
+            error = await failureOf(() =>
+                db
+                    .select()
+                    .from(names)
+                    .where(afterCursor([names.email], decodeCursor(encodeCursor([42]), 1), 'asc')),
+            );
+        });
+        expect(error).toBeInstanceOf(DomainError);
+        expect((error as DomainError).status).toBe(422);
+        expect(count).toBe(0);
+    });
+
+    it('AC-3.6: страница по столбцу timestamp проходится до конца без дублей', async () => {
+        // 6 строк в одну миллисекунду, порядок id обратен микросекундам; date — 6 строк на 3 дня.
+        await db.execute(
+            sql.raw(
+                `insert into "${SCHEMA}".typed (id, at, day, amount, kind, payload) values ${Array.from(
+                    { length: 6 },
+                    (_, index) =>
+                        `('t-${String(index)}', '2026-11-13T10:00:00.123${String(6 - index).padStart(3, '0')}', '2026-11-${String(10 + Math.floor(index / 2))}', 1, 'a', '{}')`,
+                ).join(', ')}`,
+            ),
+        );
+        const byTime = ['t-5', 't-4', 't-3', 't-2', 't-1', 't-0'];
+        const byDay = ['t-0', 't-1', 't-2', 't-3', 't-4', 't-5'];
+        for (const [col, ascOrder] of [
+            [typed.at, byTime],
+            [typed.day, byDay],
+        ] as const) {
+            for (const dir of ['desc', 'asc'] as const) {
+                const order = dir === 'desc' ? desc : asc;
+                const seen: string[] = [];
+                let cursor: string | undefined;
+                do {
+                    const keys = decodeCursor(cursor, 2);
+                    const rows = await db
+                        .select({ id: typed.id, cursorAt: cursorTimestamp(col) })
+                        .from(typed)
+                        .where(afterCursor([col, typed.id], keys, dir))
+                        .orderBy(order(col), order(typed.id))
+                        .limit(3);
+                    const current = pageOf(rows, 2, (row) => [row.cursorAt, row.id]);
+                    seen.push(...current.items.map((row) => row.id));
+                    cursor = current.nextCursor ?? undefined;
+                } while (cursor !== undefined && seen.length < 20);
+
+                const expected = dir === 'asc' ? ascOrder : [...ascOrder].reverse();
+                expect(seen, `${col.name} ${dir}`).toEqual(expected);
+            }
         }
     });
 });

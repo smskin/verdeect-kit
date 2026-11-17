@@ -28,3 +28,4 @@ export {
 } from './helpers.js';
 export { KitConfigModule } from './kit-config.module.js';
 export { InvalidEnvironmentError, parseEnv } from './parse-env.js';
+export type { KitEnvironmentIssue } from './parse-env.js';

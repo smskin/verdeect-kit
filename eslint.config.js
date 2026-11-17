@@ -350,12 +350,14 @@ export default [
     },
     {
         // CLI грузит подпути только динамическим import() (ARCHITECTURE.md «CLI»); import type разрешён.
+        // Исключение — config/parse-env.js (rc.12, AC-1.3): файл без peer, один разбор окружения всех команд.
         files: ['src/cli/**/*.ts'],
         rules: restrictedImports([
             {
                 group: [
                     '**/http/*',
                     '**/config/*',
+                    '!**/config/parse-env.js',
                     '**/observability/*',
                     '**/testing/*',
                     '**/internal/*',

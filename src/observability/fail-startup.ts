@@ -1,5 +1,6 @@
 // failStartup и StartupFailure (prd.md §3.2, AC-2.9, UC-3, NFR-4, NFR-9). Эталон — O fail-startup.ts: доменная ветка
 // ModelCatalogError заменена интерфейсом StartupFailure (распознаётся по форме), параметр exit не переносится.
+// v1.35: InvalidEnvironmentError — issues в fatal-логе и extra.issues события GlitchTip.
 import * as Sentry from '@sentry/nestjs';
 import type { Logger } from 'pino';
 import { InvalidEnvironmentError } from '../config/parse-env.js';
@@ -41,8 +42,11 @@ function detailsOf(raw: StartupFailure): Readonly<Record<string, unknown>> {
 /** Пишет fatal-лог отказа и возвращает код события. */
 function logFailure(raw: unknown, logger: Logger): string {
     if (raw instanceof InvalidEnvironmentError) {
-        // Только имена ключей: значения окружения не попадают никуда (NFR-4).
-        logger.fatal({ code: raw.code, keys: raw.keys }, 'Неверное окружение — запуск остановлен');
+        // Имена ключей и тексты схемы после страховки parseEnv: значения окружения не попадают никуда (NFR-4).
+        logger.fatal(
+            { code: raw.code, keys: raw.keys, issues: raw.issues },
+            'Неверное окружение — запуск остановлен',
+        );
 
         return raw.code;
     }
@@ -58,12 +62,15 @@ function logFailure(raw: unknown, logger: Logger): string {
 
 /**
  * Отказ запуска (§3.2, UC-3): `fatal`-лог, событие GlitchTip с ожиданием отправки до 2 с, `exit(1)`.
- * `InvalidEnvironmentError` — код и имена ключей; `StartupFailure` — `startupCode` и `startupDetails()`;
- * прочее — через `sanitizeError`.
+ * `InvalidEnvironmentError` — код, имена ключей и `issues` (в логе и `extra.issues` события);
+ * `StartupFailure` — `startupCode` и `startupDetails()`; прочее — через `sanitizeError`.
  */
 export async function failStartup(raw: unknown, logger: Logger): Promise<never> {
     const code = logFailure(raw, logger);
-    captureError(raw, { tags: { code } });
+    captureError(raw, {
+        tags: { code },
+        ...(raw instanceof InvalidEnvironmentError ? { extra: { issues: raw.issues } } : {}),
+    });
     await Sentry.flush(SENTRY_FLUSH_MS);
 
     return process.exit(1);

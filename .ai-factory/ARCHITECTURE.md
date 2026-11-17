@@ -109,7 +109,7 @@ verdeect-kit/
 │   ├── redis/                         # "./redis" — E8 (§3.7); ioredis через loadPeer
 │   │   ├── kit-redis.module.ts · rate-limiter.ts (эталон I)
 │   ├── testing/                       # "./testing" — только условие development; testcontainers, vitest через loadPeer
-│   │   ├── images.ts                  #   TEST_IMAGES
+│   │   ├── images.ts                  #   TEST_IMAGES; ещё и подпуть "./testing/images" (types + default, без импортов, AC-9.6)
 │   │   ├── start-test-stack.ts        #   startTestStack (растёт E1 → E4 → E5 → E8)
 │   │   ├── tcp-proxy.ts · timing-guard.ts · worker-scope.ts (E4)
 │   │   ├── timeout-scale.ts           #   ещё и подпуть "./testing/timeout-scale" (types + default, граф только node:*, AC-9.6)
@@ -122,6 +122,7 @@ verdeect-kit/
 │   └── cli/                           # bin verdeect-kit
 │       ├── main.ts                    #   bin: только вызов runCli
 │       ├── run.ts                     #   runCli: таблица команд (загрузчик + формы справки), --help, UNKNOWN_COMMAND (AC-9.7)
+│       ├── environment.ts             #   environmentFailure — разбор ошибки окружения команд (keys, issues, (root))
 │       └── commands/                  #   openapi.ts (E3); db.ts, rabbitmq.ts, crypto.ts, redis.ts — по этапам
 ├── test/
 │   ├── unit/<подпуть>/                # U: без сети и Docker
@@ -181,7 +182,7 @@ verdeect-kit/
 | `crypto` | `config`, `internal`, `node:crypto` | — | — |
 | `redis` | `http` (`DomainError`), `observability`, `config`, `internal` | — | `ioredis` |
 | `testing` | любой подпуть; `yaml`, `semver`, `shell-quote`, `ajv` (только `testing`) | — | `testcontainers`, `vitest`, `@nestjs/testing` |
-| `cli` | любой подпуть или внутренний модуль пакета (`http/api/openapi-document`) через динамический `import()` в обработчике команды | — | по команде |
+| `cli` | любой подпуть или внутренний модуль пакета (`http/api/openapi-document`) через динамический `import()` в обработчике команды; статически — только `config/parse-env.js` (без peer, единый разбор окружения, rc.12) | — | по команде |
 
 - ✅ Проверка опционального peer — синхронная, при загрузке модуля подпути: `requirePeer('<lib>', '<подпуть>')` (`src/internal/peer.ts`, `createRequire(import.meta.url).resolve` с текстом AC-1.2). Ошибка возникает при импорте подпути, а не при первом вызове.
 - ✅ Сам peer грузится динамическим `import()` при вызове (мемоизированный загрузчик подпути, например `loadPg()`, `loadDrizzle()` в `src/database/pg.ts`). Top-level await в статическом графе подпути нет: `drizzle-kit` загружает схему сервиса (фабрики `/database`, `/idempotency`) через `require`, а `require` ESM с top-level await падает `ERR_REQUIRE_ASYNC_MODULE` (П15, план E4). Статический импорт значения peer запрещён: в ESM отсутствующий пакет падает ещё при связывании, до любого кода, и потребитель видит `ERR_MODULE_NOT_FOUND` вместо текста AC-1.2. Модули E1–E3 с top-level `await loadPeer` (`src/testing/start-test-stack.ts`) не переделываются: `/testing` не загружается через `require`. Исключение — `@nestjs/testing`: он грузится `loadPeer` внутри `createTestApp`, поэтому `/testing` импортируется и без него (PRD v1.13 NFR-3).
@@ -233,7 +234,7 @@ verdeect-kit/
 
   Тестовый контур повторяет production-путь, а не подделывает его.
 - **CLI:** `main.ts` только вызывает `runCli` (`run.ts`); `runCli` разбирает команду, по одной таблице команд выдаёт справку (`--help`, `help`, без аргументов; `<команда> --help`) и динамически импортирует только обработчик выполняемой команды. `crypto generate-secret` работает без `pg`, `ioredis` и `amqplib`. Результат — JSON в stdout, ошибка — JSON и выход 1.
-- **Сборка и загрузка:** `exports` — по записи на подпуть (`types` + `default`). У `./testing` записи `types` + `development` без `default`; исключение — `./testing/timeout-scale` (`types` + `default`, стоит перед `./testing`): файл без импортов, кроме `node:*`, для `vitest.config.ts`. Поле `bin` → `dist/cli/main.js` — с первой CLI-командой (E3); в E1 его нет. Архив: `dist`, `alerts`, `README.md`, `CHANGELOG.md`, без `src`, спеков и карт.
+- **Сборка и загрузка:** `exports` — по записи на подпуть (`types` + `default`). У `./testing` записи `types` + `development` без `default`; исключения — `./testing/timeout-scale` и `./testing/images` (`types` + `default`, стоят перед `./testing`): файлы без импортов, кроме `node:*` (`timeout-scale` — для `vitest.config.ts`, `images` — `TEST_IMAGES` для unit-теста сервиса). Поле `bin` → `dist/cli/main.js` — с первой CLI-командой (E3); в E1 его нет. Архив: `dist`, `alerts`, `README.md`, `CHANGELOG.md`, без `src`, спеков и карт.
 
 ## Ключевые принципы
 

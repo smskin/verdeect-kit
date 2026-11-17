@@ -2,6 +2,8 @@
 // подключении после старта → error + GlitchTip, канал подписчика закрыт, новых попыток объявить топологию нет, relay
 // продолжает работу (prd.md §3.4 v1.15; П8). Брокер «недоступен» — tcpProxy. Проект isolated: initFakeSentry и шпион
 // на прототипе Channel amqplib (объявления очередей подписчика).
+// v1.35 (§3.4): другие аргументы своей очереди kit после старта — так же, как TTL (MESSAGING_QUEUE_MISMATCH). Sentry.init
+// глобален для процесса — initFakeSentry один на файл, стенд — свой на каждый describe.
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -28,8 +30,9 @@ import {
 
 const FATAL = 'rabbitmq: фатальная ошибка настройки канала, повторов не будет';
 
+const sentry = initFakeSentry();
+
 describe('UC-6: брокер при старте и TTL после старта', () => {
-    const sentry = initFakeSentry();
     const { logger, lines } = memoryLogger();
     let proxy: TcpProxy;
     let broker: BrokerClient;
@@ -115,5 +118,71 @@ describe('UC-6: брокер при старте и TTL после старта'
             lines.filter((line) => line['msg'] === 'rabbitmq: канал открывается заново'),
         ).toHaveLength(0);
         expect((await broker.queueInfo('kit.retry'))?.messageCount).toBe(0);
+    });
+});
+
+describe('UC-6: аргументы очереди после старта', () => {
+    const { logger, lines } = memoryLogger();
+    let proxy: TcpProxy;
+    let broker: BrokerClient;
+    let app: NestFastifyApplication;
+
+    beforeAll(async () => {
+        await truncateFixtures();
+        await resetQueues();
+        broker = await BrokerClient.connect();
+        proxy = await tcpProxy(workerScope().rabbitmq.url);
+        await proxy.break();
+        app = await createOutboxApp({
+            subscriber: { inbox: fixtureSchema.inbox },
+            providers: [TestConsumer],
+            env: { RABBITMQ_URL: proxy.url },
+            overrides: [{ provide: KIT_LOGGER, useValue: logger }],
+        });
+    });
+
+    afterAll(async () => {
+        await app.close();
+        await proxy.close();
+        await resetQueues();
+        await broker.close();
+        await truncateFixtures();
+    });
+
+    it('AC-5.19: очередь kit с другим x-dead-letter-exchange при подключении после старта → error + GlitchTip, канал подписчика закрыт, новых попыток объявить топологию нет', async () => {
+        const connection = app.get<RabbitConnection>(KIT_RABBIT_CONNECTION);
+        await broker.channel.assertQueue('kit', { durable: true, deadLetterExchange: 'other' });
+        sentry.delivered.length = 0;
+        const channelProto = Object.getPrototypeOf(broker.channel) as {
+            assertQueue: (queue: string, ...rest: unknown[]) => Promise<unknown>;
+        };
+        const assertQueue = vi.spyOn(channelProto, 'assertQueue');
+        const mainDeclarations = (): number =>
+            assertQueue.mock.calls.filter(([queue]) => queue === 'kit').length;
+
+        await proxy.restore();
+        await waitUntil(
+            () => lines.some((line) => line['msg'] === FATAL),
+            'фатальная ошибка настройки',
+            15_000,
+        );
+        await waitUntil(() => sentry.delivered.length >= 1, 'событие GlitchTip');
+
+        expect(lines.filter((line) => line['msg'] === FATAL && line['level'] === 50)).toHaveLength(
+            1,
+        );
+        expect(lines.find((line) => line['msg'] === FATAL)).toMatchObject({
+            code: 'MESSAGING_QUEUE_MISMATCH',
+        });
+        expect(connection.isChannelReady('subscriber')).toBe(false);
+        expect(mainDeclarations()).toBe(1);
+        // То же окно наблюдения, что у теста TTL: две паузы повтора настройки канала (1 с).
+        await sleep(2 * 1_000 + 200);
+        expect(mainDeclarations()).toBe(1);
+        assertQueue.mockRestore();
+        expect(lines.filter((line) => line['msg'] === FATAL)).toHaveLength(1);
+        expect(
+            lines.filter((line) => line['msg'] === 'rabbitmq: канал открывается заново'),
+        ).toHaveLength(0);
     });
 });

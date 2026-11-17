@@ -7,6 +7,7 @@ import {
     PageQuerySchema,
     ZodValidationPipe,
     type Page,
+    type PageQuery,
 } from '@verdeect/kit/http';
 import { z } from 'zod';
 
@@ -23,9 +24,7 @@ const ITEMS: ItemDto[] = [
 export class ItemsController {
     @Get()
     @Api({ summary: 'Список записей', response: Item, envelope: 'page' })
-    list(
-        @Query(new ZodValidationPipe(PageQuerySchema)) query: z.output<typeof PageQuerySchema>,
-    ): Page<ItemDto> {
+    list(@Query(new ZodValidationPipe(PageQuerySchema)) query: PageQuery): Page<ItemDto> {
         const keys = decodeCursor(query.cursor, 1);
         const start = keys === null ? 0 : ITEMS.findIndex((item) => item.id === keys[0]) + 1;
 

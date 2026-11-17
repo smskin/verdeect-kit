@@ -1,14 +1,14 @@
-// AC-1.1: разрешение подпутей у потребителя; /testing — только с условием development (NFR-4); /testing/timeout-scale —
-// без условий (AC-9.6).
-async function probe(specifier, name) {
+// AC-1.1: разрешение подпутей у потребителя; /testing — только с условием development (NFR-4); /testing/timeout-scale и
+// /testing/images — без условий (AC-9.6).
+async function probe(specifier, name, type = 'function') {
     try {
         const module = await import(specifier);
-        return typeof module[name] === 'function' ? 'ok' : 'no-export';
+        return typeof module[name] === type ? 'ok' : 'no-export';
     } catch (error) {
         return error?.code ?? String(error);
     }
 }
 
 console.log(
-    `config:${await probe('@verdeect/kit/config', 'defineEnv')} crypto:${await probe('@verdeect/kit/crypto', 'createCipher')} database:${await probe('@verdeect/kit/database', 'newId')} http:${await probe('@verdeect/kit/http', 'createHttpApp')} idempotency:${await probe('@verdeect/kit/idempotency', 'Idempotent')} messaging:${await probe('@verdeect/kit/messaging', 'defineEvent')} observability:${await probe('@verdeect/kit/observability', 'createLoggerOptions')} redis:${await probe('@verdeect/kit/redis', 'KitRedisModule')} testing:${await probe('@verdeect/kit/testing', 'startTestStack')} timeout-scale:${await probe('@verdeect/kit/testing/timeout-scale', 'readTimeoutScale')}`,
+    `config:${await probe('@verdeect/kit/config', 'defineEnv')} crypto:${await probe('@verdeect/kit/crypto', 'createCipher')} database:${await probe('@verdeect/kit/database', 'newId')} http:${await probe('@verdeect/kit/http', 'createHttpApp')} idempotency:${await probe('@verdeect/kit/idempotency', 'Idempotent')} messaging:${await probe('@verdeect/kit/messaging', 'defineEvent')} observability:${await probe('@verdeect/kit/observability', 'createLoggerOptions')} redis:${await probe('@verdeect/kit/redis', 'KitRedisModule')} testing:${await probe('@verdeect/kit/testing', 'startTestStack')} timeout-scale:${await probe('@verdeect/kit/testing/timeout-scale', 'readTimeoutScale')} images:${await probe('@verdeect/kit/testing/images', 'TEST_IMAGES', 'object')}`,
 );

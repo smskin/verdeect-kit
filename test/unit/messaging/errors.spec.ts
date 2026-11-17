@@ -1,4 +1,4 @@
-// AC-5.7, AC-5.15, AC-5.19 (U): ExpectedMessageError, InvalidMessageError, MessagingStartupError (prd.md §3.4);
+// AC-5.7, AC-5.15, AC-5.19 (U): ExpectedMessageError, InvalidMessageError, MessagingStartupError (prd.md §3.4 v1.35);
 // src/messaging/errors.ts. Эталон — O expected-message-error.ts, invalid-message.error.ts.
 import { describe, expect, it } from 'vitest';
 import {
@@ -42,5 +42,17 @@ describe('UC-6: ошибки обработчика', () => {
         expect(typeof error.startupCode).toBe('string');
         expect(typeof error.startupDetails).toBe('function');
         expect(error.startupDetails()).toEqual({ event: 'kit.a.b' });
+    });
+
+    it('AC-5.19: MessagingStartupError MESSAGING_QUEUE_MISMATCH — startupCode, startupDetails() {queue}', () => {
+        const error = new MessagingStartupError(
+            'MESSAGING_QUEUE_MISMATCH',
+            'очередь kit объявлена с другими параметрами — пересоздайте очередь',
+            { queue: 'kit' },
+        );
+
+        expect(error.startupCode).toBe('MESSAGING_QUEUE_MISMATCH');
+        expect(error.startupDetails()).toEqual({ queue: 'kit' });
+        expect(error.name).toBe('MessagingStartupError');
     });
 });

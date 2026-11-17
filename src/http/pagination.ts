@@ -1,6 +1,8 @@
 // Keyset-пагинация (prd.md §3.5, AC-3.6). Эталон — I pagination.ts (encodeCursor, decodeCursor, pageOf, PageQuerySchema).
 // По PRD: limit умолч. 100 (у I — 50), макс. 200; неверный курсор → 422 VALIDATION_FAILED path: cursor (у I — 400
 // VALIDATION); ключи — JSON-скаляры, а не только строки; новое — afterCursor (условие Drizzle по ключам сортировки).
+// v1.35: закрытый список типов столбцов курсора (timestamp, date, numeric, real/double, enum, citext), прочие — ошибка
+// afterCursor; cursorTimestamp — timestamptz, timestamp, date.
 import { and, or, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { DomainError } from './errors.js';
@@ -13,6 +15,9 @@ export const PageQuerySchema = z.object({
     cursor: z.string().min(1).max(512).optional(),
     limit: z.coerce.number().int().min(1).max(200).default(100),
 });
+
+/** Разобранные параметры страницы — выход `PageQuerySchema` (`limit` с умолчанием 100) (§3.5). */
+export type PageQuery = z.output<typeof PageQuerySchema>;
 
 /** Ответ списка: `nextCursor = null` — страниц больше нет. */
 export interface Page<T> {
@@ -61,7 +66,10 @@ export function decodeCursor(cursor: string | undefined, arity: number): CursorV
     return value;
 }
 
-/** Репозиторий читает `limit + 1` строк: лишняя строка есть → курсор по последней из `limit`. */
+/**
+ * Репозиторий читает `limit + 1` строк: лишняя строка есть → курсор по последней из `limit`. Ключи столбцов
+ * `timestamp`/`timestamptz`/`date` в `keyOf` берите через `cursorTimestamp` (строка из БД), а не из JS `Date`.
+ */
 export function pageOf<T>(
     rows: readonly T[],
     limit: number,
@@ -76,84 +84,179 @@ export function pageOf<T>(
     return { items, nextCursor: last === undefined ? null : encodeCursor(keyOf(last)) };
 }
 
-/** Столбец `timestamp`/`timestamptz` Drizzle (режимы `date` и `string`). */
-function timestampColumn(col: AnyColumn): { readonly withTimezone: boolean } | null {
-    const { columnType, withTimezone } = col as AnyColumn & { withTimezone?: unknown };
-    if (columnType !== 'PgTimestamp' && columnType !== 'PgTimestampString') {
-        return null;
+/** Вид столбца для курсора keyset (§3.5): от него зависят проверка значения и приведение в SQL. */
+type CursorKind =
+    | 'timestamptz'
+    | 'timestamp'
+    | 'date'
+    | 'uuid'
+    | 'integer'
+    | 'numeric'
+    | 'float'
+    | 'boolean'
+    | 'string'
+    | 'enum';
+
+// ponytail: закрытый список columnType Drizzle 0.45 — новый тип Drizzle даёт ошибку afterCursor до явного добавления.
+const KIND_BY_COLUMN_TYPE: Readonly<Record<string, CursorKind>> = {
+    PgDate: 'date',
+    PgDateString: 'date',
+    PgUUID: 'uuid',
+    PgInteger: 'integer',
+    PgSmallInt: 'integer',
+    PgSerial: 'integer',
+    PgSmallSerial: 'integer',
+    PgBigInt53: 'integer',
+    PgBigSerial53: 'integer',
+    PgNumeric: 'numeric',
+    PgNumericNumber: 'numeric',
+    PgReal: 'float',
+    PgDoublePrecision: 'float',
+    PgBoolean: 'boolean',
+    PgText: 'string',
+    PgVarchar: 'string',
+    PgChar: 'string',
+    PgEnumColumn: 'enum',
+    PgEnumObjectColumn: 'enum',
+};
+
+/** Вид столбца или `null` — тип не поддержан курсором. `citext` (`customType`) — строка. */
+function cursorKind(col: AnyColumn): CursorKind | null {
+    const { columnType } = col;
+    if (columnType === 'PgTimestamp' || columnType === 'PgTimestampString') {
+        const { withTimezone } = col as AnyColumn & { withTimezone?: unknown };
+
+        return withTimezone === true ? 'timestamptz' : 'timestamp';
+    }
+    if (columnType === 'PgCustomColumn') {
+        return col.getSQLType().endsWith('citext') ? 'string' : null;
     }
 
-    return { withTimezone: withTimezone === true };
+    return KIND_BY_COLUMN_TYPE[columnType] ?? null;
 }
 
 const ISO_WITH_ZONE = z.iso.datetime({ offset: true });
+// local: true принимает и `Z` — зона отсекается отдельно (ZONE_SUFFIX).
+const ISO_LOCAL = z.iso.datetime({ local: true });
+const ZONE_SUFFIX = /(?:Z|[+-]\d{2}:\d{2})$/i;
+const ISO_DATE = z.iso.date();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INTEGER_COLUMNS = new Set([
-    'PgInteger',
-    'PgSmallInt',
-    'PgSerial',
-    'PgSmallSerial',
-    'PgBigInt53',
-    'PgBigSerial53',
-]);
-const STRING_COLUMNS = new Set(['PgText', 'PgVarchar', 'PgChar']);
+const DECIMAL_PATTERN = /^[+-]?\d+(?:\.\d+)?$/;
 
-/** Значение подходит столбцу; типы вне списка (например, `timestamp` без зоны) не проверяются (§3.5). */
-function fitsColumn(col: AnyColumn, value: CursorValue): boolean {
-    if (timestampColumn(col)?.withTimezone === true) {
-        return typeof value === 'string' && ISO_WITH_ZONE.safeParse(value).success;
-    }
-    const { columnType } = col;
-    if (columnType === 'PgUUID') {
-        return typeof value === 'string' && UUID_PATTERN.test(value);
-    }
-    if (INTEGER_COLUMNS.has(columnType)) {
-        return typeof value === 'number' && Number.isSafeInteger(value);
-    }
-    if (columnType === 'PgBoolean') {
-        return typeof value === 'boolean';
-    }
-    if (STRING_COLUMNS.has(columnType)) {
-        return typeof value === 'string';
-    }
+/** Значение подходит виду столбца (§3.5); особые значения (`now`, `infinity`, `NaN`) не проходят форматы. */
+function fitsColumn(col: AnyColumn, kind: CursorKind, value: CursorValue): boolean {
+    switch (kind) {
+        case 'timestamptz':
+            return typeof value === 'string' && ISO_WITH_ZONE.safeParse(value).success;
+        case 'timestamp':
+            return (
+                typeof value === 'string' &&
+                !ZONE_SUFFIX.test(value) &&
+                ISO_LOCAL.safeParse(value).success
+            );
+        case 'date':
+            return typeof value === 'string' && ISO_DATE.safeParse(value).success;
+        case 'uuid':
+            return typeof value === 'string' && UUID_PATTERN.test(value);
+        case 'integer':
+            return typeof value === 'number' && Number.isSafeInteger(value);
+        case 'numeric':
+            return (
+                (typeof value === 'string' && DECIMAL_PATTERN.test(value)) ||
+                (typeof value === 'number' && Number.isFinite(value))
+            );
+        case 'float':
+            return typeof value === 'number' && Number.isFinite(value);
+        case 'boolean':
+            return typeof value === 'boolean';
+        case 'string':
+            return typeof value === 'string';
+        case 'enum': {
+            const { enumValues } = col as AnyColumn & { enumValues?: readonly string[] };
 
-    return true;
+            return typeof value === 'string' && (enumValues ?? []).includes(value);
+        }
+    }
 }
 
-/** Каждое значение курсора — по типу своего столбца, иначе 422 `path: cursor` (до запроса к БД). */
-function assertCursorTypes(cols: readonly AnyColumn[], cursor: readonly CursorValue[]): void {
-    if (!cols.every((col, index) => fitsColumn(col, cursor[index] ?? null))) {
-        throw invalidCursor();
-    }
+/** Столбец сортировки с видом курсора. */
+interface CursorKey {
+    readonly col: AnyColumn;
+    readonly kind: CursorKind;
+}
+
+/** Пары [столбец, вид]; нет вида (неподдержанный тип) — `Error`, ошибка разработчика (§3.5). */
+function cursorKeys(cols: readonly AnyColumn[]): CursorKey[] {
+    return cols.map((col) => {
+        const kind = cursorKind(col);
+        if (kind === null) {
+            throw new Error(
+                `afterCursor: столбец ${col.name} (${col.columnType}) не поддержан курсором keyset`,
+            );
+        }
+
+        return { col, kind };
+    });
 }
 
 /**
- * Ключ курсора по столбцу `timestamptz` без потери точности (§3.5, К23): строка ISO UTC с микросекундами
- * (`2026-11-13T10:00:00.123456Z`) — выбирается вместе со строками и передаётся в `pageOf(…, keyOf)`. JS `Date` хранит
- * миллисекунды: строки одной миллисекунды с разными микросекундами иначе пропускаются или повторяются.
+ * Ключ курсора по столбцу `timestamptz`, `timestamp` или `date` без потери точности (§3.5, К23): строка из БД —
+ * `timestamptz` — ISO UTC с микросекундами (`2026-11-13T10:00:00.123456Z`), `timestamp` — ISO без зоны с микросекундами
+ * (`2026-11-13T10:00:00.123456`), `date` — `YYYY-MM-DD`. Выбирается вместе со строками и передаётся в
+ * `pageOf(…, keyOf)`; работает при любом `mode` столбца. JS `Date` хранит миллисекунды и сериализуется с `Z`, текст
+ * `mode: 'string'` — не ISO: такой ключ курсор не примет или пропустит строки.
  * @example
  * db.select({ ...getTableColumns(t), cursorAt: cursorTimestamp(t.updatedAt) })…
  * pageOf(rows, limit, (row) => [row.cursorAt, row.id]);
- * @throws {TypeError} столбец не `timestamp with time zone`.
+ * @throws {TypeError} столбец не `timestamp`, `timestamptz` или `date`.
  */
 export function cursorTimestamp(col: AnyColumn): SQL<string> {
-    if (timestampColumn(col)?.withTimezone !== true) {
-        throw new TypeError(`cursorTimestamp: столбец ${col.name} — не timestamp with time zone`);
+    const kind = cursorKind(col);
+    if (kind === 'timestamptz') {
+        return sql<string>`to_char(${col} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
     }
+    if (kind === 'timestamp') {
+        return sql<string>`to_char(${col}, 'YYYY-MM-DD"T"HH24:MI:SS.US')`;
+    }
+    if (kind === 'date') {
+        return sql<string>`to_char(${col}, 'YYYY-MM-DD')`;
+    }
+    throw new TypeError(
+        `cursorTimestamp: столбец ${col.name} — не timestamp, timestamptz или date`,
+    );
+}
 
-    return sql<string>`to_char(${col} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+/** Параметр курсора с приведением по виду столбца. */
+function cursorParam(kind: CursorKind, raw: CursorValue): SQL {
+    switch (kind) {
+        case 'timestamptz':
+            return sql`${raw}::timestamptz`;
+        case 'timestamp':
+            return sql`${raw}::timestamp`;
+        case 'date':
+            return sql`${raw}::date`;
+        default:
+            return sql`${raw}`;
+    }
 }
 
 /**
  * Условие «после курсора» для `where`: `(c1, …, cn) > (v1, …, vn)` (`desc` — `<`) как ИЛИ-цепочка
  * `c1 > v1 OR (c1 = v1 AND c2 > v2) OR …`. `cursor = null` → `undefined` (первая страница). Последний столбец обязан
- * быть `primaryKey()` или `unique()` — иначе `Error` (ошибка разработчика). Длина курсора ≠ числу столбцов или `null`
- * в ключе → 422 `VALIDATION_FAILED` `path: cursor`. Значение ключа проверяется по типу столбца до построения SQL:
- * `timestamptz` — строка ISO 8601 с зоной (`now`, `infinity`, дата без времени — 422), `uuid` — строка UUID, целые —
- * безопасное целое, `boolean` — логическое, `text`/`varchar`/`char` — строка; прочие типы не проверяются. Ключ столбца
- * `timestamptz` в `mode: 'string'` берите через `cursorTimestamp` (текст PostgreSQL — не строгий ISO). Значения
- * передаются параметрами без кодировщика столбца; у столбца timestamp значение приводится к `timestamptz`/`timestamp` и сравнивается полностью — ключ с микросекундами даёт
- * `cursorTimestamp` (строка ISO с миллисекундами из `Date.toISOString()` теряет микросекунды, К23).
+ * быть `primaryKey()` или `unique()` — иначе `Error` (ошибка разработчика). Тип каждого столбца — из закрытого списка,
+ * иначе `Error` при каждом вызове, в том числе без курсора: массив, `json`/`jsonb`, `interval`, `bigint`/`numeric`
+ * в режиме `bigint`, `time`, сетевые и геометрические типы, `customType` (кроме `citext`). Длина курсора ≠ числу
+ * столбцов или `null` в ключе → 422 `VALIDATION_FAILED` `path: cursor`. Значение ключа проверяется по типу столбца до
+ * построения SQL, несовпадение — 422 `path: cursor`:
+ * - `timestamptz` — строка ISO 8601 с зоной; `timestamp` — ISO 8601 без `Z` и смещения; `date` — `YYYY-MM-DD`
+ *   (календарная дата); `now`, `today`, `infinity`, `epoch` не проходят;
+ * - `uuid` — строка UUID; целые — безопасное целое; `numeric` — десятичная строка или конечное число;
+ *   `real`/`double precision` — конечное число; `boolean` — логическое;
+ * - `text`/`varchar`/`char`, `citext` — строка; enum — строка из значений enum.
+ *
+ * Ключи `timestamptz`, `timestamp` и `date` берите через `cursorTimestamp` (`Date` теряет микросекунды и даёт `Z`).
+ * Значения передаются параметрами без кодировщика столбца; у `timestamptz`/`timestamp`/`date` параметр приводится
+ * к типу столбца.
  */
 export function afterCursor(
     cols: readonly AnyColumn[],
@@ -164,6 +267,7 @@ export function afterCursor(
     if (last === undefined || (!last.primary && !last.isUnique)) {
         throw new Error('afterCursor: последний ключ сортировки должен быть уникальным');
     }
+    const keys = cursorKeys(cols);
     if (cursor === null) {
         return undefined;
     }
@@ -171,22 +275,20 @@ export function afterCursor(
     if (cursor.length !== cols.length || cursor.includes(null)) {
         throw invalidCursor();
     }
-    assertCursorTypes(cols, cursor);
-    const op = dir === 'asc' ? sql.raw('>') : sql.raw('<');
-    const value = (col: AnyColumn, raw: CursorValue): SQL => {
-        const timestamp = timestampColumn(col);
-        if (timestamp === null) {
-            return sql`${raw}`;
+    // Один проход по парам: значение проверяется по виду столбца и становится параметром с приведением.
+    const params = keys.map(({ col, kind }, index) => {
+        const raw = cursor[index] ?? null;
+        if (!fitsColumn(col, kind, raw)) {
+            throw invalidCursor();
         }
 
-        return timestamp.withTimezone ? sql`${raw}::timestamptz` : sql`${raw}::timestamp`;
-    };
-    const branches = cols.map((col, index) =>
+        return { col, param: cursorParam(kind, raw) };
+    });
+    const op = dir === 'asc' ? sql.raw('>') : sql.raw('<');
+    const branches = params.map((key, index) =>
         and(
-            ...cols
-                .slice(0, index)
-                .map((prev, prevIndex) => sql`${prev} = ${value(prev, cursor[prevIndex] ?? null)}`),
-            sql`${col} ${op} ${value(col, cursor[index] ?? null)}`,
+            ...params.slice(0, index).map((prev) => sql`${prev.col} = ${prev.param}`),
+            sql`${key.col} ${op} ${key.param}`,
         ),
     );
 

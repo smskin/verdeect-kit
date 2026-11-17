@@ -19,7 +19,7 @@ export {
     pageOf,
     PageQuerySchema,
 } from './pagination.js';
-export type { Page } from './pagination.js';
+export type { CursorValue, Page, PageQuery } from './pagination.js';
 export { ZodValidationPipe } from './zod-validation.pipe.js';
 export { Api } from './api/api.decorator.js';
 export type { KitApiOptions } from './api/api.decorator.js';

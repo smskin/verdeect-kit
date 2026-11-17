@@ -82,6 +82,12 @@ describe('UC-12: verdeect-kit redis acl', () => {
                     code: 'INVALID_ENVIRONMENT',
                     message: 'Неверное окружение',
                     keys: ['REDIS_PASSWORD_HASH_BFF_APP'],
+                    issues: [
+                        {
+                            key: 'REDIS_PASSWORD_HASH_BFF_APP',
+                            message: 'ожидается sha256 hex (64 символа)',
+                        },
+                    ],
                 },
             });
             expect(text).not.toContain(HASH_A);

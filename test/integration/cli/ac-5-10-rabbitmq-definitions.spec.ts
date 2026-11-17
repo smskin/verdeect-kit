@@ -181,6 +181,13 @@ describe('UC-12: definitions.json в брокере', () => {
                 message:
                     'RABBITMQ_PASSWORD_HASH_KITCLI_B: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
                 keys: ['RABBITMQ_PASSWORD_HASH_KITCLI_B'],
+                issues: [
+                    {
+                        key: 'RABBITMQ_PASSWORD_HASH_KITCLI_B',
+                        message:
+                            'ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
+                    },
+                ],
             },
         });
         expect(output.join('')).not.toContain(hash);

@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import semver from 'semver';
 import { envBase } from '../config/index.js';
-import { imageRepository, TEST_IMAGES } from './images.js';
+import { TEST_IMAGES } from './images.js';
 import {
     analyzeLaunch,
     hasInstrumentImport,
@@ -29,6 +29,16 @@ import {
     type LaunchInstruction,
     type RepoFiles,
 } from './repo-files.js';
+
+/**
+ * Репозиторий образа — часть до последнего `:` (`axllent/mailpit`); помощник правил §3.8.
+ * @internal экспорт — для unit-теста, не из `index.ts`.
+ */
+export function imageRepository(image: string): string {
+    const colon = image.lastIndexOf(':');
+
+    return colon === -1 ? image : image.slice(0, colon);
+}
 
 /** Параметры assertRepoConventions (§3.8). */
 export interface RepoConventionsOptions {
