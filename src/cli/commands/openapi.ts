@@ -2,6 +2,7 @@
 // buildOpenApiDocument по метаданным модуля сервиса без создания приложения; окружение сервиса не нужно. title и version
 // — из package.json в cwd; рядом с --out — contracts/openapi.extra.json (глубокое слияние). Подпути пакета загружаются
 // динамическим import() (ARCHITECTURE.md «CLI»). CLI разбирает только свои ключи окружения (LOG_LEVEL, REPLICA_ID).
+// v1.35 (§3.1, AC-1.3): ошибка окружения — environmentFailure (keys, issues, (root)), разбор — parseEnv пакета.
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -9,6 +10,8 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { pino, type Logger } from 'pino';
 import { z } from 'zod';
+import { environmentFailure } from '../environment.js';
+import { parseEnv } from '../../config/parse-env.js';
 
 /** Модуль сервиса по умолчанию (§3.5), относительно cwd. */
 const DEFAULT_MODULE = 'dist/app.module.js#AppModule';
@@ -42,20 +45,13 @@ async function createLogger(): Promise<Logger> {
         import('../../config/fragments.js'),
         import('../../observability/logger-options.js'),
     ]);
-    const parsed = z
-        .object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID })
-        .safeParse(process.env);
-    if (!parsed.success) {
-        // Только имена ключей: значения окружения не выводятся.
-        const keys = [
-            ...new Set(parsed.error.issues.map((issue) => issue.path.map(String).join('.'))),
-        ];
-        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
-    }
+    const parsed = parseEnv(
+        z.object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID }),
+        process.env,
+    );
 
     return pino(
-        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed.data })
-            .pinoHttp,
+        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed }).pinoHttp,
     );
 }
 
@@ -165,13 +161,17 @@ export async function openapiCommand(
 
         return 0;
     } catch (error) {
+        // InvalidEnvironmentError — и из модуля сервиса при --module: тот же JSON, без текста ошибки.
+        const environment = environmentFailure(error);
         const failure =
-            error instanceof CommandError
-                ? { code: error.code, message: error.message, ...error.extra }
-                : {
-                      code: 'OPENAPI_FAILED',
-                      message: error instanceof Error ? error.message : String(error),
-                  };
+            environment !== undefined
+                ? { ...environment }
+                : error instanceof CommandError
+                  ? { code: error.code, message: error.message, ...error.extra }
+                  : {
+                        code: 'OPENAPI_FAILED',
+                        message: error instanceof Error ? error.message : String(error),
+                    };
         process.stderr.write(`${JSON.stringify({ level: 'error', ...failure })}\n`);
         context.write(`${JSON.stringify({ error: failure })}\n`);
 

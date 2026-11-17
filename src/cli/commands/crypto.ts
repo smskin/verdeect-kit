@@ -1,8 +1,11 @@
 // Команда verdeect-kit crypto generate-secret [--bytes N] (prd.md §3.6, UC-10, AC-7.5): секрет base64url для
 // ENCRYPTION_KEYS. Образец — commands/rabbitmq.ts. Без pg, ioredis, amqplib: только crypto динамическим import().
+// v1.35 (§3.1, AC-1.3): ошибка окружения — environmentFailure (keys, issues, (root)), разбор — parseEnv пакета.
 import { parseArgs } from 'node:util';
 import { pino, type Logger } from 'pino';
 import { z } from 'zod';
+import { environmentFailure } from '../environment.js';
+import { parseEnv } from '../../config/parse-env.js';
 
 /** Окружение команды. */
 export interface CryptoCommandContext {
@@ -36,17 +39,13 @@ async function createLogger(env: CryptoCommandContext['env']): Promise<Logger> {
         import('../../config/fragments.js'),
         import('../../observability/logger-options.js'),
     ]);
-    const parsed = z
-        .object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID })
-        .safeParse(env);
-    if (!parsed.success) {
-        const keys = [...new Set(parsed.error.issues.map((issue) => issue.path.join('.')))];
-        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
-    }
+    const parsed = parseEnv(
+        z.object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID }),
+        env,
+    );
 
     return pino(
-        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed.data })
-            .pinoHttp,
+        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed }).pinoHttp,
     );
 }
 
@@ -79,6 +78,10 @@ function bytesOf(args: readonly string[]): number {
 }
 
 function failureOf(error: unknown): Record<string, unknown> {
+    const environment = environmentFailure(error);
+    if (environment !== undefined) {
+        return { ...environment };
+    }
     if (error instanceof CommandError) {
         return { code: error.code, message: error.message, ...error.extra };
     }

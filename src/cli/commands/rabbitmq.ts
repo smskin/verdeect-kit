@@ -1,11 +1,14 @@
 // Команда verdeect-kit rabbitmq definitions (prd.md §3.4 M3, UC-12, AC-5.10): definitions.json для брокера — vhost,
 // пользователи сервисов с хешами паролей из RABBITMQ_PASSWORD_HASH_<SVC> (П3), права, topic-права по --publishes, exchange verdeect.events. Образец —
 // commands/db.ts. Без amqplib, pg и messaging: только internal/rabbitmq-definitions динамическим import().
+// v1.35 (§3.1, AC-1.3): ошибка окружения — environmentFailure (keys, issues, (root)), разбор — parseEnv пакета.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pino, type Logger } from 'pino';
 import { z } from 'zod';
+import { environmentFailure } from '../environment.js';
+import { parseEnv } from '../../config/parse-env.js';
 
 /** Окружение команды. */
 export interface RabbitmqCommandContext {
@@ -26,6 +29,8 @@ const defaultContext: RabbitmqCommandContext = {
 /** base64 соли (4 байта) и sha256 (32 байта) — не короче 44 знаков. */
 const HASH_FORMAT = /^[A-Za-z0-9+/]+={0,2}$/;
 const MIN_HASH_LENGTH = 44;
+/** Текст записи issues и ошибки у неверного хеша (AC-1.3, AC-5.10): формат, без значения. */
+const HASH_MESSAGE = `ожидается вывод rabbitmqctl hash_password (base64, ≥ ${MIN_HASH_LENGTH} символов)`;
 
 /** Ошибка команды: JSON в stdout и код 1. */
 class CommandError extends Error {
@@ -43,17 +48,13 @@ async function createLogger(env: RabbitmqCommandContext['env']): Promise<Logger>
         import('../../config/fragments.js'),
         import('../../observability/logger-options.js'),
     ]);
-    const parsed = z
-        .object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID })
-        .safeParse(env);
-    if (!parsed.success) {
-        const keys = [...new Set(parsed.error.issues.map((issue) => issue.path.join('.')))];
-        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
-    }
+    const parsed = parseEnv(
+        z.object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID }),
+        env,
+    );
 
     return pino(
-        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed.data })
-            .pinoHttp,
+        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed }).pinoHttp,
     );
 }
 
@@ -187,11 +188,10 @@ async function definitions(
     }
     if (keys.length > 0) {
         // Формат — в тексте (§3.4 v1.26, AC-5.10): только имена ключей, значений нет.
-        throw new CommandError(
-            'INVALID_ENVIRONMENT',
-            `${keys.join(', ')}: ожидается вывод rabbitmqctl hash_password (base64, ≥ ${MIN_HASH_LENGTH} символов)`,
-            { keys },
-        );
+        throw new CommandError('INVALID_ENVIRONMENT', `${keys.join(', ')}: ${HASH_MESSAGE}`, {
+            keys,
+            issues: keys.map((key) => ({ key, message: HASH_MESSAGE })),
+        });
     }
     if (adminUser !== undefined) {
         // Не зависит от LOG_LEVEL: файл с администратором не должен уйти в production незамеченным.
@@ -214,6 +214,10 @@ async function definitions(
 }
 
 function failureOf(error: unknown): Record<string, unknown> {
+    const environment = environmentFailure(error);
+    if (environment !== undefined) {
+        return { ...environment };
+    }
     if (error instanceof CommandError) {
         return { code: error.code, message: error.message, ...error.extra };
     }

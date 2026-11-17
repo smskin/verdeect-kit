@@ -4,16 +4,19 @@
 // (it.each по веткам, лог в потоке, выход только после flush). Sentry — настоящий SDK с поддельным транспортом.
 // v1.31 (AC-4.20): DATABASE_UNAVAILABLE даёт только отказ проверки соединения KitDatabaseModule (StartupFailure);
 // ошибка соединения другой зависимости — STARTUP_FAILED.
+// v1.35 (§3.2): InvalidEnvironmentError — ещё issues в fatal-логе и extra.issues события.
 import * as Sentry from '@sentry/nestjs';
 import { pino } from 'pino';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { InvalidEnvironmentError } from '../../../src/config/index.js';
+import { z } from 'zod';
+import { defineEnv, InvalidEnvironmentError, parseEnv } from '../../../src/config/index.js';
 import { failStartup, type StartupFailure } from '../../../src/observability/index.js';
 import {
     initFakeSentry,
     type DeliveredEvent,
     type FakeTransportMode,
 } from '../../support/fake-sentry.js';
+import { errorOf } from '../config/support.js';
 import { collector } from './support.js';
 
 class CatalogError extends Error implements StartupFailure {
@@ -40,6 +43,18 @@ beforeEach(() => {
     mode.delayMs = 0;
 });
 
+/** Поле extra события из конверта поддельного транспорта. */
+function extraOf(event: DeliveredEvent | undefined): unknown {
+    for (const line of (event?.body ?? '').split('\n')) {
+        const parsed: unknown = JSON.parse(line);
+        if (typeof parsed === 'object' && parsed !== null && 'exception' in parsed) {
+            return (parsed as { extra?: unknown }).extra;
+        }
+    }
+
+    return undefined;
+}
+
 /** Запускает failStartup с подменённым exit; возвращает строки лога и момент выхода. */
 async function run(raw: unknown) {
     const output = collector();
@@ -57,8 +72,12 @@ async function run(raw: unknown) {
 }
 
 describe('UC-3: отказ запуска', () => {
-    it('AC-2.9: InvalidEnvironmentError — fatal (60) только с именами ключей, без значения; событие отправлено до exit(1)', async () => {
-        const error = new InvalidEnvironmentError(['METRICS_PORT', 'DATABASE_URL']);
+    it('AC-2.9: InvalidEnvironmentError — fatal (60) с именами ключей и issues, без значения; событие с extra.issues отправлено до exit(1)', async () => {
+        const issues = [
+            { key: 'METRICS_PORT', message: 'ожидается порт' },
+            { key: 'DATABASE_URL', message: 'ожидается URL' },
+        ];
+        const error = new InvalidEnvironmentError(issues);
 
         const { output, exit } = await run(error);
 
@@ -68,10 +87,34 @@ describe('UC-3: отказ запуска', () => {
                 level: 60,
                 code: 'INVALID_ENVIRONMENT',
                 keys: ['METRICS_PORT', 'DATABASE_URL'],
+                issues,
             }),
         ]);
         expect(delivered).toHaveLength(1);
         expect(delivered[0]?.tags).toMatchObject({ code: 'INVALID_ENVIRONMENT' });
+        expect(extraOf(delivered[0])).toEqual({ issues });
+    });
+
+    it('AC-1.3: ошибка parseEnv с текстом superRefine, содержащим значение ключа → в fatal-логе и событии issues с «неверное значение (custom)», значения нет', async () => {
+        const schema = defineEnv({ DATABASE_URL: z.string() }, (env, ctx) => {
+            ctx.addIssue({
+                code: 'custom',
+                path: ['DATABASE_URL'],
+                message: `плохой адрес ${env.DATABASE_URL}`,
+                input: '',
+            });
+        });
+        const error = errorOf(() =>
+            parseEnv(schema, { DATABASE_URL: 'postgres://u:SECRET_MARKER_9@h/db' }),
+        );
+        const issues = [{ key: 'DATABASE_URL', message: 'неверное значение (custom)' }];
+
+        const { output } = await run(error);
+
+        expect(output.records()[0]).toMatchObject({ level: 60, issues });
+        expect(extraOf(delivered[0])).toEqual({ issues });
+        expect(output.text()).not.toContain('SECRET_MARKER_9');
+        expect(delivered[0]?.body).not.toContain('SECRET_MARKER_9');
     });
 
     it('AC-2.9: StartupFailure — startupCode и startupDetails() в логе и теге события', async () => {
@@ -152,7 +195,9 @@ describe('UC-3: отказ запуска', () => {
     });
 
     it('NFR-9: сообщения fatal по-русски', async () => {
-        const env = await run(new InvalidEnvironmentError(['PORT']));
+        const env = await run(
+            new InvalidEnvironmentError([{ key: 'PORT', message: 'ожидается число' }]),
+        );
         const other = await run(new Error('x'));
 
         for (const output of [env.output, other.output]) {

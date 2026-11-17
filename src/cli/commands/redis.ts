@@ -1,11 +1,14 @@
 // Команда verdeect-kit redis acl (prd.md §3.7, UC-12; D3 плана E8): aclfile Redis — `user default off`, пользователи
 // сервисов с sha256 паролей из REDIS_PASSWORD_HASH_<SVC>, ключи и каналы <svc>:*. Образец — commands/rabbitmq.ts. Без
 // ioredis: только internal/redis-acl динамическим import(). aclfile — не JSON, поэтому --out обязателен.
+// v1.35 (§3.1, AC-1.3): ошибка окружения — environmentFailure (keys, issues, (root)), разбор — parseEnv пакета.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pino, type Logger } from 'pino';
 import { z } from 'zod';
+import { environmentFailure } from '../environment.js';
+import { parseEnv } from '../../config/parse-env.js';
 
 /** Окружение команды. */
 export interface RedisCommandContext {
@@ -23,6 +26,9 @@ const defaultContext: RedisCommandContext = {
     env: process.env,
 };
 
+/** Текст записи issues у неверного хеша (AC-1.3): формат, без значения. */
+const HASH_MESSAGE = 'ожидается sha256 hex (64 символа)';
+
 /** Ошибка команды: JSON в stdout и код 1. */
 class CommandError extends Error {
     constructor(
@@ -39,17 +45,13 @@ async function createLogger(env: RedisCommandContext['env']): Promise<Logger> {
         import('../../config/fragments.js'),
         import('../../observability/logger-options.js'),
     ]);
-    const parsed = z
-        .object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID })
-        .safeParse(env);
-    if (!parsed.success) {
-        const keys = [...new Set(parsed.error.issues.map((issue) => issue.path.join('.')))];
-        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
-    }
+    const parsed = parseEnv(
+        z.object({ LOG_LEVEL: envBase.LOG_LEVEL, REPLICA_ID: envBase.REPLICA_ID }),
+        env,
+    );
 
     return pino(
-        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed.data })
-            .pinoHttp,
+        ...createLoggerOptions({ service: 'verdeect-kit', entry: 'cli', env: parsed }).pinoHttp,
     );
 }
 
@@ -113,7 +115,10 @@ async function acl(
         return { service, passwordHash: hash };
     });
     if (keys.length > 0) {
-        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
+        throw new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', {
+            keys,
+            issues: keys.map((key) => ({ key, message: HASH_MESSAGE })),
+        });
     }
     const out = resolve(context.cwd, values.out);
     await mkdir(dirname(out), { recursive: true });
@@ -123,6 +128,10 @@ async function acl(
 }
 
 function failureOf(error: unknown): Record<string, unknown> {
+    const environment = environmentFailure(error);
+    if (environment !== undefined) {
+        return { ...environment };
+    }
     if (error instanceof CommandError) {
         return { code: error.code, message: error.message, ...error.extra };
     }

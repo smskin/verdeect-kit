@@ -75,6 +75,13 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
                 message:
                     'RABBITMQ_PASSWORD_HASH_SVC_B: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
                 keys: ['RABBITMQ_PASSWORD_HASH_SVC_B'],
+                issues: [
+                    {
+                        key: 'RABBITMQ_PASSWORD_HASH_SVC_B',
+                        message:
+                            'ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
+                    },
+                ],
             },
         });
         expect(text).not.toContain(HASH_A);
@@ -289,6 +296,13 @@ describe('UC-12: verdeect-kit rabbitmq definitions', () => {
                 message:
                     'RABBITMQ_PASSWORD_HASH_DEV: ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
                 keys: ['RABBITMQ_PASSWORD_HASH_DEV'],
+                issues: [
+                    {
+                        key: 'RABBITMQ_PASSWORD_HASH_DEV',
+                        message:
+                            'ожидается вывод rabbitmqctl hash_password (base64, ≥ 44 символов)',
+                    },
+                ],
             },
         });
         expect(text).not.toContain(HASH_A);

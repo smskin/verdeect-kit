@@ -16,7 +16,7 @@ export function errorOf(fn: () => unknown): InvalidEnvironmentError {
     return expect.fail('ожидалась InvalidEnvironmentError');
 }
 
-/** Сообщение и keys называют ключ и не содержат значений окружения. */
+/** Сообщение, keys и issues называют ключ и не содержат значений окружения. */
 export function expectKeysOnly(
     error: InvalidEnvironmentError,
     key: string,
@@ -24,7 +24,8 @@ export function expectKeysOnly(
 ): void {
     expect(error.keys).toContain(key);
     expect(error.message).toContain(key);
-    const serialized = `${error.message} ${JSON.stringify(error.keys)}`;
+    expect(error.issues.map((issue) => issue.key)).toContain(key);
+    const serialized = `${error.message} ${JSON.stringify(error.keys)} ${JSON.stringify(error.issues)}`;
     for (const value of values) {
         expect(serialized).not.toContain(value);
     }

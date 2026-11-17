@@ -1,10 +1,13 @@
 // Команда verdeect-kit db prepare|migrate|move-journal (prd.md §3.3 v1.14, AC-4.17, UC-12). Эталон — O run-cli.ts
 // (db:prepare, migrate). Подпути пакета — динамическим import() (ARCHITECTURE «CLI»); окружение — только prepareEnvSchema /
 // migrateEnvSchema и LOG_LEVEL, REPLICA_ID логгера. Текст ошибок pg (имя роли, хост) не выводится.
+// v1.35 (§3.1, AC-1.3): ошибка окружения — environmentFailure (keys, issues, (root)), разбор — parseEnv пакета.
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pino, type Logger } from 'pino';
 import { z } from 'zod';
+import { environmentFailure } from '../environment.js';
+import { parseEnv } from '../../config/parse-env.js';
 
 /** Окружение команды. */
 export interface DbCommandContext {
@@ -33,22 +36,6 @@ class CommandError extends Error {
     ) {
         super(message);
     }
-}
-
-/** Только имена ключей: значения окружения не выводятся. */
-function invalidEnvironment(error: z.ZodError): CommandError {
-    const keys = [...new Set(error.issues.map((issue) => issue.path.map(String).join('.')))];
-
-    return new CommandError('INVALID_ENVIRONMENT', 'Неверное окружение', { keys });
-}
-
-function parseEnv<T extends z.ZodType>(schema: T, env: DbCommandContext['env']): z.infer<T> {
-    const parsed = schema.safeParse(env);
-    if (!parsed.success) {
-        throw invalidEnvironment(parsed.error);
-    }
-
-    return parsed.data;
 }
 
 async function createLogger(env: DbCommandContext['env']): Promise<Logger> {
@@ -178,6 +165,10 @@ const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
 
 /** Перевод ошибки в JSON без адресов, паролей и текста pg; порядок проверок важен — ошибки pg тоже `Error`. */
 async function failureOf(error: unknown): Promise<Record<string, unknown>> {
+    const environment = environmentFailure(error);
+    if (environment !== undefined) {
+        return { ...environment };
+    }
     if (error instanceof CommandError) {
         return { code: error.code, message: error.message, ...error.extra };
     }
