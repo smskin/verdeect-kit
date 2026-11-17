@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.12] - 2026-11-17
+
+Итоги перехода Identity ID-76, сверка KT-133 (PRD v1.35, r30). Последний выпуск под `@verdeect/kit` на npmjs.
+
+### Added
+
+- `/config`: `InvalidEnvironmentError.issues` — запись `{key, message}` на каждую ошибку схемы (`message` — текст схемы, без значения ключа), тип записи `KitEnvironmentIssue`.
+- `/http`: типы `PageQuery` (выход `PageQuerySchema`) и `CursorValue` (значение ключа курсора).
+- Подпуть `@verdeect/kit/testing/images` (`TEST_IMAGES`) — условия `types` и `default`, без `development`: для unit-теста совпадения тегов.
+- `/messaging`: код отказа запуска `MESSAGING_QUEUE_MISMATCH`.
+
+### Changed
+
+- **Страховка `message` от значения:** фрагмент значения ключа длиной ≥ 8 символов в тексте схемы (у ошибки без пути — любого ключа схемы) заменяется на «неверное значение (<code>)».
+- **Конструктор `InvalidEnvironmentError`** принимает `issues` (`KitEnvironmentIssue[]`), `keys` выводятся из них (уникальные `key` в порядке появления).
+- `/observability`: `failStartup` для `InvalidEnvironmentError` пишет `issues` в `fatal`-лог и `extra.issues` события GlitchTip.
+- **CLI:** ошибка окружения любой команды (`openapi`, `db`, `rabbitmq`, `crypto`, `redis`) — JSON `{error: {code: 'INVALID_ENVIRONMENT', message, keys, issues}}` одной функцией разбора; неверные хеши `rabbitmq definitions` и `redis acl` — тоже с `issues`.
+- **Курсор keyset:** проверяются `timestamp` без зоны (ISO без `Z` и смещения), `date` (`YYYY-MM-DD`), `numeric` (десятичная строка или конечное число), `real`/`double precision` (конечное число), enum (значения enum), `citext` (строка); неподдержанный тип столбца — `Error` при вызове `afterCursor`; `cursorTimestamp` — ещё для `timestamp` и `date`.
+- **406 на объявление своих очередей** (`<svc>`, `<svc>.retry`, `<svc>.dlq`) — отказ запуска `MESSAGING_QUEUE_MISMATCH` без повторов, после запуска — `error`-лог, одно событие GlitchTip, канал подписчика закрыт; другой TTL `.retry` — по-прежнему `MESSAGING_RETRY_TTL_MISMATCH`.
+
+### Fixed
+
+- CLI: ошибка окружения уровня корня давала пустой ключ вместо `(root)` (`db`, `openapi`, `crypto`, `redis`, `rabbitmq`).
+
+### Как перейти
+
+- **Очереди (K-4):** очередь `<svc>`, `<svc>.retry` или `<svc>.dlq`, объявленная прежним кодом сервиса с другими параметрами (в том числе TTL `.retry` ≠ `RABBITMQ_RETRY_SECONDS`, умолчание 30), — пересоздать до первого запуска по README «Развёртывание». Иначе — отказ запуска `MESSAGING_QUEUE_MISMATCH` или `MESSAGING_RETRY_TTL_MISMATCH`.
+- **Курсор:** сортировка keyset по массиву, `jsonb`, `interval`, `bigint`/`numeric` в режиме `bigint` теперь ошибка `afterCursor`; пользовательский тип (`customType`) — тоже ошибка, кроме `citext` (проверяется как строка). Ключи `timestamp`/`date` — через `cursorTimestamp`: курсор из `Date` (ISO с `Z`) столбца без зоны и `date` теперь 422.
+- **Ошибка окружения:** `message` своих схем — без значения ключа. Разбор JSON CLI и логов отказа может читать `issues`.
+- **`new InvalidEnvironmentError`:** сервисы, которые создают ошибку сами, передают `[{key, message}]` вместо `[key]`; `message` — без значения ключа.
+
 ## [1.0.0-rc.11] - 2026-11-16
 
 Находки Identity ID-68, ID-69 и Orchestrator OR-214, К35, сверка KT-120 (PRD v1.33–v1.34, r28–r29).
