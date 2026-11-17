@@ -111,7 +111,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
 
 ### Фаза 1: ошибка окружения — `/config`, `/observability`, CLI
 
-- [ ] **Task 1: `InvalidEnvironmentError.issues` и страховка от значения** — §3.1 стр. 63, AC-1.3, R1, R2
+- [x] **Task 1: `InvalidEnvironmentError.issues` и страховка от значения** — §3.1 стр. 63, AC-1.3, R1, R2
   - **Skill:** nestjs-code generic src/config/parse-env.ts (MODIFY); nestjs-code generic src/config/index.ts (MODIFY); nestjs-code test unit config ac-1-3-parse-env (MODIFY) → `test/unit/config/ac-1-3-parse-env.spec.ts`, `test/unit/config/support.ts`
   - Тесты (сначала, на rc.11), `ac-1-3-parse-env.spec.ts`:
     - `AC-1.3: z.undefined({error: 'IDENTITY_PORT заменён на PORT'}) → issues [{key: 'IDENTITY_PORT', message: 'IDENTITY_PORT заменён на PORT'}]`. Схема — `defineEnv` с этим ключом, `env` с `IDENTITY_PORT: '3000'`. На rc.11 `issues` нет — падает;
@@ -130,7 +130,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
   - `config/index.ts`: `export type { KitEnvironmentIssue }`.
   - Логи: нет (чистая функция).
 
-- [ ] **Task 2: `failStartup` — `issues` в fatal-логе и `extra` GlitchTip** — §3.2 стр. 86, AC-2.9, R3 (depends on 1)
+- [x] **Task 2: `failStartup` — `issues` в fatal-логе и `extra` GlitchTip** — §3.2 стр. 86, AC-2.9, R3 (depends on 1)
   - **Skill:** nestjs-code generic src/observability/fail-startup.ts (MODIFY); nestjs-code test unit observability ac-2-9-fail-startup (MODIFY) → `test/unit/observability/ac-2-9-fail-startup.spec.ts`
   - Тесты (сначала):
     - тест стр. 60 «AC-2.9: InvalidEnvironmentError — fatal (60) только с именами ключей …» переименовать в «… с именами ключей и issues, без значения; событие с extra.issues отправлено до exit(1)». Ошибка — `new InvalidEnvironmentError([{key: 'METRICS_PORT', message: 'ожидается порт'}, {key: 'DATABASE_URL', message: 'ожидается URL'}])`. Ожидания: запись лога с `keys` и `issues`, в `delivered[0].body` — `extra.issues` с теми же записями. «Было → стало» (конструктор по R1 и новое поле, основание §3.2 стр. 86). На rc.11 падает: конструктор rc.11 примет массив объектов как `keys`, а `issues` в логе нет;
@@ -139,7 +139,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
   - Код: в ветке `InvalidEnvironmentError` функции `logFailure` — поле `issues` в `fatal`. `failStartup` передаёт в `captureError` `extra: {issues}` только для `InvalidEnvironmentError`, тег `code` как сейчас. TSDoc `failStartup` — `issues`. Шапка — v1.35.
   - Логи: `fatal({code, keys, issues}, 'Неверное окружение — запуск остановлен')`.
 
-- [ ] **Task 3: CLI — одна функция разбора ошибки окружения** — §3.1 стр. 63, AC-1.3, R4, R5 (depends on 1)
+- [x] **Task 3: CLI — одна функция разбора ошибки окружения** — §3.1 стр. 63, AC-1.3, R4, R5 (depends on 1)
   - **Skill:** nestjs-code generic src/cli/environment.ts (CREATE); nestjs-code generic src/cli/commands/db.ts, crypto.ts, redis.ts, rabbitmq.ts, openapi.ts (MODIFY — одна правка в пяти связанных файлах одного каталога); nestjs-code test unit cli ac-1-3-cli-environment (CREATE) → `test/unit/cli/ac-1-3-cli-environment.spec.ts`; nestjs-code test unit cli redis-acl-command, ac-5-10-rabbitmq-command (MODIFY); nestjs-code test integration cli ac-5-10-rabbitmq-definitions (MODIFY)
   - Тесты (сначала, на rc.11 — ошибка импорта `src/cli/environment.js` и нет `issues`):
     - `AC-1.3: ошибка окружения каждой команды CLI — JSON {error: {code: 'INVALID_ENVIRONMENT', message, keys, issues}}, значения нет в stdout и stderr`. `it.each` по командам с `LOG_LEVEL = 'loud-SECRET_MARKER_CLI'`:
@@ -166,7 +166,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
 
 ### Фаза 2: подпуть `@verdeect/kit/testing/images`
 
-- [ ] **Task 4: `./testing/images`, `imageRepository` в `repo-conventions.ts`** — §3.8 стр. 185, AC-9.6, R6
+- [x] **Task 4: `./testing/images`, `imageRepository` в `repo-conventions.ts`** — §3.8 стр. 185, AC-9.6, R6
   - **Skill:** nestjs-code generic src/testing/images.ts (MODIFY); nestjs-code generic src/testing/repo-conventions.ts (MODIFY); none (JSON) → `package.json`; nestjs-code test unit testing test-images (MODIFY) → `test/unit/testing/test-images.spec.ts`; nestjs-code test unit package package-manifest (MODIFY) → `test/unit/package/package-manifest.spec.ts`; nestjs-code test unit package ac-9-6-timeout-scale (MODIFY) → `test/package/ac-9-6-timeout-scale.spec.ts`; nestjs-code test unit package ac-9-1-consumer (MODIFY) → `test/package/ac-9-1-consumer.spec.ts`; none (JS потребителя) → `test/consumer/minimal/import-check.mjs`
   - Тесты (сначала, на rc.11):
     - `package-manifest.spec.ts`: тест стр. 53 «exports — ровно …» — плюс `./testing/images` после `./testing/timeout-scale`, имя теста дополнить. Новый тест `AC-9.6: ./testing/images — {types, default} перед ./testing` по образцу стр. 131. На rc.11 оба падают;
@@ -187,7 +187,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
 
 ### Фаза 3: `/http` — типы и курсор
 
-- [ ] **Task 5: типы `PageQuery` и `CursorValue` из `/http`** — §3.5 стр. 149, R7
+- [x] **Task 5: типы `PageQuery` и `CursorValue` из `/http`** — §3.5 стр. 149, R7
   - **Skill:** nestjs-code generic src/http/pagination.ts (MODIFY); nestjs-code generic src/http/index.ts (MODIFY); nestjs-code test unit http ac-3-6-page-types (CREATE) → `test/unit/http/ac-3-6-page-types.test-d.ts`; nestjs-code generic test/consumer/minimal/src/service/items.controller.ts (MODIFY)
   - Тесты (сначала, на rc.11 — ошибка компиляции: типов нет в `/http`):
     - `ac-3-6-page-types.test-d.ts`, импорт из `../../../src/http/index.js`:
@@ -197,7 +197,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
   - Код: `pagination.ts` — тип `PageQuery` с TSDoc; `index.ts` — `export type { CursorValue, Page, PageQuery }`.
   - Логи: нет.
 
-- [ ] **Task 6: курсор keyset — новые типы столбцов, неподдержанный тип, `cursorTimestamp` для `timestamp`/`date`** — §3.5 стр. 149, AC-3.6, R8, R9 (depends on 5)
+- [x] **Task 6: курсор keyset — новые типы столбцов, неподдержанный тип, `cursorTimestamp` для `timestamp`/`date`** — §3.5 стр. 149, AC-3.6, R8, R9 (depends on 5)
   - Q1 решён: `citext` — строка, иной `customType` — ошибка (R8).
   - **Skill:** nestjs-code generic src/http/pagination.ts (MODIFY); nestjs-code test unit http pagination (MODIFY) → `test/unit/http/pagination.spec.ts`; nestjs-code test integration http ac-3-6-keyset (MODIFY) → `test/integration/http/ac-3-6-keyset.spec.ts`
   - API zod 4 для ISO без зоны и даты (`z.iso.datetime` с `local`, `z.iso.date`) сверить через Context7: принимает ли `local: true` строку с `Z`. Если да — отдельная проверка «нет `Z` и смещения». Тест — по R8.
@@ -223,7 +223,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
 
 ### Фаза 4: `/messaging` — расхождение аргументов своих очередей
 
-- [ ] **Task 7: `MESSAGING_QUEUE_MISMATCH`** — §3.4 стр. 130, AC-5.19, R10
+- [x] **Task 7: `MESSAGING_QUEUE_MISMATCH`** — §3.4 стр. 130, AC-5.19, R10
   - **Skill:** nestjs-code generic src/messaging/errors.ts (MODIFY); nestjs-code generic src/messaging/subscriber.ts (MODIFY); nestjs-code test integration messaging ac-5-19-retry-ttl (MODIFY) → `test/integration/messaging/ac-5-19-retry-ttl.spec.ts`; nestjs-code test integration messaging ac-5-19-broker-down (MODIFY) → `test/integration/messaging/ac-5-19-broker-down.spec.ts`
   - Тесты (сначала, на rc.11), `ac-5-19-retry-ttl.spec.ts` — `it.each` по образцу существующего теста (стенд `createSubscriberApp`, `memoryLogger`, `resetQueues`, удаление очереди в `finally`). Ожидания каждого случая — как у теста TTL: `MessagingStartupError`, `startupCode`, точный текст, `startupDetails()` = `{queue}`, одна строка «фатальная ошибка …», нет «канал открывается заново» и «попытка подключения не удалась», отказ в пределах одной паузы от «соединение установлено»:
     - `AC-5.19: очередь kit уже объявлена с другим x-dead-letter-exchange → отказ запуска MESSAGING_QUEUE_MISMATCH «очередь kit объявлена с другими параметрами — пересоздайте очередь», без цикла переподключений` — `kit` объявлена с `deadLetterExchange: 'other'`;
@@ -244,17 +244,17 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
     - `subscriber.ts`: `is406TtlMismatch` → две проверки: «406» и «406 с `x-message-ttl`». В `setupQueues` — общая внутренняя функция «объявить свою очередь» по R10 для трёх очередей. TSDoc и шапка — v1.35.
   - Логи: прежние строки `rabbitmq-connection` — «rabbitmq: фатальная ошибка настройки канала, повторов не будет» с `code`. Отказ запуска — `failStartup` с `startupDetails()` `{queue}`.
 
-- [ ] **Task 8: тест `MessagingStartupError` с новым кодом** — AC-5.19, R10 (depends on 7)
+- [x] **Task 8: тест `MessagingStartupError` с новым кодом** — AC-5.19, R10 (depends on 7)
   - **Skill:** nestjs-code test unit messaging errors (MODIFY) → `test/unit/messaging/errors.spec.ts`
   - Тест: `AC-5.19: MessagingStartupError MESSAGING_QUEUE_MISMATCH — startupCode, startupDetails() {queue}`. На rc.11 — ошибка типа литерала кода (typecheck Vitest не охватывает `*.spec.ts`, поэтому проверка — `pnpm typecheck`; в отчёт).
   - Логи: нет.
 
-- [ ] **Task 9: AC-5.24 — сверка имени и описания теста** — AC-5.24 (PRD v1.35: «закрытый порт — `ECONNREFUSED` сразу, без ожидания срока»)
+- [x] **Task 9: AC-5.24 — сверка имени и описания теста** — AC-5.24 (PRD v1.35: «закрытый порт — `ECONNREFUSED` сразу, без ожидания срока»)
   - Без кода. Сверить `test/integration/messaging/ac-5-24-background-failures.spec.ts`: шапка стр. 1–4 («закрытый порт `tcpProxy.break()`: подключение сразу получает `ECONNREFUSED`, срока драйвера нет») и имя теста стр. 136 («закрытый порт, `tcpProxy.break` — `ECONNREFUSED`») совпадают с AC-5.24 v1.35. `blackhole` в файле нет. Ожидаемый итог — без правок. Расхождение — стоп и сообщить пользователю. Итог — в отчёт.
 
 ### Фаза 5: документация и выпуск
 
-- [ ] **Task 10: README, AGENTS.md, ARCHITECTURE.md** — §3.1, §3.4, §3.5, §3.8 v1.35, AC-9.3 (depends on 1–7)
+- [x] **Task 10: README, AGENTS.md, ARCHITECTURE.md** — §3.1, §3.4, §3.5, §3.8 v1.35, AC-9.3 (depends on 1–7)
   - **Skill:** none (Markdown)
   - `README.md`:
     1. «Конфигурация окружения» (стр. 67–124): `issues` (R1) и страховка (R2). **Правило для схем сервиса:** `message` без значения ключа, например `z.undefined({error: 'IDENTITY_PORT заменён на PORT'})`. Значение длиной ≥ 8, попавшее в `message`, пакет заменит на «неверное значение (<code>)»;
@@ -280,7 +280,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
   - Проверка: `pnpm vitest run -c vitest.package.config.ts test/package/ac-9-3-docs.spec.ts` (после задачи 11 — и CHANGELOG).
   - Логи: нет.
 
-- [ ] **Task 11: CHANGELOG и версия** — G14, NFR-5 (depends on 10)
+- [x] **Task 11: CHANGELOG и версия** — G14, NFR-5 (depends on 10)
   - **Skill:** none (Markdown, JSON)
   - `CHANGELOG.md`: `## [1.0.0-rc.12] - 2026-11-17` под `## [Unreleased]`, по образцу rc.11:
     - строка-источник: «Итоги перехода Identity ID-76, сверка KT-133 (PRD v1.35, r30). Последний выпуск под `@verdeect/kit` на npmjs.»;
@@ -307,7 +307,7 @@ Authority: `requirements/0000-kit/prd.md` v1.35 (r30) > ответы польз�
 
 ### Фаза 6: проверка
 
-- [ ] **Task 12: полная проверка** (depends on 1–11)
+- [x] **Task 12: полная проверка** (depends on 1–11)
   - Команды по одной (правило пользователя: без `&&`):
     1. `pnpm lint`, `pnpm typecheck`, `pnpm test`;
     2. `free -h`, `uptime`, `docker ps --format '{{.Names}} {{.Label "com.docker.compose.project"}} {{.Label "org.testcontainers"}}'`: available ≥ 3 ГБ, load < 5, нет чужих `verdeect-*-e2e` и контейнеров Testcontainers. Иначе — стоп и сообщить пользователю, `test-full` не запускать;
