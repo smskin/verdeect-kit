@@ -1,7 +1,8 @@
 // RabbitConnection, ManagedChannel (prd.md §3.4 «соединение — основа O», AC-5.4, AC-5.11, AC-5.19). Эталон — O
 // rabbit-connection.ts (P — без cancelConsumers/stopped). Отличия: фабрика модуля вместо DI, amqp-connection-manager —
 // loadPeer в start() (без top-level await, AC-1.2), срок остановки из SHUTDOWN_TIMEOUT_MS (П9), captureError пакета,
-// фатальная ошибка настройки (MessagingStartupError, 406 TTL .retry) без повторов (AC-5.19, П8), topologyReady без
+// фатальная ошибка настройки (MessagingStartupError: 406 своих очередей (TTL .retry, другие аргументы)) без повторов
+// (AC-5.19, П8), topologyReady без
 // каналов — true, первый исход подключения и настройки канала (firstAttempt, channelOutcome). Exchange
 // verdeect.events — только checkExchange. В лог идёт только host:port: RABBITMQ_URL содержит пароль.
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -621,7 +622,8 @@ export class RabbitConnection {
         }
         const safeError = sanitizeError(error);
         if (error instanceof MessagingStartupError) {
-            // Фатально (406 TTL .retry): повтор не изменит объявление очереди брокера (AC-5.19, П8).
+            // Фатально (MessagingStartupError: 406 своих очередей (TTL .retry, другие аргументы)): повтор не изменит
+            // объявление очереди брокера (AC-5.19, П8).
             if (state !== undefined) {
                 state.fatal = true;
                 state.settle({ kind: 'fatal', error });

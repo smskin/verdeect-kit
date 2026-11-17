@@ -5,6 +5,7 @@
 // Тип — по envelope.type, не по routing key (после повтора ключ — имя очереди). Тело сообщения не логируется. Обработчик —
 // по паре (type, version), неподписанная версия подписанного type — ack и verdeect_events_skipped_total (AC-5.22);
 // v1.28 — опция unknownVersion у on: 'dlq' отправляет неподписанную версию в <svc>.dlq с x-dlq-reason: version.
+// v1.35 — 406 на объявление любой своей очереди — отказ MESSAGING_QUEUE_MISMATCH (TTL .retry — прежний код).
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 import type { Db, DbTx } from '../database/db.js';
 import { KIT_DELIVERY_LOG_FLAG } from '../internal/tokens.js';
@@ -150,10 +151,16 @@ interface DlqOptions {
     readonly version?: number;
 }
 
-function is406TtlMismatch(error: unknown): boolean {
-    const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+/** Ответ брокера 406 PRECONDITION_FAILED — очередь объявлена с другими аргументами (§3.4). */
+function is406(error: unknown): boolean {
+    return (error as { code?: unknown } | null)?.code === 406;
+}
 
-    return code === 406 && typeof message === 'string' && message.includes('x-message-ttl');
+/** 406 по `x-message-ttl` — расходится TTL `.retry` (AC-5.19, П8). */
+function is406TtlMismatch(error: unknown): boolean {
+    const { message } = (error ?? {}) as { message?: unknown };
+
+    return is406(error) && typeof message === 'string' && message.includes('x-message-ttl');
 }
 
 /** Решение «в DLQ» без вызова обработчика. */
@@ -397,31 +404,51 @@ export class KitSubscriber {
         }
     }
 
-    private async setupQueues(channel: ConfirmChannel, types: readonly string[]): Promise<void> {
-        const q = this.queues;
-        await channel.assertQueue(q.main, {
-            durable: true,
-            deadLetterExchange: '',
-            deadLetterRoutingKey: q.retry,
-        });
+    /**
+     * Объявляет свою очередь (`<svc>`, `<svc>.retry`, `<svc>.dlq`). Ответ 406 — отказ `MessagingStartupError`
+     * (фатально, без повторов, §3.4 v1.35): по TTL `.retry` — `MESSAGING_RETRY_TTL_MISMATCH`, иначе
+     * `MESSAGING_QUEUE_MISMATCH`. Прочие ошибки — как есть (сбой настройки, повтор).
+     */
+    private async assertOwnQueue(
+        channel: ConfirmChannel,
+        queue: string,
+        options: Parameters<ConfirmChannel['assertQueue']>[1],
+    ): Promise<void> {
         try {
-            await channel.assertQueue(q.retry, {
-                durable: true,
-                messageTtl: this.deps.retrySeconds * 1000,
-                deadLetterExchange: '',
-                deadLetterRoutingKey: q.main,
-            });
+            await channel.assertQueue(queue, options);
         } catch (error) {
-            if (is406TtlMismatch(error)) {
+            if (queue === this.queues.retry && is406TtlMismatch(error)) {
                 throw new MessagingStartupError(
                     'MESSAGING_RETRY_TTL_MISMATCH',
-                    `очередь ${q.retry} объявлена с другим TTL — пересоздайте очередь`,
-                    { queue: q.retry },
+                    `очередь ${queue} объявлена с другим TTL — пересоздайте очередь`,
+                    { queue },
+                );
+            }
+            if (is406(error)) {
+                throw new MessagingStartupError(
+                    'MESSAGING_QUEUE_MISMATCH',
+                    `очередь ${queue} объявлена с другими параметрами — пересоздайте очередь`,
+                    { queue },
                 );
             }
             throw error;
         }
-        await channel.assertQueue(q.dlq, { durable: true });
+    }
+
+    private async setupQueues(channel: ConfirmChannel, types: readonly string[]): Promise<void> {
+        const q = this.queues;
+        await this.assertOwnQueue(channel, q.main, {
+            durable: true,
+            deadLetterExchange: '',
+            deadLetterRoutingKey: q.retry,
+        });
+        await this.assertOwnQueue(channel, q.retry, {
+            durable: true,
+            messageTtl: this.deps.retrySeconds * 1000,
+            deadLetterExchange: '',
+            deadLetterRoutingKey: q.main,
+        });
+        await this.assertOwnQueue(channel, q.dlq, { durable: true });
         // prefetch — с ожиданием: опция consume amqp-connection-manager 5.0.1 вызывает prefetch без await (O).
         await channel.prefetch(CONSUMER_PREFETCH, false);
         for (const type of types) {

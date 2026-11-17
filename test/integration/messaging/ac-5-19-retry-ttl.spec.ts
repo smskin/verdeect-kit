@@ -1,5 +1,8 @@
 // AC-5.19 (UC-6): kit.retry объявлена с другим TTL — запуск отклонён MessagingStartupError «очередь kit.retry
 // объявлена с другим TTL — пересоздайте очередь», без цикла переподключений (prd.md §3.4; П8).
+// v1.35: любая своя очередь (kit, kit.retry, kit.dlq), объявленная с другими аргументами, — MESSAGING_QUEUE_MISMATCH
+// «очередь <имя> объявлена с другими параметрами — пересоздайте очередь», так же без повторов.
+import type { Options } from 'amqplib';
 import { afterAll, describe, expect, it } from 'vitest';
 import { KIT_LOGGER } from '../../../src/internal/tokens.js';
 import { MessagingStartupError } from '../../../src/messaging/errors.js';
@@ -61,4 +64,65 @@ describe('UC-6: TTL очереди повтора', () => {
             await client.deleteQueue('kit.retry').catch(() => undefined);
         }
     });
+
+    it.each<[string, Options.AssertQueue]>([
+        ['kit', { durable: true, deadLetterExchange: 'other' }],
+        ['kit.dlq', { durable: true, messageTtl: 1000 }],
+        [
+            'kit.retry',
+            {
+                durable: true,
+                messageTtl: 1000,
+                deadLetterExchange: '',
+                deadLetterRoutingKey: 'other',
+            },
+        ],
+    ])(
+        'AC-5.19: очередь %s уже объявлена с другими параметрами → отказ запуска MESSAGING_QUEUE_MISMATCH «очередь <имя> объявлена с другими параметрами — пересоздайте очередь», без цикла переподключений',
+        async (queue, options) => {
+            const client = await broker;
+            await resetQueues();
+            await client.channel.assertQueue(queue, options);
+            const { logger, lines } = memoryLogger();
+            try {
+                const error: unknown = await createSubscriberApp({
+                    overrides: [{ provide: KIT_LOGGER, useValue: logger }],
+                }).catch((reason: unknown) => reason);
+                const refusedAt = Date.now();
+
+                const connected = lines.find(
+                    (line) => line['msg'] === 'rabbitmq: соединение установлено',
+                );
+                expect(connected, 'соединение с брокером установлено').toBeDefined();
+                expect(refusedAt - Number(connected?.['time'])).toBeLessThan(
+                    1000 * TEST_TIMEOUT_SCALE,
+                );
+                expect(error).toBeInstanceOf(MessagingStartupError);
+                expect((error as MessagingStartupError).startupCode).toBe(
+                    'MESSAGING_QUEUE_MISMATCH',
+                );
+                expect((error as Error).message).toBe(
+                    `очередь ${queue} объявлена с другими параметрами — пересоздайте очередь`,
+                );
+                expect((error as MessagingStartupError).startupDetails()).toEqual({ queue });
+                const fatal = lines.filter(
+                    (line) =>
+                        line['msg'] ===
+                        'rabbitmq: фатальная ошибка настройки канала, повторов не будет',
+                );
+                expect(fatal).toHaveLength(1);
+                expect(
+                    lines.filter((line) => line['msg'] === 'rabbitmq: канал открывается заново'),
+                ).toHaveLength(0);
+                expect(
+                    lines.filter(
+                        (line) => line['msg'] === 'rabbitmq: попытка подключения не удалась',
+                    ),
+                ).toHaveLength(0);
+            } finally {
+                // Стенд мог объявить и остальные очереди до отказа.
+                await resetQueues();
+            }
+        },
+    );
 });
