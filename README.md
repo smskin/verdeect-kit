@@ -47,18 +47,19 @@ pnpm add @verdeect/kit@1.0.0-rc.N   # после E8; до 1.0.0 — точный
 
 ## Подпути
 
-| Подпуть                  | Этап | Статус                                                                 |
-| ------------------------ | ---- | ---------------------------------------------------------------------- |
-| `/config`                | E1   | готов, в `[Unreleased]`                                                |
-| `/testing`               | E1   | готов, в `[Unreleased]`                                                |
-| `/testing/timeout-scale` | rc.7 | `TEST_TIMEOUT_SCALE` для `vitest.config.ts`, без условия `development` |
-| `/observability`         | E2   | готов, в `[Unreleased]`                                                |
-| `/http`                  | E3   | готов, в `[Unreleased]`                                                |
-| `/database`              | E4   | готов, в `[Unreleased]`                                                |
-| `/idempotency`           | E4   | готов, в `[Unreleased]`                                                |
-| `/messaging`             | E5   | готов, в `[Unreleased]`                                                |
-| `/crypto`                | E7   | готов, в `[Unreleased]`                                                |
-| `/redis`                 | E8   | готов, в `[Unreleased]`                                                |
+| Подпуть                  | Этап  | Статус                                                                    |
+| ------------------------ | ----- | ------------------------------------------------------------------------- |
+| `/config`                | E1    | готов, в `[Unreleased]`                                                   |
+| `/testing`               | E1    | готов, в `[Unreleased]`                                                   |
+| `/testing/timeout-scale` | rc.7  | `TEST_TIMEOUT_SCALE` для `vitest.config.ts`, без условия `development`    |
+| `/testing/images`        | rc.12 | `TEST_IMAGES` без условия `development` — для unit-теста совпадения тегов |
+| `/observability`         | E2    | готов, в `[Unreleased]`                                                   |
+| `/http`                  | E3    | готов, в `[Unreleased]`                                                   |
+| `/database`              | E4    | готов, в `[Unreleased]`                                                   |
+| `/idempotency`           | E4    | готов, в `[Unreleased]`                                                   |
+| `/messaging`             | E5    | готов, в `[Unreleased]`                                                   |
+| `/crypto`                | E7    | готов, в `[Unreleased]`                                                   |
+| `/redis`                 | E8    | готов, в `[Unreleased]`                                                   |
 
 Все подпути выходят вместе в `1.0.0-rc.1` после E8 (G14).
 
@@ -117,7 +118,8 @@ export class AppModule {}
 Правила:
 
 - путь ключа в ошибке — полный, через точку (`SERVICE_URLS.identity`, `ENCRYPTION_KEYS.0.secret`); ошибка без пути — `(root)`;
-- значений окружения в ошибке нет никогда — только пути ключей (NFR-4);
+- `InvalidEnvironmentError` — `{code, keys, issues}`: `keys` — пути без дублей, `issues` — запись `{key, message}` на каждую ошибку схемы, `message` — текст схемы; `Error.message` — только имена ключей;
+- значений окружения в ошибке нет никогда (NFR-4). **Правило для схем сервиса:** `message` — без значения ключа, например `z.undefined({error: 'IDENTITY_PORT заменён на PORT'})`. В тексте ошибки корня (`superRefine` без пути) значения ключей тоже не вставляются. Страховка: если в `message` попал фрагмент значения ключа длиной ≥ 8 символов (у ошибки без пути — любого ключа, объявленного в схеме; прочие переменные процесса не сверяются), пакет заменит текст на «неверное значение (<code>)», например «неверное значение (custom)»;
 - переименования ключей идут без псевдонимов: старое имя не читается (C0, P0);
 - ключ пакета, переопределённый несовместимым типом, — ошибка компиляции (AC-1.6);
 - `KitConfigModule` (через `@nestjs/config`, `skipProcessEnv: true`) `process.env` не меняет: умолчания в него не дописываются, `ConfigService` читает только разобранные значения (AC-1.7).
@@ -240,7 +242,7 @@ try {
 }
 ```
 
-**Отказ запуска.** `failStartup(err, logger)` — `fatal`-лог, событие GlitchTip, `exit(1)`. Код `DATABASE_UNAVAILABLE` даёт только отказ проверки соединения `KitDatabaseModule` при запуске (см. «База данных»): это `StartupFailure` — в логе `{code, cause}` (`cause` — `ECONNREFUSED`, SQLSTATE или `timeout`), без SQL, адреса и текста ошибки, одно событие с тегом `code`. Ошибка соединения другой зависимости при запуске — `STARTUP_FAILED`.
+**Отказ запуска.** `failStartup(err, logger)` — `fatal`-лог, событие GlitchTip, `exit(1)`. `InvalidEnvironmentError` — в логе `{code, keys, issues}`, в событии тег `code` и `extra.issues` (тексты схемы после страховки `parseEnv`, без значений). Код `DATABASE_UNAVAILABLE` даёт только отказ проверки соединения `KitDatabaseModule` при запуске (см. «База данных»): это `StartupFailure` — в логе `{code, cause}` (`cause` — `ECONNREFUSED`, SQLSTATE или `timeout`), без SQL, адреса и текста ошибки, одно событие с тегом `code`. Ошибка соединения другой зависимости при запуске — `STARTUP_FAILED`.
 
 ## HTTP
 
@@ -402,9 +404,22 @@ throw new DomainError('UPGRADE_REQUIRED', {}, { headers: { upgrade: 'websocket' 
 
 **Ввод.** `@Body(new ZodValidationPipe(schema))` — ошибка → 422 `VALIDATION_FAILED`, `details.issues: [{path, code}]` (путь через точку, без значений). Неразобранный JSON — 400 `BAD_REQUEST`, неподдерживаемый `Content-Type` — 415, тело больше лимита — 413.
 
-**Пагинация.** `PageQuerySchema` (`cursor`, `limit` 1–200, умолчание 100), чтение `limit + 1` строк, `pageOf(rows, limit, keyOf)` → `{items, nextCursor}`; условие — `afterCursor([t.createdAt, t.id], decodeCursor(query.cursor, 2), 'desc')`. Последний ключ сортировки — `primaryKey()` или `unique()`, все ключи сортировки — `NOT NULL` (`null` в курсоре — 422); неверный курсор — 422 `path: cursor`. Значение ключа проверяется по типу столбца до запроса к БД: `timestamptz` — строка ISO 8601 с зоной (`now`, `infinity`, `2026-11-10` — 422), `uuid` — строка UUID, целые — целое число, `boolean` — логическое, `text`/`varchar`/`char` — строка; прочие типы (например, `timestamp` без зоны) не проверяются. Ключ столбца `timestamptz` в `mode: 'string'` берите через `cursorTimestamp` (ниже): текст PostgreSQL `2026-11-10 10:04:00+00` — не строгий ISO, курсор из него даёт 422.
+**Пагинация.** `PageQuerySchema` (`cursor`, `limit` 1–200, умолчание 100), чтение `limit + 1` строк, `pageOf(rows, limit, keyOf)` → `{items, nextCursor}`; условие — `afterCursor([t.createdAt, t.id], decodeCursor(query.cursor, 2), 'desc')`. Последний ключ сортировки — `primaryKey()` или `unique()`, все ключи сортировки — `NOT NULL` (`null` в курсоре — 422); неверный курсор — 422 `path: cursor`. Типы `PageQuery` (выход `PageQuerySchema`) и `CursorValue` (значение ключа) — из `/http`. Значение ключа проверяется по типу столбца до запроса к БД, несовпадение — 422 `path: cursor`:
 
-**Точность курсора по времени.** JS `Date` хранит миллисекунды, `timestamptz` — микросекунды: ключ `row.createdAt.toISOString()` теряет микросекунды, и строки одной миллисекунды пропускаются или повторяются на границе страницы. Ключ по столбцу времени выбирайте `cursorTimestamp(t.createdAt)` — строка ISO UTC с микросекундами из БД: `db.select({...getTableColumns(t), cursorAt: cursorTimestamp(t.createdAt)})`, `pageOf(rows, limit, (row) => [row.cursorAt, row.id])`. `afterCursor` сравнивает столбец времени с полным значением курсора (`::timestamptz`). Формат курсора — тот же неподписанный base64url JSON.
+| Тип столбца                                        | Значение ключа                            | 422 (примеры)                               |
+| -------------------------------------------------- | ----------------------------------------- | ------------------------------------------- |
+| `timestamptz`                                      | строка ISO 8601 с зоной                   | `42`, `"now"`, `"infinity"`, `"2026-11-10"` |
+| `timestamp` без зоны                               | строка ISO 8601 без `Z` и смещения        | `"now"`, `"epoch"`, `"…Z"`, `"…+03:00"`     |
+| `date`                                             | `YYYY-MM-DD` (календарная дата)           | `"today"`, `"infinity"`, `"2026-02-30"`     |
+| `numeric` (режимы `string`, `number`)              | десятичная строка или конечное число      | `"abc"`, `"NaN"`, `"1e3"`, `true`           |
+| `real`, `double precision`                         | конечное число                            | `"1.5"`, `"NaN"`                            |
+| enum (`pgEnum`)                                    | строка из значений enum                   | вне списка, `1`                             |
+| `uuid`, целые, `boolean`                           | строка UUID, безопасное целое, логическое | `"x"`, `1.5`, `"true"`                      |
+| `text`, `varchar`, `char`, `citext` (`customType`) | строка                                    | `42`, `true`                                |
+
+Сортировка по другому типу — массив, `json`/`jsonb`, `interval`, `bigint`/`numeric` в режиме `bigint`, `time`, сетевые и геометрические типы, `customType` кроме `citext` — ошибка разработчика: `afterCursor` бросает `Error` «afterCursor: столбец <name> (<columnType>) не поддержан курсором keyset» при каждом вызове, в том числе без курсора. Ключи столбцов `timestamptz`, `timestamp` и `date` берите через `cursorTimestamp` (ниже): `Date` в JSON — ISO с `Z` (у `timestamp` и `date` — 422), текст PostgreSQL в `mode: 'string'` (`2026-11-10 10:04:00+00`) — не строгий ISO.
+
+**Точность курсора по времени.** JS `Date` хранит миллисекунды, `timestamptz` — микросекунды: ключ `row.createdAt.toISOString()` теряет микросекунды, и строки одной миллисекунды пропускаются или повторяются на границе страницы. Ключ по столбцу времени выбирайте `cursorTimestamp(t.createdAt)` — строка из БД при любом `mode` столбца: `timestamptz` — ISO UTC с микросекундами, `timestamp` — ISO без зоны с микросекундами, `date` — `YYYY-MM-DD`: `db.select({...getTableColumns(t), cursorAt: cursorTimestamp(t.createdAt)})`, `pageOf(rows, limit, (row) => [row.cursorAt, row.id])`. `afterCursor` сравнивает столбец с полным значением курсора (`::timestamptz`, `::timestamp`, `::date`). Формат курсора — тот же неподписанный base64url JSON.
 
 **OpenAPI.** `@Api({summary, response?, envelope?, status?, errors?, extra?})` на маршруте; `verdeect-kit openapi --out contracts/openapi.json --module dist/app.module.js#AppModule` строит OpenAPI 3.1 по метаданным без запуска приложения (окружение не нужно), `info` — из `package.json`. Тело, query и path — из `ZodValidationPipe`, ответ — `response`, ошибки — коды `errors` со всеми их статусами по словарю + стандартные по факту: 400 `BAD_REQUEST` и 422 `VALIDATION_FAILED` — у маршрута с `ZodValidationPipe` тела или query, только 422 — у pipe параметра пути, 401/403 — у защищённых, 429 `RATE_LIMITED` — **только если перечислен в `errors`** (пакет не знает, где сервис зовёт лимитер: маршрут с `RateLimiter` пишет `errors: ['RATE_LIMITED']`); у маршрута без тела, query и аутентификации стандартных ошибок нет; ответы вне общего формата ошибки (редиректы, OIDC) — через `extra` (409 `TENANT_REQUIRED` — у маршрутов с `@RequireTenant()`, тело guard'а `{error: {code: 'TENANT_REQUIRED', message: 'Не выбрана компания', details: {}}}`). `security` — по `@UseGuards(VerdeectAuthGuard)` и `Require*` из `@verdeect/auth/nest`; защиту через `APP_GUARD` генерация не видит, поэтому `@UseGuards` ставится на контроллере или методе, а маршрут без guard'а документируется без `security`. Наследование — как у Nest при регистрации маршрутов: методы собираются по цепочке прототипов, `@Api` базового (в том числе абстрактного, без `@Controller`) контроллера попадает в документ с путём наследника, метод наследника с тем же именем заменяет метод предка — один маршрут. Метод наследника переопределяет и `@Api`: без своего `@Api` он в документ не попадает. Расхождений с регистрацией маршрутов Nest нет. Что генерация не выражает (SSE, сырой прокси) — `extra` или `contracts/openapi.extra.json` рядом с `--out`. Модуль сервиса с `register(…)` (динамический модуль) — отдельный файл с экспортом значения, например `export const openapiModule = AppModule.register({entry: 'http'})`, и `--module dist/openapi.module.js#openapiModule`. Снимок `contracts/openapi.json` коммитится; тест сравнивает его с документом из кода байт в байт, поэтому добавьте его в `.prettierignore` сервиса — иначе форматирование Prettier разойдётся с выводом CLI:
 
@@ -438,7 +453,7 @@ contracts/openapi.json
 | `MODULE_NOT_FOUND`     | нет файла `--module` или в нём нет экспорта (`#<экспорт>`, по умолчанию `AppModule`)                   |
 | `INVALID_PACKAGE_JSON` | нет `package.json` в cwd, он не разбирается или без `name` / `version`                                 |
 | `INVALID_EXTRA`        | `contracts/openapi.extra.json` — не объект JSON                                                        |
-| `INVALID_ENVIRONMENT`  | неверные `LOG_LEVEL` или `REPLICA_ID` (в `keys` — имена, без значений)                                 |
+| `INVALID_ENVIRONMENT`  | неверные `LOG_LEVEL` или `REPLICA_ID` (`keys` — имена, `issues` — `{key, message}`, без значений)      |
 | `OPENAPI_FAILED`       | прочий сбой сборки документа (код из `errors` не зарегистрирован, статус не объявлен для кода, `:id?`) |
 | `UNKNOWN_COMMAND`      | команда не из `openapi`, `db`, `rabbitmq`, `crypto`, `redis`; список форм — в stderr                   |
 
@@ -485,7 +500,7 @@ CLI `verdeect-kit db` (результат — одна строка JSON в stdo
 | `db migrate --folder <путь> --schema <svc>` | `DATABASE_MIGRATOR_URL`                                      | `{schema, applied}`          |
 | `db move-journal --from drizzle --to <svc>` | `DATABASE_MIGRATOR_URL`                                      | `{from, to, moved}`          |
 
-Коды ошибок: `USAGE` (нет подкоманды или опции, имя вне формата, нет журнала `drizzle-kit` в папке), `INVALID_ENVIRONMENT` (`keys` — имена), `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED` (`sqlState`).
+Коды ошибок: `USAGE` (нет подкоманды или опции, имя вне формата, нет журнала `drizzle-kit` в папке), `INVALID_ENVIRONMENT` (`keys` — имена, `issues` — `{key, message}`; без пути — `(root)`), `DATABASE_UNAVAILABLE`, `DB_COMMAND_FAILED` (`sqlState`).
 
 **Повтор после `DATABASE_UNAVAILABLE`.** Миграции пачки и журнал — одна транзакция: после обрыва либо применено и отмечено всё, либо ничего. При обрыве на `COMMIT` миграции могли примениться (COMMIT дошёл до сервера), хотя CLI вернул `DATABASE_UNAVAILABLE`; повторите `db migrate` — он идемпотентен (`applied: 0`, если всё уже применено).
 
@@ -618,7 +633,7 @@ export class CompanyEvents implements OnModuleInit {
 | код `ExpectedMessageError`    | ожидаемый отказ после 5 повторов                         |
 | `retries-exhausted`           | непредвиденная ошибка после 5 повторов                   |
 
-Другой TTL уже объявленной `<svc>.retry` — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь» без цикла переподключений (порядок смены — «Развёртывание»). Exchange `verdeect.events` сервис только проверяет пассивно; нет exchange — `/health` `rabbitmq` down.
+Другой TTL уже объявленной `<svc>.retry` — отказ запуска `MESSAGING_RETRY_TTL_MISMATCH` «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь» без цикла переподключений. Другие аргументы любой своей очереди (`<svc>`, `<svc>.retry`, `<svc>.dlq`; ответ брокера 406 `PRECONDITION_FAILED`) — отказ запуска `MESSAGING_QUEUE_MISMATCH` «очередь `<имя>` объявлена с другими параметрами — пересоздайте очередь», `startupDetails()` — `{queue}`. Подключение после старта — `error`-лог «rabbitmq: фатальная ошибка настройки канала, повторов не будет», одно событие GlitchTip, канал подписчика закрыт без повторов, relay работает. Порядок пересоздания — «Развёртывание». Exchange `verdeect.events` сервис только проверяет пассивно; нет exchange — `/health` `rabbitmq` down.
 
 **Очистка** — опубликованный outbox и inbox старше 7 дней, при старте и раз в час (замок занят другой репликой — следующая попытка через 5 мин + случайно до 1 мин), одной репликой (`runExclusive`), пачками по 1000, до 100 за проход, на соединении блокировки (работает при `DB_POOL_MAX = 1`). Метрика `verdeect_cleanup_runs_total{table: outbox|inbox, result}`, число строк — `info`-лог «очистка сообщений: проход». Ошибка замка или любой таблицы — один сбой серии `messaging-cleanup` за проход (по первой ошибке; ошибка таблицы — ещё `debug` «очистка сообщений: ошибка таблицы», другая таблица чистится), серию закрывает проход, где обе таблицы без ошибок; занятый замок серию не меняет.
 
@@ -845,7 +860,7 @@ try {
 }
 ```
 
-Неверное окружение и недоступная БД — JSON-строка `fatal` (`INVALID_ENVIRONMENT` с `keys`, `DATABASE_UNAVAILABLE`) в stderr и выход 1, без текста ошибки Nest. Без `abortOnError: false` Nest сам вызывает `process.exit(1)` мимо `failStartup`; без `logger: false` зона исключений Nest печатает ошибку (с адресом БД) в консоль до `catch`. Записи Nest `Logger` модулей в CLI не выводятся — логи команды пишите через pino. Пример проверяется в проекте-потребителе (`test/consumer/minimal/src/service/cli.ts`).
+Неверное окружение и недоступная БД — JSON-строка `fatal` (`INVALID_ENVIRONMENT` с `keys` и `issues`, `DATABASE_UNAVAILABLE`) в stderr и выход 1, без текста ошибки Nest. Без `abortOnError: false` Nest сам вызывает `process.exit(1)` мимо `failStartup`; без `logger: false` зона исключений Nest печатает ошибку (с адресом БД) в консоль до `catch`. Записи Nest `Logger` модулей в CLI не выводятся — логи команды пишите через pino. Пример проверяется в проекте-потребителе (`test/consumer/minimal/src/service/cli.ts`).
 
 `awaitPublished(ids | {traceId}, {timeoutMs})` опрашивает `published_at` и возвращает `{published, pending}`; работает при любом `listen`.
 
@@ -893,6 +908,7 @@ $ verdeect-kit --help
 - Смена ключа шифра `ENCRYPTION_KEYS` (UC-10): 1) новый секрет — `verdeect-kit crypto generate-secret | jq -r .secret` (единственный рекомендуемый способ); 2) новая версия **первой** в `ENCRYPTION_KEYS`, старая остаётся; 3) перезапуск всех реплик; 4) задача сервиса под `runExclusive` перешифровывает значения с `needsReencrypt(value) === true`; 5) старая версия убирается из `ENCRYPTION_KEYS`, когда значений под ней не осталось.
 - Ключи HMAC `deriveKeys` при смене `ENCRYPTION_KEYS`: подпись — первым ключом (новая версия), проверка — всеми версиями списка; старую версию убирайте, когда истекли подписи под ней.
 - Смена TTL `.retry` (`RABBITMQ_RETRY_SECONDS`): 1) остановить все реплики сервиса; 2) дождаться опустошения `<svc>.retry` (или переложить сообщения в `<svc>`); 3) удалить очередь `<svc>.retry`; 4) задать новый `RABBITMQ_RETRY_SECONDS` и запустить реплики — очередь объявится с новым TTL. Иначе — отказ запуска «очередь `<svc>.retry` объявлена с другим TTL — пересоздайте очередь».
+- Как перейти: очередь, объявленная прежним кодом сервиса с другими параметрами (`<svc>`, `<svc>.retry`, `<svc>.dlq`; в том числе TTL `<svc>.retry` ≠ `RABBITMQ_RETRY_SECONDS`, умолчание 30), — пересоздать до первого запуска нового кода: 1) остановить все реплики сервиса; 2) разобрать или переложить сообщения очереди; 3) удалить очередь; 4) запустить реплики — очередь объявится с параметрами пакета. Иначе — отказ запуска `MESSAGING_QUEUE_MISMATCH` или `MESSAGING_RETRY_TTL_MISMATCH`.
 
 ## Реестр префиксов id
 
@@ -930,7 +946,8 @@ $ verdeect-kit --help
 - `defineEnv` — схема окружения сервиса из фрагментов и своих ключей, с `withBaseChecks`.
 - `withBaseChecks` — проверки между ключами пакета (`PORT` ≠ `METRICS_PORT`, `SHUTDOWN_DRAIN_MS` < `SHUTDOWN_TIMEOUT_MS`).
 - `parseEnv` — разбор окружения схемой; ошибка — `InvalidEnvironmentError`.
-- `InvalidEnvironmentError` — `{code: 'INVALID_ENVIRONMENT', keys}`, без значений.
+- `InvalidEnvironmentError` — `{code: 'INVALID_ENVIRONMENT', keys, issues}`, без значений; конструктор `new InvalidEnvironmentError(issues)` — `[{key, message}]`, `keys` выводятся из `issues`; `message` записи — без значения ключа.
+- `KitEnvironmentIssue` — тип записи `issues`: `{key, message}`.
 - `KitConfigModule` — `forRoot({schema})`: глобальный `ConfigModule`, окружение разбирается при каждой сборке контекста (при `bootstrapService` — без повторного разбора), `process.env` не меняется.
 - `migrateEnvSchema` — окружение CLI `db migrate`: `DATABASE_MIGRATOR_URL`, `LOG_LEVEL`.
 - `prepareEnvSchema` — окружение CLI `db prepare`: `DATABASE_ADMIN_URL`, `DB_OWNER_PASSWORD`, `DB_APP_PASSWORD`, `LOG_LEVEL`.
@@ -971,7 +988,7 @@ $ verdeect-kit --help
 - `kitMetrics` — `kitMetrics({service})`: свой реестр экземпляра с меткой `service`, метрики процесса Node и `verdeect_*`.
 - `KitMetrics` — тип реестра и метрик пакета.
 - `alertRulesTemplate` — абсолютный путь к `alerts/verdeect-kit.rules.yml`.
-- `failStartup` — `failStartup(raw, logger)`: `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`; отказ проверки соединения `KitDatabaseModule` — `DATABASE_UNAVAILABLE` без SQL и адреса.
+- `failStartup` — `failStartup(raw, logger)`: `fatal`-лог, событие GlitchTip с ожиданием до 2 с, `exit(1)`; `InvalidEnvironmentError` — `issues` в логе и `extra.issues` события; отказ проверки соединения `KitDatabaseModule` — `DATABASE_UNAVAILABLE` без SQL и адреса.
 - `StartupFailure` — интерфейс ошибки запуска сервиса `{startupCode, startupDetails()}`.
 - `KitCoreModule` — `KitCoreModule.forRoot({service, entry: 'http' | 'cli', logger?, redaction?})`: ядро пакета вне HTTP (`KitLifecycle`, `HealthRegistry`, `KIT_METRICS`, логгер; `cli` — stderr), требует `KitConfigModule`; `createHttpApp` подключает его сам; в `cli` сервера метрик и `/health` нет. Модули `/database`, `/messaging`, `/redis`, `/idempotency` и лимитер без ядра — ошибка при сборке контекста. См. «CLI сервиса».
 - `KitCoreModuleOptions` — тип опций `KitCoreModule.forRoot`.
@@ -1003,8 +1020,10 @@ $ verdeect-kit --help
 - `pageOf` — `pageOf(rows, limit, keyOf)`: страница из `limit + 1` строк.
 - `encodeCursor` — курсор base64url от JSON ключей.
 - `decodeCursor` — `decodeCursor(cursor, arity)`: ключи или `null`; неверный — 422 `path: cursor`.
-- `afterCursor` — `afterCursor(cols, cursor, dir)`: условие Drizzle «после курсора».
-- `cursorTimestamp` — `cursorTimestamp(col)`: ключ курсора по `timestamptz` без потери точности (ISO UTC с микросекундами); столбец не `timestamptz` — `TypeError`.
+- `afterCursor` — `afterCursor(cols, cursor, dir)`: условие Drizzle «после курсора»; значение ключа — по типу столбца (таблица в «Пагинации», 422 `path: cursor`), неподдержанный тип столбца — `Error`.
+- `cursorTimestamp` — `cursorTimestamp(col)`: ключ курсора по `timestamptz`, `timestamp` или `date` без потери точности (строка из БД); другой столбец — `TypeError`.
+- `PageQuery` — тип разобранных `?cursor=&limit=` (`z.output<typeof PageQuerySchema>`).
+- `CursorValue` — тип значения ключа курсора: `string | number | boolean | null`.
 - `Api` — `@Api({summary, response?, envelope?, status?, errors?, extra?})`: маршрут в OpenAPI; `status` — число или `null` (только ошибки), элемент `errors` — код или `{code, status}`.
 - `KitApiOptions` — тип опций `@Api`.
 
@@ -1075,7 +1094,7 @@ CLI: `verdeect-kit db prepare --service <svc>`, `db migrate --folder <путь> 
 - `KitReplicaHandler` — `(event) => Promise<void>`.
 - `ExpectedMessageError` — ожидаемый отказ: повтор, затем DLQ с кодом, без GlitchTip.
 - `InvalidMessageError` — сообщение не обработать никогда: сразу DLQ с причиной.
-- `MessagingStartupError` — отказ запуска `/messaging` с кодом `MESSAGING_TENANT_NOT_NULLABLE` или `MESSAGING_RETRY_TTL_MISMATCH` (`startupCode`, `startupDetails()`).
+- `MessagingStartupError` — отказ запуска `/messaging` с кодом `MESSAGING_TENANT_NOT_NULLABLE`, `MESSAGING_RETRY_TTL_MISMATCH` или `MESSAGING_QUEUE_MISMATCH` (`startupCode`, `startupDetails()`).
 
 ### @verdeect/kit/crypto
 
@@ -1101,7 +1120,7 @@ CLI: `verdeect-kit crypto generate-secret [--bytes 32]` → `{"secret":"…"}` �
 - `RateLimitResult` — `{allowed, remaining, retryAfterMs}`.
 - `throwRateLimited` — `throwRateLimited(result)`: 429 `RATE_LIMITED` + `Retry-After` в секундах вверх.
 
-CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile и `{"out", "services"}` в stdout; ошибки — `USAGE` (в том числе без `--out`), `INVALID_ENVIRONMENT` с `keys`, выход 1.
+CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile и `{"out", "services"}` в stdout; ошибки — `USAGE` (в том числе без `--out`), `INVALID_ENVIRONMENT` с `keys` и `issues` (неверный хеш — «ожидается sha256 hex (64 символа)»), выход 1.
 
 ### @verdeect/kit/testing
 
@@ -1112,7 +1131,7 @@ CLI: `verdeect-kit redis acl --services <svc,…> --out <файл>` → aclfile 
 - `KitExpectedProblem` — тип ожидаемой ошибки.
 - `KitTestResponse` — тип ответа `{statusCode, json()}`.
 - `expectMatchesApi` — `expectMatchesApi(res, [Controller, 'method'])`: ответ по схеме `@Api`.
-- `TEST_IMAGES` — образы тестов и compose сервисов.
+- `TEST_IMAGES` — образы тестов и compose сервисов; ещё и в подпути `@verdeect/kit/testing/images` без условия `development` (rc.12, AC-9.6) — для unit-теста совпадения тегов.
 - `startTestStack` — `globalSetup` Vitest: контейнеры раз на прогон (или адреса внешних сервисов), адреса через `provide`; флаги `postgres`, `migrations`, `mailpit`, `minio`, `rabbitmq`, `publishes`, `redis?`, `outboxEvents`, `labels`.
 - `TestStackOptions` — тип опций `startTestStack`: флаг сервиса — `true` или адреса внешнего сервиса.
 - `KitExternalPostgres` — `{adminUrl}` уже поднятого PostgreSQL (суперпользователь).

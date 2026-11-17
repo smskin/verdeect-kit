@@ -18,7 +18,7 @@
 
 ## Структура проекта
 
-Состояние: последний опубликованный выпуск — `1.0.0-rc.10`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.11` (`docs/releasing.md`).
+Состояние: последний опубликованный выпуск — `1.0.0-rc.11`: все подпути `/config`, `/observability`, `/http`, `/database`, `/idempotency`, `/messaging`, `/crypto`, `/redis`, `/testing` и CLI `verdeect-kit openapi`, `db`, `rabbitmq`, `crypto`, `redis`; готовится `1.0.0-rc.12` (`docs/releasing.md`).
 
 ```
 verdeect-kit/
@@ -42,7 +42,8 @@ verdeect-kit/
 │   ├── crypto/                   # ./crypto — §3.6: cipher (createCipher, DecryptError, generateSecret), index
 │   ├── redis/                    # ./redis — §3.7: peer, client (KIT_REDIS, соединения), kit-redis.module, channels,
 │                                 #   rate-limiter (RateLimiter, throwRateLimited), index
-│   ├── testing/                  # ./testing (только development) — §3.8 E1, E3, E4: images, start-test-stack, repo-files,
+│   ├── testing/                  # ./testing (только development) — §3.8 E1, E3, E4: images (ещё подпуть ./testing/images
+│                                 #   без development, types + default, без импортов), start-test-stack, repo-files,
 │                                 #   repo-conventions, tcp-proxy, timing-guard, timeout-scale (ещё подпуть ./testing/timeout-scale
 │                                 #   без development, только node:*), create-test-app, create-test-db,
 │                                 #   expect-problem, expect-matches-api, scratch-database, worker-scope,
@@ -106,8 +107,10 @@ verdeect-kit/
 | `src/redis/index.ts` | публичная поверхность `@verdeect/kit/redis` |
 | `src/cli/main.ts` | CLI `verdeect-kit` (поле `bin`): только вызов `runCli` |
 | `src/cli/run.ts` | `runCli`: разбор команды, справка `--help`, загрузка обработчика |
+| `src/cli/environment.ts` | `environmentFailure` — разбор ошибки окружения команд CLI (`keys`, `issues`, `(root)`) |
 | `src/testing/index.ts` | публичная поверхность `@verdeect/kit/testing` |
 | `src/testing/timeout-scale.ts` | подпуть `@verdeect/kit/testing/timeout-scale` (`TEST_TIMEOUT_SCALE`, `readTimeoutScale`) |
+| `src/testing/images.ts` | подпуть `@verdeect/kit/testing/images` (`TEST_IMAGES`) |
 | `package.json` | `exports`, peer-зависимости (NFR-3), скрипты |
 | `scripts/publish.mjs` | публикация по тегу (AC-1.10) |
 | `requirements/0000-kit/prd.md` | требования: P0 и G (§0), API по подпутям (§3), UC-1–UC-16, AC (§5), модель данных (§6), NFR (§7), этапы (§9) |
