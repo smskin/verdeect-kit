@@ -1,6 +1,7 @@
-// AC-9.6 (R; prd.md §3.8 v1.26): подпуть @verdeect/kit/testing/timeout-scale — условия types и default (без development),
-// граф dist/testing/timeout-scale.js — только node:*; проект-потребитель (без testcontainers) импортирует подпуть без
-// условия development. Запуск — pnpm pack:check после pnpm build.
+// AC-9.6 (R; prd.md §3.8 v1.35): подпути @verdeect/kit/testing/timeout-scale и @verdeect/kit/testing/images — условия
+// types и default (без development); граф dist/testing/timeout-scale.js — только node:*, dist/testing/images.js — без
+// импортов; проект-потребитель (без testcontainers) импортирует оба подпути без условия development. Запуск —
+// pnpm pack:check после pnpm build.
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -48,7 +49,7 @@ function specifiersOf(entry: string): string[] {
     return specifiers;
 }
 
-describe('UC-14: подпуть testing/timeout-scale', () => {
+describe('UC-14: подпути testing/timeout-scale и testing/images', () => {
     it('AC-9.6: exports содержит ./testing/timeout-scale с условиями types и default', () => {
         const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as {
             exports: Record<string, unknown>;
@@ -83,5 +84,34 @@ describe('UC-14: подпуть testing/timeout-scale', () => {
 
         expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
         expect(result.stdout.trim()).toBe('1 2');
+    });
+
+    it('AC-9.6: exports содержит ./testing/images с условиями types и default', () => {
+        const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as {
+            exports: Record<string, unknown>;
+        };
+
+        expect(manifest.exports['./testing/images']).toEqual({
+            types: './dist/testing/images.d.ts',
+            default: './dist/testing/images.js',
+        });
+    });
+
+    it('AC-9.6: dist/testing/images.js без импортов', () => {
+        expect(specifiersOf(join(REPO_ROOT, 'dist', 'testing', 'images.js'))).toEqual([]);
+    });
+
+    it('AC-9.6: проект-потребитель импортирует @verdeect/kit/testing/images без условия development', async () => {
+        if (consumer === undefined) {
+            return expect.fail('проект-потребитель не создан');
+        }
+        const result = await runInConsumer(consumer, 'node', [
+            '--input-type=module',
+            '-e',
+            "const m = await import('@verdeect/kit/testing/images'); console.log(m.TEST_IMAGES.postgres)",
+        ]);
+
+        expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(result.stdout.trim()).toBe('postgres:17.11-alpine3.24');
     });
 });

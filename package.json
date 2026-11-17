@@ -61,6 +61,10 @@
       "types": "./dist/testing/timeout-scale.d.ts",
       "default": "./dist/testing/timeout-scale.js"
     },
+    "./testing/images": {
+      "types": "./dist/testing/images.d.ts",
+      "default": "./dist/testing/images.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "development": "./dist/testing/index.js"

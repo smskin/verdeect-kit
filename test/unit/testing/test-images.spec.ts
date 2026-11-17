@@ -1,6 +1,7 @@
 // TEST_IMAGES (prd.md §3.8, E1); эталон — O test/support/images.ts.
 import { describe, expect, it } from 'vitest';
-import { imageRepository, TEST_IMAGES } from '../../../src/testing/images.js';
+import { TEST_IMAGES } from '../../../src/testing/images.js';
+import { imageRepository } from '../../../src/testing/repo-conventions.js';
 
 describe('§3.8: TEST_IMAGES', () => {
     it('§3.8: TEST_IMAGES — ровно пять образов PRD', () => {

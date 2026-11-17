@@ -50,7 +50,7 @@ const OPTIONAL_PEERS: Record<string, string> = {
 };
 
 describe('AC-1.1: точки входа пакета (E1–E8)', () => {
-    it('AC-1.1, AC-9.6: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./redis, ./testing/timeout-scale, ./testing, ./package.json', () => {
+    it('AC-1.1, AC-9.6: exports — ровно ./config, ./crypto, ./database, ./http, ./idempotency, ./messaging, ./observability, ./redis, ./testing/timeout-scale, ./testing/images, ./testing, ./package.json', () => {
         expect(Object.keys(manifest.exports).sort()).toEqual(
             [
                 './config',
@@ -63,6 +63,7 @@ describe('AC-1.1: точки входа пакета (E1–E8)', () => {
                 './package.json',
                 './redis',
                 './testing',
+                './testing/images',
                 './testing/timeout-scale',
             ].sort(),
         );
@@ -135,6 +136,15 @@ describe('AC-1.1: точки входа пакета (E1–E8)', () => {
         });
         const keys = Object.keys(manifest.exports);
         expect(keys.indexOf('./testing/timeout-scale')).toBeLessThan(keys.indexOf('./testing'));
+    });
+
+    it('AC-9.6: ./testing/images — {types, default} перед ./testing', () => {
+        expect(manifest.exports['./testing/images']).toEqual({
+            types: './dist/testing/images.d.ts',
+            default: './dist/testing/images.js',
+        });
+        const keys = Object.keys(manifest.exports);
+        expect(keys.indexOf('./testing/images')).toBeLessThan(keys.indexOf('./testing'));
     });
 
     it("AC-1.1: ./testing — ключи ровно ['types', 'development'], без default (NFR-4)", () => {
